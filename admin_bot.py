@@ -539,7 +539,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 💡 <b>Примеры:</b>
 /ai Объясни алгоритм сортировки
-/add_feature погода - узнать погоду в городе
+/add_feature курс - показать курс доллара и евро к рублю
 /broadcast Обновление бота завершено!
     """
     await update.message.reply_html(admin_commands)
@@ -547,7 +547,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def generate_function_code(description: str, command_name: str) -> str:
     """Генерирует код функции через ChatGPT"""
     system_prompt = """
-Ты опытный Python разработчик Telegram ботов. Создай функцию для Telegram бота.
+Ты опытный Python разработчик Telegram ботов. Создай полезную функцию для Telegram бота.
 
 СТРОГО СЛЕДУЙ ЭТОМУ ФОРМАТУ:
 
@@ -559,23 +559,30 @@ async def {command_name}_command(update: Update, context: ContextTypes.DEFAULT_T
 ```
 
 ТРЕБОВАНИЯ:
-1. Используй только стандартные библиотеки Python и библиотеки telegram
-2. Функция должна быть async
-3. Обязательно используй await для Telegram операций
-4. Добавь обработку ошибок try/except если нужно
-5. Используй reply_text или reply_html для ответов
-6. НЕ используй внешние API без явного указания
-7. Код должен быть безопасным и не содержать exec/eval
+1. Функция должна быть async
+2. Обязательно используй await для Telegram операций  
+3. Используй reply_text или reply_html для ответов
+4. Добавь обработку ошибок try/except для внешних запросов
+5. Можешь использовать ЛЮБЫЕ библиотеки: requests, bs4, json, datetime, random, re, os, etc.
+6. Для API запросов используй requests или aiohttp
+7. Делай функции максимально полезными и функциональными
 8. Отвечай только кодом без дополнительных объяснений
 
-Пример простой функции:
+Примеры:
 ```python
-async def joke_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    \"\"\"Отправляет случайную шутку\"\"\"
-    import random
-    jokes = ["Шутка 1", "Шутка 2", "Шутка 3"]
-    joke = random.choice(jokes)
-    await update.message.reply_text(f"😂 {joke}")
+async def weather_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    \"\"\"Получить погоду в городе\"\"\"
+    import requests
+    try:
+        if context.args:
+            city = " ".join(context.args)
+            # Используй реальный API погоды
+            response = requests.get(f"http://wttr.in/{city}?format=3")
+            await update.message.reply_text(f"🌤 {response.text}")
+        else:
+            await update.message.reply_text("Укажи город: /weather Москва")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
 ```
 """
 
@@ -595,49 +602,17 @@ async def joke_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return f"❌ Ошибка генерации кода: {str(e)}"
 
 def validate_generated_code(code: str) -> tuple[bool, str]:
-    """Проверяет безопасность сгенерированного кода"""
-    dangerous_patterns = [
-        'exec(', 'eval(', '__import__',
-        'open(', 'file(', 'input(',
-        'os.system', 'subprocess',
-        'import os', 'from os', 'import sys',
-        'requests.', 'urllib.', 'http.',
-        'socket.', 'ftplib.', 'smtplib.',
-        'telnetlib.', 'xmlrpc.', 'pickle.',
-        'threading.', 'multiprocessing.',
-        'shutil.', 'glob.', 'tempfile.',
-        'getpass.', 'pty.', 'tty.',
-        '__builtins__', 'globals()', 'locals()',
-        'compile(', 'memoryview(', 'bytearray('
-    ]
+    """Базовая проверка структуры сгенерированного кода"""
+    # Убираем все проверки безопасности для личного использования
     
-    code_lower = code.lower()
-    for pattern in dangerous_patterns:
-        if pattern in code_lower:
-            return False, f"Небезопасный код: содержит {pattern}"
-    
-    # Проверяем структуру функции
+    # Проверяем только базовую структуру функции
     if 'async def' not in code:
         return False, "Код должен содержать async функцию"
     
     if 'await update.message.reply' not in code:
         return False, "Функция должна отправлять ответ пользователю"
     
-    # Проверяем на подозрительные конструкции
-    suspicious_patterns = [
-        'while True:', 'for i in range(999',
-        'time.sleep(', 'infinite', 'forever'
-    ]
-    
-    for pattern in suspicious_patterns:
-        if pattern in code_lower:
-            return False, f"Подозрительный код: {pattern} может зависнуть"
-    
-    # Проверяем длину кода (не более 50 строк)
-    lines = code.strip().split('\n')
-    if len(lines) > 50:
-        return False, f"Код слишком длинный: {len(lines)} строк (максимум 50)"
-    
+    # Все остальное разрешаем - requests, API, файлы, что угодно!
     return True, "Код прошел проверку"
 
 async def add_feature(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -655,13 +630,16 @@ async def add_feature(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not context.args:
         await update.message.reply_text(
             "🤖 <b>AI Генератор функций</b>\n\n"
-            "Опиши функцию, которую хочешь добавить:\n\n"
+            "Опиши функцию в формате:\n"
+            "<code>/add_feature [название] - [подробное описание]</code>\n\n"
             "<b>Примеры:</b>\n"
-            "• /add_feature погода - узнать погоду в городе\n"
-            "• /add_feature шутки - рассказывать анекдоты\n"
-            "• /add_feature время - показать текущее время\n"
-            "• /add_feature переводчик - переводить текст\n\n"
-            "💡 Я сгенерирую код через ChatGPT и добавлю в бот!",
+            "• /add_feature погода - получить прогноз погоды для любого города\n"
+            "• /add_feature курс - узнать курс валют доллар/евро к рублю\n"
+            "• /add_feature новости - последние новости из России\n"
+            "• /add_feature переводчик - переводить текст на русский язык\n"
+            "• /add_feature qr - генерировать QR код из текста\n"
+            "• /add_feature пароль - создать безопасный пароль\n\n"
+            "💡 Я сгенерирую полноценный код с API запросами через ChatGPT!",
             parse_mode='HTML'
         )
         return
@@ -696,12 +674,12 @@ async def add_feature(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # Генерируем код
     generated_code = await generate_function_code(description, command_name)
     
-    # Проверяем код на безопасность
-    is_safe, validation_message = validate_generated_code(generated_code)
+    # Проверяем базовую структуру кода
+    is_valid, validation_message = validate_generated_code(generated_code)
     
-    if not is_safe:
+    if not is_valid:
         await update.message.reply_text(
-            f"❌ <b>Код не прошел проверку безопасности!</b>\n\n"
+            f"❌ <b>Код некорректный!</b>\n\n"
             f"🚫 <b>Причина:</b> {validation_message}\n\n"
             f"🔄 Попробуй другое описание или измени запрос.",
             parse_mode='HTML'
@@ -722,26 +700,11 @@ async def add_feature(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         else:
             clean_code = generated_code.strip()
         
-        # Выполняем код в ограниченной безопасной среде
-        safe_builtins = {
-            'len': len, 'str': str, 'int': int, 'float': float,
-            'bool': bool, 'list': list, 'dict': dict, 'tuple': tuple,
-            'set': set, 'range': range, 'enumerate': enumerate,
-            'zip': zip, 'min': min, 'max': max, 'sum': sum,
-            'abs': abs, 'round': round, 'sorted': sorted,
-            'reversed': reversed, 'any': any, 'all': all
-        }
-        
+        # Выполняем код с полным доступом ко всем возможностям Python
         local_vars = {
             'Update': Update,
             'ContextTypes': ContextTypes,
-            'logger': logger,
-            'random': __import__('random'),
-            'datetime': __import__('datetime'),
-            'json': __import__('json'),
-            're': __import__('re'),
-            'math': __import__('math'),
-            '__builtins__': safe_builtins
+            'logger': logger
         }
         
         exec(clean_code, globals(), local_vars)
