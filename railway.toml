@@ -1,5 +1,0 @@
-[build]
-builder = "NIXPACKS"
-
-[deploy]
-serviceName = "telegram-bot-worker" 
