@@ -531,19 +531,305 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 /chatgpt_settings - Настройки ChatGPT
 /reset_limits - Сбросить лимиты пользователей
 
-<b>🛠️ Разработка:</b>
-/add_feature [код] - Добавить функцию
-/update_code [файл] - Обновить код
+<b>🛠️ AI Разработка:</b>
+/add_feature [описание] - Создать функцию через AI
+/list_features - Список созданных функций
+/remove_feature [команда] - Удалить функцию
+/generation_stats - Статистика AI генерации
 
 💡 <b>Примеры:</b>
 /ai Объясни алгоритм сортировки
+/add_feature погода - узнать погоду в городе
 /broadcast Обновление бота завершено!
-/reset_limits - если нужно сбросить счетчики
     """
     await update.message.reply_html(admin_commands)
 
+async def generate_function_code(description: str, command_name: str) -> str:
+    """Генерирует код функции через ChatGPT"""
+    system_prompt = """
+Ты опытный Python разработчик Telegram ботов. Создай функцию для Telegram бота.
+
+СТРОГО СЛЕДУЙ ЭТОМУ ФОРМАТУ:
+
+```python
+async def {command_name}_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    \"\"\"Описание функции\"\"\"
+    # твой код здесь
+    await update.message.reply_text("твой ответ")
+```
+
+ТРЕБОВАНИЯ:
+1. Используй только стандартные библиотеки Python и библиотеки telegram
+2. Функция должна быть async
+3. Обязательно используй await для Telegram операций
+4. Добавь обработку ошибок try/except если нужно
+5. Используй reply_text или reply_html для ответов
+6. НЕ используй внешние API без явного указания
+7. Код должен быть безопасным и не содержать exec/eval
+8. Отвечай только кодом без дополнительных объяснений
+
+Пример простой функции:
+```python
+async def joke_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    \"\"\"Отправляет случайную шутку\"\"\"
+    import random
+    jokes = ["Шутка 1", "Шутка 2", "Шутка 3"]
+    joke = random.choice(jokes)
+    await update.message.reply_text(f"😂 {joke}")
+```
+"""
+
+    user_prompt = f"""
+Создай команду /{command_name} для Telegram бота.
+
+Описание: {description}
+
+Функция должна называться {command_name}_command
+"""
+
+    try:
+        response = await ask_chatgpt(f"{system_prompt}\n\n{user_prompt}")
+        return response
+    except Exception as e:
+        logger.error(f"Ошибка генерации кода: {e}")
+        return f"❌ Ошибка генерации кода: {str(e)}"
+
+def validate_generated_code(code: str) -> tuple[bool, str]:
+    """Проверяет безопасность сгенерированного кода"""
+    dangerous_patterns = [
+        'exec(', 'eval(', '__import__',
+        'open(', 'file(', 'input(',
+        'os.system', 'subprocess',
+        'import os', 'from os', 'import sys',
+        'requests.', 'urllib.', 'http.',
+        'socket.', 'ftplib.', 'smtplib.',
+        'telnetlib.', 'xmlrpc.', 'pickle.',
+        'threading.', 'multiprocessing.',
+        'shutil.', 'glob.', 'tempfile.',
+        'getpass.', 'pty.', 'tty.',
+        '__builtins__', 'globals()', 'locals()',
+        'compile(', 'memoryview(', 'bytearray('
+    ]
+    
+    code_lower = code.lower()
+    for pattern in dangerous_patterns:
+        if pattern in code_lower:
+            return False, f"Небезопасный код: содержит {pattern}"
+    
+    # Проверяем структуру функции
+    if 'async def' not in code:
+        return False, "Код должен содержать async функцию"
+    
+    if 'await update.message.reply' not in code:
+        return False, "Функция должна отправлять ответ пользователю"
+    
+    # Проверяем на подозрительные конструкции
+    suspicious_patterns = [
+        'while True:', 'for i in range(999',
+        'time.sleep(', 'infinite', 'forever'
+    ]
+    
+    for pattern in suspicious_patterns:
+        if pattern in code_lower:
+            return False, f"Подозрительный код: {pattern} может зависнуть"
+    
+    # Проверяем длину кода (не более 50 строк)
+    lines = code.strip().split('\n')
+    if len(lines) > 50:
+        return False, f"Код слишком длинный: {len(lines)} строк (максимум 50)"
+    
+    return True, "Код прошел проверку"
+
 async def add_feature(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Добавить новую функцию (только админ)"""
+    """AI-генератор новых функций для бота (только админ)"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен!")
+        return
+    
+    if not CHATGPT_ENABLED:
+        await update.message.reply_text("❌ ChatGPT отключен. Генерация функций недоступна.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "🤖 <b>AI Генератор функций</b>\n\n"
+            "Опиши функцию, которую хочешь добавить:\n\n"
+            "<b>Примеры:</b>\n"
+            "• /add_feature погода - узнать погоду в городе\n"
+            "• /add_feature шутки - рассказывать анекдоты\n"
+            "• /add_feature время - показать текущее время\n"
+            "• /add_feature переводчик - переводить текст\n\n"
+            "💡 Я сгенерирую код через ChatGPT и добавлю в бот!",
+            parse_mode='HTML'
+        )
+        return
+    
+    # Парсим команду: первое слово - название команды, остальное - описание
+    args = " ".join(context.args)
+    parts = args.split(' - ', 1)
+    
+    if len(parts) == 2:
+        command_name, description = parts
+        command_name = command_name.strip().lower()
+        description = description.strip()
+    else:
+        # Если нет разделителя, используем первое слово как команду
+        words = args.split()
+        command_name = words[0].lower()
+        description = " ".join(words[1:]) if len(words) > 1 else f"Функция {command_name}"
+    
+    # Проверяем, что команда не существует
+    if command_name in dynamic_commands:
+        await update.message.reply_text(f"❌ Команда /{command_name} уже существует!")
+        return
+    
+    await update.message.reply_text(
+        f"🧠 <b>Генерирую функцию...</b>\n\n"
+        f"📝 <b>Команда:</b> /{command_name}\n"
+        f"💭 <b>Описание:</b> {description}\n\n"
+        f"⏳ Создаю код через ChatGPT...",
+        parse_mode='HTML'
+    )
+    
+    # Генерируем код
+    generated_code = await generate_function_code(description, command_name)
+    
+    # Проверяем код на безопасность
+    is_safe, validation_message = validate_generated_code(generated_code)
+    
+    if not is_safe:
+        await update.message.reply_text(
+            f"❌ <b>Код не прошел проверку безопасности!</b>\n\n"
+            f"🚫 <b>Причина:</b> {validation_message}\n\n"
+            f"🔄 Попробуй другое описание или измени запрос.",
+            parse_mode='HTML'
+        )
+        return
+    
+    # Извлекаем чистый код функции
+    try:
+        # Ищем код между ```python и ```
+        if '```python' in generated_code:
+            code_start = generated_code.find('```python') + 9
+            code_end = generated_code.find('```', code_start)
+            clean_code = generated_code[code_start:code_end].strip()
+        elif '```' in generated_code:
+            code_start = generated_code.find('```') + 3
+            code_end = generated_code.find('```', code_start)
+            clean_code = generated_code[code_start:code_end].strip()
+        else:
+            clean_code = generated_code.strip()
+        
+        # Выполняем код в ограниченной безопасной среде
+        safe_builtins = {
+            'len': len, 'str': str, 'int': int, 'float': float,
+            'bool': bool, 'list': list, 'dict': dict, 'tuple': tuple,
+            'set': set, 'range': range, 'enumerate': enumerate,
+            'zip': zip, 'min': min, 'max': max, 'sum': sum,
+            'abs': abs, 'round': round, 'sorted': sorted,
+            'reversed': reversed, 'any': any, 'all': all
+        }
+        
+        local_vars = {
+            'Update': Update,
+            'ContextTypes': ContextTypes,
+            'logger': logger,
+            'random': __import__('random'),
+            'datetime': __import__('datetime'),
+            'json': __import__('json'),
+            're': __import__('re'),
+            'math': __import__('math'),
+            '__builtins__': safe_builtins
+        }
+        
+        exec(clean_code, globals(), local_vars)
+        
+        # Находим созданную функцию
+        function_name = f"{command_name}_command"
+        if function_name in local_vars:
+            new_function = local_vars[function_name]
+            
+            # Сохраняем функцию
+            dynamic_functions[command_name] = new_function
+            dynamic_commands[command_name] = {
+                'function': new_function,
+                'description': description,
+                'code': clean_code,
+                'created_at': __import__('datetime').datetime.now().isoformat()
+            }
+            
+            # Добавляем в историю
+            generation_history.append({
+                'command': command_name,
+                'description': description,
+                'success': True,
+                'timestamp': __import__('datetime').datetime.now().isoformat()
+            })
+            
+            await update.message.reply_html(
+                f"✅ <b>Функция успешно создана!</b>\n\n"
+                f"🎉 <b>Новая команда:</b> /{command_name}\n"
+                f"📄 <b>Описание:</b> {description}\n\n"
+                f"🔧 <b>Сгенерированный код:</b>\n"
+                f"<code>{clean_code[:500]}{'...' if len(clean_code) > 500 else ''}</code>\n\n"
+                f"💡 <b>Попробуй прямо сейчас:</b> /{command_name}\n"
+                f"📋 <b>Управление:</b> /list_features"
+            )
+            
+        else:
+            raise ValueError("Функция не найдена в сгенерированном коде")
+    
+    except Exception as e:
+        error_msg = str(e)
+        await update.message.reply_html(
+            f"❌ <b>Ошибка выполнения кода:</b>\n\n"
+            f"🚫 {error_msg}\n\n"
+            f"🔧 <b>Сгенерированный код:</b>\n"
+            f"<code>{generated_code[:800]}{'...' if len(generated_code) > 800 else ''}</code>\n\n"
+            f"🔄 Попробуй изменить описание функции."
+        )
+        
+        # Добавляем в историю ошибку
+        generation_history.append({
+            'command': command_name,
+            'description': description, 
+            'success': False,
+            'error': error_msg,
+            'timestamp': __import__('datetime').datetime.now().isoformat()
+        })
+
+async def list_features(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показать список созданных AI функций (только админ)"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен!")
+        return
+    
+    if not dynamic_commands:
+        await update.message.reply_text(
+            "📝 <b>Созданные функции:</b>\n\n"
+            "Пока нет созданных функций.\n"
+            "Используй /add_feature для создания новых!",
+            parse_mode='HTML'
+        )
+        return
+    
+    features_info = "🤖 <b>AI-созданные функции:</b>\n\n"
+    
+    for cmd, info in dynamic_commands.items():
+        features_info += f"• <b>/{cmd}</b> - {info['description']}\n"
+        features_info += f"  📅 {info['created_at'][:16]}\n\n"
+    
+    features_info += f"📊 <b>Всего функций:</b> {len(dynamic_commands)}\n"
+    features_info += "🗑 <b>Управление:</b> /remove_feature [команда]"
+    
+    await update.message.reply_html(features_info)
+
+async def remove_feature(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Удалить AI функцию (только админ)"""
     user_id = update.effective_user.id
     
     if user_id != ADMIN_USER_ID:
@@ -551,16 +837,58 @@ async def add_feature(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     
     if not context.args:
-        await update.message.reply_text("❌ Укажи название функции!\nПример: /add_feature weather")
+        await update.message.reply_text("❌ Укажи команду для удаления!\nПример: /remove_feature weather")
         return
     
-    feature_name = " ".join(context.args)
+    command_name = context.args[0].lower()
     
-    # Здесь ты можешь добавить логику для динамического добавления функций
+    if command_name not in dynamic_commands:
+        await update.message.reply_text(f"❌ Функция /{command_name} не найдена!")
+        return
+    
+    # Удаляем функцию
+    del dynamic_commands[command_name]
+    if command_name in dynamic_functions:
+        del dynamic_functions[command_name]
+    
     await update.message.reply_text(
-        f"✅ Функция '{feature_name}' добавлена в очередь разработки!\n"
-        f"Скоро я её реализую."
+        f"✅ Функция /{command_name} удалена!\n"
+        f"⚠️ Перезапусти бота для полного удаления."
     )
+
+async def generation_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Статистика генерации функций (только админ)"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен!")
+        return
+    
+    if not generation_history:
+        await update.message.reply_text("📊 История генерации функций пуста.")
+        return
+    
+    successful = len([h for h in generation_history if h['success']])
+    failed = len([h for h in generation_history if not h['success']])
+    
+    stats = f"""
+📊 <b>Статистика AI генерации:</b>
+
+✅ <b>Успешно:</b> {successful}
+❌ <b>Ошибок:</b> {failed}
+📝 <b>Всего попыток:</b> {len(generation_history)}
+🎯 <b>Успешность:</b> {successful/(len(generation_history))*100:.1f}%
+
+🤖 <b>Активных функций:</b> {len(dynamic_commands)}
+
+📋 <b>Последние 5 попыток:</b>
+"""
+    
+    for entry in generation_history[-5:]:
+        status = "✅" if entry['success'] else "❌"
+        stats += f"{status} /{entry['command']} - {entry['timestamp'][:16]}\n"
+    
+    await update.message.reply_html(stats)
 
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Статистика бота (только админ)"""
@@ -634,6 +962,29 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 user_data = {}
 total_requests = 0
 
+# Динамически созданные функции
+dynamic_functions = {}
+dynamic_commands = {}
+
+# История генерации функций
+generation_history = []
+
+async def dynamic_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик динамических команд"""
+    command = update.message.text[1:].split()[0].lower()  # убираем / и берем первое слово
+    
+    if command in dynamic_functions:
+        try:
+            await dynamic_functions[command](update, context)
+        except Exception as e:
+            logger.error(f"Ошибка выполнения динамической команды {command}: {e}")
+            await update.message.reply_text(
+                f"❌ Ошибка выполнения команды /{command}:\n{str(e)}"
+            )
+    else:
+        # Fallback к обычному echo
+        await echo(update, context)
+
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка обычных сообщений с умным режимом"""
     global total_requests
@@ -642,18 +993,26 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     user_data[user_id] = user_data.get(user_id, 0) + 1
     
-    message_text = update.message.text.lower()
+    # Проверяем, не является ли это динамической командой
+    message_text = update.message.text
+    if message_text.startswith('/'):
+        command = message_text[1:].split()[0].lower()
+        if command in dynamic_functions:
+            await dynamic_command_handler(update, context)
+            return
+    
+    message_lower = message_text.lower()
     
     # Проверяем, выглядит ли сообщение как вопрос
     question_indicators = ['?', 'что', 'как', 'когда', 'где', 'почему', 'зачем', 'какой', 'объясни', 'расскажи']
-    is_question = any(indicator in message_text for indicator in question_indicators)
+    is_question = any(indicator in message_lower for indicator in question_indicators)
     
     # Если это вопрос и ChatGPT включен, отвечаем через AI
     if is_question and CHATGPT_ENABLED and await check_user_limit(user_id):
         await update.message.reply_text("🤔 Это похоже на вопрос, отвечаю через ChatGPT...")
         
         await increment_user_requests(user_id)
-        ai_answer = await ask_chatgpt(update.message.text)
+        ai_answer = await ask_chatgpt(message_text)
         
         response = f"🤖 <b>AI ответ:</b>\n{ai_answer}\n\n💡 <i>Для более точных ответов используй /ai или /gpt</i>"
         
@@ -662,14 +1021,32 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             
         await update.message.reply_html(response)
     else:
+        # Показываем подсказку о созданных функциях
+        dynamic_hint = ""
+        if dynamic_commands:
+            commands_list = ", ".join([f"/{cmd}" for cmd in list(dynamic_commands.keys())[:3]])
+            dynamic_hint = f"\n🤖 Созданные AI функции: {commands_list}"
+            if len(dynamic_commands) > 3:
+                dynamic_hint += f" и еще {len(dynamic_commands)-3}"
+        
         # Обычный эхо-ответ
         await update.message.reply_text(
-            f"Получил: {update.message.text}\n\n"
+            f"Получил: {message_text}\n\n"
             f"💡 Подсказка: Используй /ai [вопрос] для ChatGPT ответов!"
+            f"{dynamic_hint}"
         )
 
+def load_saved_features():
+    """Загружает сохраненные функции при запуске (заглушка)"""
+    # В будущем здесь можно загружать функции из файла или базы данных
+    logger.info("🔄 Загрузка сохраненных AI функций...")
+    # TODO: Реализовать сохранение/загрузку в файл или БД
+
 def main() -> None:
-    """Запуск бота с ChatGPT и админ-функциями"""
+    """Запуск бота с ChatGPT и AI-генерацией функций"""
+    # Загружаем сохраненные функции
+    load_saved_features()
+    
     application = Application.builder().token(BOT_TOKEN).build()
 
     # Обычные команды
@@ -683,7 +1060,13 @@ def main() -> None:
 
     # Админ команды
     application.add_handler(CommandHandler("admin_help", admin_help))
+    # AI Разработка команды
     application.add_handler(CommandHandler("add_feature", add_feature))
+    application.add_handler(CommandHandler("list_features", list_features))
+    application.add_handler(CommandHandler("remove_feature", remove_feature))
+    application.add_handler(CommandHandler("generation_stats", generation_stats))
+    
+    # Остальные админ команды
     application.add_handler(CommandHandler("stats", admin_stats))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("reset_limits", reset_limits_command))
@@ -692,11 +1075,17 @@ def main() -> None:
     application.add_handler(CommandHandler("quick_model", quick_model))
     application.add_handler(CommandHandler("model_recommend", model_recommend))
 
-    # Текстовые сообщения
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+    # ВАЖНО: MessageHandler должен быть последним для обработки динамических команд
+    application.add_handler(MessageHandler(filters.TEXT, echo))
 
+    features_count = len(dynamic_commands)
     chatgpt_info = "✅ ChatGPT активен" if CHATGPT_ENABLED else "❌ ChatGPT отключен"
-    print(f"🚀 Умный бот запущен! {chatgpt_info}")
+    
+    print(f"🚀 Умный AI-бот запущен!")
+    print(f"   {chatgpt_info}")
+    print(f"   🤖 AI функций: {features_count}")
+    print(f"   💡 Используй /add_feature для создания новых функций через ChatGPT!")
+    
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
