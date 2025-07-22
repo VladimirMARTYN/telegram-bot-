@@ -999,6 +999,12 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"{dynamic_hint}"
         )
 
+async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Простая тестовая команда"""
+    from datetime import datetime
+    current_time = datetime.now().strftime('%H:%M:%S')
+    await update.message.reply_text(f"🏓 Понг! Время: {current_time}")
+
 def load_saved_features():
     """Загружает сохраненные функции при запуске (заглушка)"""
     # В будущем здесь можно загружать функции из файла или базы данных
@@ -1016,6 +1022,7 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", start))
     application.add_handler(CommandHandler("my_id", my_id))
+    application.add_handler(CommandHandler("ping", ping_command))  # Тестовая команда
 
     # ChatGPT команды
     application.add_handler(CommandHandler("ai", ai_command))
