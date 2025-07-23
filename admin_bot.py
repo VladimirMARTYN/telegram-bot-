@@ -2222,6 +2222,132 @@ async def functions_status_command(update: Update, context: ContextTypes.DEFAULT
     
     await update.message.reply_html(status_text)
 
+async def fix_crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Принудительно исправляет функцию crypto_rates (только админ)"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен!")
+        return
+    
+    await update.message.reply_text("🔧 Исправляю функцию crypto_rates...")
+    
+    # Создаем правильную функцию напрямую
+    async def crypto_rates_command_fixed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Показать курсы валют ЦБ РФ и криптовалют"""
+        try:
+            await update.message.reply_text("📊 Получаю курсы валют и криптовалют...")
+            
+            import requests
+            from datetime import datetime
+            
+            # 1. Курсы валют ЦБ РФ
+            try:
+                cbr_response = requests.get("https://www.cbr-xml-daily.ru/daily_json.js", timeout=10)
+                cbr_response.raise_for_status()
+                cbr_data = cbr_response.json()
+                
+                usd_rate = cbr_data.get('Valute', {}).get('USD', {}).get('Value', 'Н/Д')
+                eur_rate = cbr_data.get('Valute', {}).get('EUR', {}).get('Value', 'Н/Д')
+                cny_rate = cbr_data.get('Valute', {}).get('CNY', {}).get('Value', 'Н/Д')
+                
+                # Форматируем валютные курсы
+                usd_str = f"{usd_rate:.2f} ₽" if isinstance(usd_rate, (int, float)) else str(usd_rate)
+                eur_str = f"{eur_rate:.2f} ₽" if isinstance(eur_rate, (int, float)) else str(eur_rate)
+                cny_str = f"{cny_rate:.2f} ₽" if isinstance(cny_rate, (int, float)) else str(cny_rate)
+                    
+            except Exception as e:
+                logger.error(f"Ошибка ЦБ РФ: {e}")
+                usd_str = eur_str = cny_str = "❌ Ошибка API"
+            
+            # 2. Курсы криптовалют CoinGecko
+            try:
+                crypto_response = requests.get(
+                    "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,dogecoin&vs_currencies=usd",
+                    timeout=10
+                )
+                crypto_response.raise_for_status()
+                crypto_data = crypto_response.json()
+                
+                bitcoin_price = crypto_data.get('bitcoin', {}).get('usd', 'Н/Д')
+                ethereum_price = crypto_data.get('ethereum', {}).get('usd', 'Н/Д')
+                dogecoin_price = crypto_data.get('dogecoin', {}).get('usd', 'Н/Д')
+                
+                # Форматируем криптоцены
+                btc_str = f"${bitcoin_price:,.0f}" if isinstance(bitcoin_price, (int, float)) else str(bitcoin_price)
+                eth_str = f"${ethereum_price:,.0f}" if isinstance(ethereum_price, (int, float)) else str(ethereum_price)
+                doge_str = f"${dogecoin_price:.4f}" if isinstance(dogecoin_price, (int, float)) else str(dogecoin_price)
+                    
+            except Exception as e:
+                logger.error(f"Ошибка CoinGecko: {e}")
+                btc_str = eth_str = doge_str = "❌ Ошибка API"
+            
+            # Формируем сообщение
+            current_time = datetime.now().strftime("%d.%m.%Y %H:%M")
+            
+            message = f"""📊 <b>КУРСЫ ВАЛЮТ И КРИПТОВАЛЮТ</b>
+
+💱 <b>Курсы ЦБ РФ:</b>
+🇺🇸 USD: {usd_str}
+🇪🇺 EUR: {eur_str}
+🇨🇳 CNY: {cny_str}
+
+₿ <b>Криптовалюты:</b>
+🟠 Bitcoin: {btc_str}
+🔷 Ethereum: {eth_str}  
+🐕 Dogecoin: {doge_str}
+
+⏰ <b>Время:</b> {current_time}
+📡 <b>Источники:</b> ЦБ РФ, CoinGecko"""
+
+            await update.message.reply_html(message)
+            
+        except Exception as e:
+            logger.error(f"Общая ошибка crypto_rates: {e}")
+            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+    
+    try:
+        # Обновляем функцию
+        dynamic_functions['crypto_rates'] = crypto_rates_command_fixed
+        
+        if 'crypto_rates' in dynamic_commands:
+            old_info = dynamic_commands['crypto_rates']
+            dynamic_commands['crypto_rates'] = {
+                'function': crypto_rates_command_fixed,
+                'description': old_info.get('description', 'Курсы валют и криптовалют'),
+                'code': 'Исправленная версия функции курсов валют и криптовалют',
+                'created_at': old_info.get('created_at', datetime.now().isoformat()),
+                'edited_at': datetime.now().isoformat(),
+                'fixed_at': datetime.now().isoformat(),
+                'fixed_error': 'Исправлен некорректный код API'
+            }
+        else:
+            dynamic_commands['crypto_rates'] = {
+                'function': crypto_rates_command_fixed,
+                'description': 'Курсы валют и криптовалют с исправленным API',
+                'code': 'Исправленная версия функции курсов валют и криптовалют',
+                'created_at': datetime.now().isoformat(),
+                'fixed_at': datetime.now().isoformat(),
+                'fixed_error': 'Исправлен некорректный код API'
+            }
+        
+        # Удаляем ошибку из истории
+        if 'crypto_rates' in function_errors:
+            del function_errors['crypto_rates']
+        
+        # Сохраняем
+        save_features()
+        
+        await update.message.reply_html(
+            f"✅ <b>Функция crypto_rates исправлена!</b>\n\n"
+            f"🔧 Исправлены проблемы с API\n"
+            f"💾 Функция сохранена\n\n"
+            f"💡 <b>Протестируй:</b> /crypto_rates"
+        )
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка исправления: {str(e)}")
+
 def main() -> None:
     """Запуск бота с ChatGPT и AI-генерацией функций"""
     # Загружаем сохраненные функции
@@ -2270,6 +2396,7 @@ def main() -> None:
     application.add_handler(CommandHandler("save_features", save_features_command)) # Добавляем новую команду
     application.add_handler(CommandHandler("load_features", load_features_command)) # Добавляем новую команду
     application.add_handler(CommandHandler("functions_status", functions_status_command)) # Добавляем новую команду
+    application.add_handler(CommandHandler("fix_crypto", fix_crypto_command)) # Добавляем новую команду
 
     # ВАЖНО: MessageHandler должен быть последним для обработки динамических команд
     application.add_handler(MessageHandler(filters.TEXT, echo))
