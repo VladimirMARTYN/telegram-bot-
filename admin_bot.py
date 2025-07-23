@@ -8,6 +8,7 @@ from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import json
+import aiohttp
 
 # Настройка логирования
 logging.basicConfig(
@@ -130,6 +131,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"/help - Справка\n"
         f"/ping - Проверка работы\n"
         f"/rates - Курсы валют и криптовалют\n"
+        f"/stocks - Топ российских акций\n"
         f"/my_id - Узнать свой ID\n"
     )
     
@@ -171,6 +173,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/help - Эта справка\n"
         "/ping - Проверка работы\n"
         "/rates - Курсы валют и криптовалют\n"
+        "/stocks - Топ российских акций\n"
         "/my_id - Узнать свой ID\n"
     )
     
@@ -192,6 +195,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "\n💱 <b>Функции:</b>\n"
         "• Курсы валют ЦБ РФ (USD, EUR, CNY)\n"
         "• Курсы криптовалют (Bitcoin, Ethereum, Dogecoin, TON)\n"
+        "• Топ российских акций (Московская биржа)\n"
     )
     
     if is_admin:
@@ -257,6 +261,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"/admin - Эта панель\n"
         f"/ping - Проверка работы\n"
         f"/rates - Курсы валют и криптовалют\n"
+        f"/stocks - Топ российских акций\n"
         f"/broadcast [текст] - Рассылка всем пользователям\n"
         f"/send_message [ID] [текст] - Личное сообщение пользователю\n"
         f"/fix_admin_id - Исправить права администратора\n"
@@ -269,6 +274,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"💱 <b>Доступные функции:</b>\n"
         f"• Курсы валют ЦБ РФ (USD, EUR, CNY)\n"
         f"• Курсы криптовалют (BTC, ETH, DOGE, TON)\n"
+        f"• Топ российских акций (Московская биржа)\n"
         f"• Массовая рассылка сообщений\n"
         f"• Личные сообщения пользователям\n"
         f"• Управление базой пользователей\n"
@@ -1140,6 +1146,161 @@ async def get_template_command(update: Update, context: ContextTypes.DEFAULT_TYP
     
     await update.message.reply_html(info_text)
 
+async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда /stocks - топ 10 российских акций"""
+    user_id = update.effective_user.id
+    user = update.effective_user
+    
+    # Регистрируем/обновляем пользователя
+    if user_id not in user_data:
+        user_data[user_id] = {
+            'name': user.first_name,
+            'username': user.username,
+            'first_seen': datetime.now().isoformat(),
+            'last_activity': datetime.now().isoformat()
+        }
+        save_user_data()
+    else:
+        user_data[user_id]['last_activity'] = datetime.now().isoformat()
+        save_user_data()
+    
+    loading_msg = await update.message.reply_html("📈 <b>Загружаю данные российских акций...</b>")
+    
+    try:
+        # API Московской биржи для получения акций
+        moex_url = "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json"
+        
+        # Получаем данные с Московской биржи
+        async with aiohttp.ClientSession() as session:
+            async with session.get(moex_url) as response:
+                if response.status != 200:
+                    raise Exception(f"Ошибка API MOEX: {response.status}")
+                
+                data = await response.json()
+                
+                # Извлекаем данные об акциях
+                securities = data['securities']['data']
+                marketdata = data['marketdata']['data']
+                
+                # Создаем словарь для объединения данных
+                stocks_info = {}
+                
+                # Обрабатываем основную информацию об акциях
+                security_columns = data['securities']['columns']
+                for stock in securities:
+                    stock_dict = dict(zip(security_columns, stock))
+                    secid = stock_dict.get('SECID')
+                    if secid:
+                        stocks_info[secid] = {
+                            'secid': secid,
+                            'shortname': stock_dict.get('SHORTNAME', 'Не указано'),
+                            'regnumber': stock_dict.get('REGNUMBER', ''),
+                            'lotsize': stock_dict.get('LOTSIZE', 1),
+                            'facevalue': stock_dict.get('FACEVALUE', 0)
+                        }
+                
+                # Обрабатываем рыночные данные
+                marketdata_columns = data['marketdata']['columns']
+                for market in marketdata:
+                    market_dict = dict(zip(marketdata_columns, market))
+                    secid = market_dict.get('SECID')
+                    if secid and secid in stocks_info:
+                        stocks_info[secid].update({
+                            'last': market_dict.get('LAST', 0),
+                            'change': market_dict.get('CHANGE', 0),
+                            'changeprcnt': market_dict.get('CHANGEPRCNT', 0),
+                            'voltoday': market_dict.get('VOLTODAY', 0),
+                            'valtoday': market_dict.get('VALTODAY', 0),
+                            'marketcap': market_dict.get('MARKETCAP', 0),
+                            'time': market_dict.get('TIME', ''),
+                            'updatetime': market_dict.get('UPDATETIME', '')
+                        })
+                
+                # Фильтруем акции с рыночными данными и сортируем по капитализации
+                active_stocks = []
+                for secid, info in stocks_info.items():
+                    if (info.get('last', 0) and info.get('last') > 0 and 
+                        info.get('marketcap', 0) and info.get('marketcap') > 0):
+                        active_stocks.append(info)
+                
+                # Сортируем по рыночной капитализации (по убыванию)
+                active_stocks.sort(key=lambda x: x.get('marketcap', 0), reverse=True)
+                
+                # Берем топ 10
+                top_stocks = active_stocks[:10]
+                
+                if not top_stocks:
+                    raise Exception("Не удалось получить данные об акциях")
+                
+                # Формируем результат
+                result_text = "📈 <b>ТОП-10 РОССИЙСКИХ АКЦИЙ</b>\n"
+                result_text += f"🏛️ <b>Московская биржа (MOEX)</b>\n\n"
+                
+                for i, stock in enumerate(top_stocks, 1):
+                    name = stock.get('shortname', 'Не указано')
+                    price = stock.get('last', 0)
+                    change = stock.get('change', 0)
+                    change_pct = stock.get('changeprcnt', 0)
+                    marketcap = stock.get('marketcap', 0)
+                    
+                    # Форматируем название (обрезаем если слишком длинное)
+                    if len(name) > 25:
+                        name = name[:22] + "..."
+                    
+                    # Определяем эмодзи для изменения
+                    if change > 0:
+                        change_emoji = "📈"
+                        change_color = "🟢"
+                    elif change < 0:
+                        change_emoji = "📉"
+                        change_color = "🔴"
+                    else:
+                        change_emoji = "➡️"
+                        change_color = "⚪"
+                    
+                    # Форматируем капитализацию
+                    if marketcap >= 1_000_000_000_000:  # триллионы
+                        cap_formatted = f"{marketcap/1_000_000_000_000:.1f} трлн ₽"
+                    elif marketcap >= 1_000_000_000:  # миллиарды
+                        cap_formatted = f"{marketcap/1_000_000_000:.1f} млрд ₽"
+                    elif marketcap >= 1_000_000:  # миллионы
+                        cap_formatted = f"{marketcap/1_000_000:.1f} млн ₽"
+                    else:
+                        cap_formatted = f"{marketcap:.0f} ₽"
+                    
+                    result_text += f"{i}. <b>{name}</b> ({stock.get('secid', '')})\n"
+                    result_text += f"   💰 <b>{price:.2f} ₽</b>\n"
+                    result_text += f"   {change_color} {change:+.2f} ₽ ({change_pct:+.2f}%) {change_emoji}\n"
+                    result_text += f"   🏢 Капитализация: {cap_formatted}\n\n"
+                
+                # Добавляем время обновления
+                current_time = datetime.now().strftime('%d.%m.%Y %H:%M')
+                result_text += f"📊 <b>Сортировка:</b> По рыночной капитализации\n"
+                result_text += f"⏰ <b>Обновлено:</b> {current_time} (МСК)\n"
+                result_text += f"📡 <b>Источник:</b> Московская биржа (MOEX)\n\n"
+                result_text += f"💡 <b>Примечание:</b>\n"
+                result_text += f"• Цены в российских рублях\n"
+                result_text += f"• Данные обновляются в режиме реального времени\n"
+                result_text += f"• 🟢 рост, 🔴 падение цены за день"
+                
+                await loading_msg.edit_text(result_text, parse_mode='HTML')
+                
+    except Exception as e:
+        error_text = (
+            f"❌ <b>Ошибка получения данных об акциях</b>\n\n"
+            f"🚫 <b>Причина:</b> {str(e)}\n\n"
+            f"💡 <b>Возможные причины:</b>\n"
+            f"• Проблемы с API Московской биржи\n"
+            f"• Временные неполадки сети\n"
+            f"• Технические работы на бирже\n\n"
+            f"🔄 <b>Попробуйте позже или используйте:</b>\n"
+            f"/rates - курсы валют и криптовалют\n"
+            f"/stocks - российские акции"
+        )
+        
+        await loading_msg.edit_text(error_text, parse_mode='HTML')
+        logger.error(f"Ошибка получения акций: {e}")
+
 def main() -> None:
     """Запуск бота - минимальная версия"""
     logger.info("🚀 Запуск бота...")
@@ -1168,6 +1329,7 @@ def main() -> None:
     application.add_handler(CommandHandler("send_message", send_message_command))
     application.add_handler(CommandHandler("set_template", set_template_command))
     application.add_handler(CommandHandler("get_template", get_template_command))
+    application.add_handler(CommandHandler("stocks", stocks_command))
 
     # Обработчик всех текстовых сообщений (эхо)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
