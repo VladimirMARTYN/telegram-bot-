@@ -94,6 +94,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"/help - Справка\n"
         f"/ping - Проверка работы\n"
         f"/rates - Курсы валют и криптовалют\n"
+        f"/convert - Конвертер валют\n"
         f"/stocks - Топ российских акций\n"
         f"/my_id - Узнать свой ID\n"
     )
@@ -129,6 +130,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/help - Эта справка\n"
         "/ping - Проверка работы\n"
         "/rates - Курсы валют и криптовалют\n"
+        "/convert - Конвертер валют\n"
         "/stocks - Топ российских акций\n"
         "/my_id - Узнать свой ID\n"
     )
@@ -143,6 +145,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     help_text += (
         "\n💱 <b>Функции:</b>\n"
         "• Курсы валют ЦБ РФ (USD, EUR, CNY)\n"
+        "• Конвертер валют с актуальными курсами\n"
         "• Курсы криптовалют (Bitcoin, Ethereum, Dogecoin, TON)\n"
         "• Топ российских акций (Московская биржа)\n"
     )
@@ -205,6 +208,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"/admin - Эта панель\n"
         f"/ping - Проверка работы\n"
         f"/rates - Курсы валют и криптовалют\n"
+        f"/convert - Конвертер валют\n"
         f"/stocks - Топ российских акций\n"
         f"/fix_admin_id - Исправить права администратора\n\n"
         
@@ -774,6 +778,7 @@ def main() -> None:
     application.add_handler(CommandHandler("my_id", my_id_command))
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("rates", rates_command))
+    application.add_handler(CommandHandler("convert", convert_command))
     application.add_handler(CommandHandler("fix_admin_id", fix_admin_id_command))
     application.add_handler(CommandHandler("stocks", stocks_command))
 
