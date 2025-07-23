@@ -1052,6 +1052,50 @@ async def currency_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка получения курса: {str(e)}")
 
+async def debug_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Простая диагностика состояния бота (только админ)"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен!")
+        return
+    
+    from datetime import datetime
+    
+    # Собираем основную информацию
+    debug_report = f"""🔧 <b>ДИАГНОСТИКА БОТА</b>
+📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+🤖 <b>ChatGPT:</b>
+• Статус: {'✅ Активен' if CHATGPT_ENABLED else '❌ Отключен'}
+• Модель: {CHATGPT_MODEL}
+• API ключ: {'✅ Установлен' if OPENAI_API_KEY else '❌ Отсутствует'}
+
+🛠️ <b>AI Функции:</b>
+• Создано функций: {len(dynamic_functions)}
+• Активных команд: {len(dynamic_commands)}
+• История: {len(generation_history)} попыток
+
+📊 <b>Статистика:</b>
+• Всего запросов: {total_requests}
+• Пользователей: {len(user_data)}
+• ChatGPT запросов: {sum(user_requests.values())}
+
+🧪 <b>Тест команд:</b>
+• /ping - Простая команда
+• /currency - API ЦБ РФ
+• /ai привет - Тест ChatGPT
+"""
+    
+    if dynamic_commands:
+        debug_report += f"\n🧩 <b>AI Команды:</b>\n"
+        for cmd in list(dynamic_commands.keys())[:3]:
+            debug_report += f"• /{cmd}\n"
+        if len(dynamic_commands) > 3:
+            debug_report += f"• ... и еще {len(dynamic_commands)-3}"
+    
+    await update.message.reply_html(debug_report)
+
 async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Простая тестовая команда"""
     from datetime import datetime
@@ -1098,6 +1142,7 @@ def main() -> None:
     application.add_handler(CommandHandler("list_models", list_models))
     application.add_handler(CommandHandler("quick_model", quick_model))
     application.add_handler(CommandHandler("model_recommend", model_recommend))
+    application.add_handler(CommandHandler("debug_status", debug_status)) # Добавляем новую команду
 
     # ВАЖНО: MessageHandler должен быть последним для обработки динамических команд
     application.add_handler(MessageHandler(filters.TEXT, echo))
