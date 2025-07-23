@@ -33,8 +33,16 @@ bot_start_time = datetime.now()
 # Файл для сохранения данных пользователей
 USER_DATA_FILE = "user_data.json"
 
+# Файл для сохранения настроек бота
+BOT_SETTINGS_FILE = "bot_settings.json"
+
 # Словарь пользователей (будет загружен из файла)
 user_data = {}
+
+# Настройки бота (шаблоны сообщений и т.д.)
+bot_settings = {
+    'message_template': '📢 <b>Сообщение от администратора:</b>\n\n{message}'
+}
 
 def save_user_data():
     """Сохранение данных пользователей в файл"""
@@ -61,6 +69,35 @@ def load_user_data():
     except Exception as e:
         logger.error(f"❌ Ошибка загрузки пользователей: {e}")
         user_data = {}
+
+def save_bot_settings():
+    """Сохранение настроек бота в файл"""
+    try:
+        with open(BOT_SETTINGS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(bot_settings, f, ensure_ascii=False, indent=2)
+        logger.info(f"⚙️ Настройки бота сохранены в {BOT_SETTINGS_FILE}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения настроек: {e}")
+
+def load_bot_settings():
+    """Загрузка настроек бота из файла"""
+    global bot_settings
+    try:
+        if os.path.exists(BOT_SETTINGS_FILE):
+            with open(BOT_SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                loaded_settings = json.load(f)
+                bot_settings.update(loaded_settings)
+                logger.info(f"⚙️ Настройки бота загружены из {BOT_SETTINGS_FILE}")
+        else:
+            logger.info(f"⚙️ Файл {BOT_SETTINGS_FILE} не найден, используем настройки по умолчанию")
+            # Сохраняем настройки по умолчанию
+            save_bot_settings()
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки настроек: {e}")
+        # Используем настройки по умолчанию
+        bot_settings = {
+            'message_template': '📢 <b>Сообщение от администратора:</b>\n\n{message}'
+        }
 
 # Функции команд
 
@@ -99,10 +136,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Показываем админские команды только администратору
     if user_id == ADMIN_USER_ID:
         welcome_text += f"/broadcast [текст] - Рассылка всем пользователям\n"
+        welcome_text += f"/send_message [ID] [текст] - Личное сообщение\n"
         welcome_text += f"/fix_admin_id - Исправить права администратора\n"
         welcome_text += f"/users_info - Информация о пользователях\n"
         welcome_text += f"/add_user [ID] [имя] - Добавить пользователя\n"
         welcome_text += f"/remove_user [ID] - Удалить пользователя\n"
+        welcome_text += f"/set_template [шаблон] - Настроить шаблон\n"
+        welcome_text += f"/get_template - Просмотр шаблона\n"
     elif ADMIN_USER_ID == 0:
         # Если ADMIN_USER_ID не настроен, показываем команду исправления
         welcome_text += f"/fix_admin_id - Стать администратором (не настроен)\n"
@@ -137,10 +177,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Показываем админские команды только администратору
     if is_admin:
         help_text += "/broadcast [текст] - Рассылка всем пользователям\n"
+        help_text += "/send_message [ID] [текст] - Личное сообщение\n"
         help_text += "/fix_admin_id - Исправить права администратора\n"
         help_text += "/users_info - Информация о пользователях\n"
         help_text += "/add_user [ID] [имя] - Добавить пользователя\n"
         help_text += "/remove_user [ID] - Удалить пользователя\n"
+        help_text += "/set_template [шаблон] - Настроить шаблон\n"
+        help_text += "/get_template - Просмотр шаблона\n"
     elif ADMIN_USER_ID == 0:
         # Если ADMIN_USER_ID не настроен, показываем команду исправления всем
         help_text += "/fix_admin_id - Стать администратором (не настроен)\n"
@@ -152,7 +195,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     
     if is_admin:
-        help_text += "• Массовая рассылка сообщений (только админ)\n"
+        help_text += "• Массовая рассылка с настраиваемыми шаблонами (только админ)\n"
+        help_text += "• Личные сообщения пользователям (только админ)\n"
+        help_text += "• Управление базой пользователей (только админ)\n"
     
     help_text += (
         "\nℹ️ <b>Информация:</b>\n"
@@ -213,25 +258,31 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"/ping - Проверка работы\n"
         f"/rates - Курсы валют и криптовалют\n"
         f"/broadcast [текст] - Рассылка всем пользователям\n"
+        f"/send_message [ID] [текст] - Личное сообщение пользователю\n"
         f"/fix_admin_id - Исправить права администратора\n"
         f"/users_info - Информация о пользователях бота\n"
         f"/add_user [ID] [имя] - Добавить пользователя вручную\n"
-        f"/remove_user [ID] - Удалить пользователя из базы\n\n"
+        f"/remove_user [ID] - Удалить пользователя из базы\n"
+        f"/set_template [шаблон] - Настроить шаблон сообщений\n"
+        f"/get_template - Просмотр текущего шаблона\n\n"
         
         f"💱 <b>Доступные функции:</b>\n"
         f"• Курсы валют ЦБ РФ (USD, EUR, CNY)\n"
         f"• Курсы криптовалют (BTC, ETH, DOGE, TON)\n"
         f"• Массовая рассылка сообщений\n"
-        f"• Управление базой пользователей\n\n"
+        f"• Личные сообщения пользователям\n"
+        f"• Управление базой пользователей\n"
+        f"• Настраиваемые шаблоны сообщений\n\n"
         
         f"👥 <b>База пользователей:</b>\n"
         f"• Всего пользователей: {len(user_data)}\n"
         f"• Добавлено через /start: {sum(1 for u in user_data.values() if not u.get('added_by_admin'))}\n"
         f"• Добавлено админом: {sum(1 for u in user_data.values() if u.get('added_by_admin'))}\n\n"
         
-        f"📢 <b>Рассылка:</b>\n"
-        f"👥 Пользователей для рассылки: {len(user_data)}\n"
-        f"💡 Используй: <code>/broadcast Текст сообщения</code>\n\n"
+        f"📢 <b>Система сообщений:</b>\n"
+        f"👥 Получателей для рассылки: {len(user_data)}\n"
+        f"📋 Текущий шаблон: <code>{bot_settings.get('message_template', 'не установлен')[:50]}{'...' if len(bot_settings.get('message_template', '')) > 50 else ''}</code>\n"
+        f"💡 Используй: <code>/broadcast Текст</code> или <code>/send_message ID Текст</code>\n\n"
         
         f"🔧 <b>ADMIN_USER_ID:</b> {ADMIN_USER_ID}\n"
         f"🆔 <b>Ваш ID:</b> {user_id}\n"
@@ -410,8 +461,9 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # Отправляем сообщение каждому пользователю
     for target_user_id, user_info in user_data.items():
         try:
-            # Формируем сообщение с подписью админа
-            admin_message = f"📢 <b>Сообщение от администратора:</b>\n\n{broadcast_text}"
+            # Формируем сообщение с использованием шаблона
+            template = bot_settings.get('message_template', '{message}')
+            admin_message = template.format(message=broadcast_text)
             
             await context.bot.send_message(
                 chat_id=target_user_id,
@@ -833,12 +885,270 @@ async def remove_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Логируем действие
     logger.info(f"👨‍💻 Админ {user_id} удалил пользователя {target_user_id}: {removed_user.get('name', 'Неизвестно')}")
 
+async def send_message_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отправка сообщения конкретному пользователю (только админ)"""
+    user_id = update.effective_user.id
+    
+    # Проверяем права администратора
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен! Только администратор может использовать эту команду.")
+        return
+    
+    # Проверяем аргументы
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_html(
+            "📨 <b>ОТПРАВКА ЛИЧНОГО СООБЩЕНИЯ</b>\n\n"
+            "🔍 <b>Использование:</b>\n"
+            "<code>/send_message [ID] [текст сообщения]</code>\n\n"
+            "💡 <b>Примеры:</b>\n"
+            "• <code>/send_message 123456789 Привет!</code>\n"
+            "• <code>/send_message 987654321 Как дела? Напиши мне</code>\n"
+            "• <code>/send_message 555666777 🎉 Поздравляю с днем рождения!</code>\n\n"
+            f"📊 <b>Доступно пользователей:</b> {len(user_data)}\n\n"
+            f"📋 <b>Текущий шаблон:</b>\n"
+            f"<code>{bot_settings.get('message_template', 'не установлен')}</code>\n\n"
+            "⚙️ <b>Настройки:</b>\n"
+            "/set_template [шаблон] - изменить шаблон\n"
+            "/users_info - список пользователей"
+        )
+        return
+    
+    # Получаем ID получателя
+    try:
+        target_user_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_html(
+            "❌ <b>ОШИБКА ФОРМАТА!</b>\n\n"
+            f"'{context.args[0]}' не является числом.\n\n"
+            "💡 <b>Правильный формат:</b>\n"
+            "<code>/send_message 123456789 Текст сообщения</code>"
+        )
+        return
+    
+    # Получаем текст сообщения
+    message_text = " ".join(context.args[1:])
+    
+    # Проверяем, существует ли получатель в базе
+    if target_user_id not in user_data:
+        await update.message.reply_html(
+            f"❌ <b>ПОЛУЧАТЕЛЬ НЕ НАЙДЕН!</b>\n\n"
+            f"Пользователь с ID <code>{target_user_id}</code> не найден в базе.\n\n"
+            f"📊 <b>База содержит:</b> {len(user_data)} пользователей\n\n"
+            f"💡 <b>Варианты решения:</b>\n"
+            f"1. Добавить пользователя: <code>/add_user {target_user_id} Имя</code>\n"
+            f"2. Посмотреть список: /users_info\n"
+            f"3. Попробовать отправить напрямую (может не сработать)"
+        )
+        return
+    
+    # Получаем информацию о получателе
+    recipient_info = user_data[target_user_id]
+    recipient_name = recipient_info.get('name', 'Неизвестно')
+    
+    # Формируем сообщение с использованием шаблона
+    template = bot_settings.get('message_template', '{message}')
+    formatted_message = template.format(message=message_text)
+    
+    # Подтверждение отправки
+    confirm_text = (
+        f"📨 <b>ОТПРАВКА ЛИЧНОГО СООБЩЕНИЯ</b>\n\n"
+        f"📤 <b>Получатель:</b>\n"
+        f"• Имя: <b>{recipient_name}</b>\n"
+        f"• ID: <code>{target_user_id}</code>\n"
+    )
+    
+    if recipient_info.get('username'):
+        confirm_text += f"• Username: @{recipient_info['username']}\n"
+    
+    confirm_text += f"\n📝 <b>Сообщение:</b>\n{formatted_message}\n\n🚀 Отправляю..."
+    
+    confirm_msg = await update.message.reply_html(confirm_text)
+    
+    # Отправляем сообщение
+    try:
+        await context.bot.send_message(
+            chat_id=target_user_id,
+            text=formatted_message,
+            parse_mode='HTML'
+        )
+        
+        # Успешная отправка
+        success_text = (
+            f"✅ <b>СООБЩЕНИЕ ОТПРАВЛЕНО!</b>\n\n"
+            f"📤 <b>Получатель:</b> {recipient_name} (ID: {target_user_id})\n"
+            f"📝 <b>Содержание:</b>\n{formatted_message}\n\n"
+            f"⏰ <b>Время отправки:</b> {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n\n"
+            f"💡 <b>Что дальше:</b>\n"
+            f"• Пользователь получил ваше сообщение\n"
+            f"• Может ответить в боте\n"
+            f"• Вы увидите ответ в чате бота"
+        )
+        
+        await confirm_msg.edit_text(success_text, parse_mode='HTML')
+        
+        # Логируем успешную отправку
+        logger.info(f"📨 Личное сообщение от админа {user_id} отправлено пользователю {target_user_id}")
+        
+    except Exception as e:
+        # Ошибка отправки
+        error_text = (
+            f"❌ <b>ОШИБКА ОТПРАВКИ!</b>\n\n"
+            f"📤 <b>Получатель:</b> {recipient_name} (ID: {target_user_id})\n"
+            f"📝 <b>Сообщение:</b> {message_text}\n\n"
+            f"🚫 <b>Причина ошибки:</b>\n{str(e)}\n\n"
+            f"💡 <b>Возможные причины:</b>\n"
+            f"• Пользователь заблокировал бота\n"
+            f"• Пользователь удалил аккаунт\n"
+            f"• Проблемы с сетью\n"
+            f"• Неверный ID пользователя\n\n"
+            f"🔧 <b>Что можно сделать:</b>\n"
+            f"• Проверить ID через /users_info\n"
+            f"• Попробовать позже\n"
+            f"• Связаться другим способом"
+        )
+        
+        await confirm_msg.edit_text(error_text, parse_mode='HTML')
+        
+        # Логируем ошибку
+        logger.warning(f"❌ Ошибка отправки личного сообщения {target_user_id}: {e}")
+
+async def set_template_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Настройка шаблона сообщений (только админ)"""
+    user_id = update.effective_user.id
+    
+    # Проверяем права администратора
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен! Только администратор может использовать эту команду.")
+        return
+    
+    # Проверяем аргументы
+    if not context.args:
+        current_template = bot_settings.get('message_template', 'не установлен')
+        await update.message.reply_html(
+            "⚙️ <b>НАСТРОЙКА ШАБЛОНА СООБЩЕНИЙ</b>\n\n"
+            "🔍 <b>Использование:</b>\n"
+            "<code>/set_template [новый шаблон]</code>\n\n"
+            f"📋 <b>Текущий шаблон:</b>\n"
+            f"<code>{current_template}</code>\n\n"
+            "💡 <b>Примеры шаблонов:</b>\n"
+            "• <code>/set_template 📢 От администратора: {message}</code>\n"
+            "• <code>/set_template 🎯 Важное сообщение:\\n\\n{message}</code>\n"
+            "• <code>/set_template {message}</code> (без оформления)\n"
+            "• <code>/set_template 💌 <b>Личное сообщение:</b>\\n{message}</code>\n\n"
+            "🔑 <b>Важно:</b>\n"
+            "• Обязательно используйте <code>{message}</code> - сюда подставится текст\n"
+            "• Поддерживается HTML разметка (<b>, <i>, <code>)\n"
+            "• Используйте \\n для переноса строки\n\n"
+            "👀 <b>Просмотр:</b> /get_template"
+        )
+        return
+    
+    # Получаем новый шаблон
+    new_template = " ".join(context.args)
+    
+    # Проверяем наличие плейсхолдера {message}
+    if '{message}' not in new_template:
+        await update.message.reply_html(
+            "❌ <b>ОШИБКА ШАБЛОНА!</b>\n\n"
+            f"Шаблон должен содержать <code>{{message}}</code> - место для вставки текста.\n\n"
+            f"🚫 <b>Ваш шаблон:</b>\n"
+            f"<code>{new_template}</code>\n\n"
+            f"✅ <b>Исправленный вариант:</b>\n"
+            f"<code>{new_template} {{message}}</code>\n\n"
+            f"💡 <b>Попробуйте снова с правильным шаблоном.</b>"
+        )
+        return
+    
+    # Сохраняем старый шаблон для отчета
+    old_template = bot_settings.get('message_template', 'не установлен')
+    
+    # Устанавливаем новый шаблон
+    bot_settings['message_template'] = new_template
+    
+    # Сохраняем настройки
+    save_bot_settings()
+    
+    # Тестируем шаблон
+    test_message = "Тестовое сообщение"
+    test_result = new_template.format(message=test_message)
+    
+    # Формируем отчет
+    result_text = (
+        f"✅ <b>ШАБЛОН ОБНОВЛЕН!</b>\n\n"
+        f"🔄 <b>Изменения:</b>\n"
+        f"• Старый: <code>{old_template}</code>\n"
+        f"• Новый: <code>{new_template}</code>\n\n"
+        f"🧪 <b>Тестовый пример:</b>\n"
+        f"{test_result}\n\n"
+        f"💡 <b>Применяется к:</b>\n"
+        f"• /broadcast - массовая рассылка\n"
+        f"• /send_message - личные сообщения\n\n"
+        f"📝 <b>Настройки сохранены в:</b> {BOT_SETTINGS_FILE}\n\n"
+        f"🔧 <b>Управление шаблонами:</b>\n"
+        f"/get_template - просмотр текущего шаблона\n"
+        f"/set_template [шаблон] - изменить"
+    )
+    
+    await update.message.reply_html(result_text)
+    
+    # Логируем изменение
+    logger.info(f"⚙️ Админ {user_id} изменил шаблон сообщений")
+
+async def get_template_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Просмотр текущего шаблона сообщений (только админ)"""
+    user_id = update.effective_user.id
+    
+    # Проверяем права администратора
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен! Только администратор может использовать эту команду.")
+        return
+    
+    current_template = bot_settings.get('message_template', 'не установлен')
+    
+    # Тестируем шаблон с примером
+    test_examples = [
+        "Привет! Как дела?",
+        "🎉 Поздравляю с праздником!",
+        "Техническое обслуживание с 15:00 до 16:00"
+    ]
+    
+    info_text = (
+        f"📋 <b>ТЕКУЩИЙ ШАБЛОН СООБЩЕНИЙ</b>\n\n"
+        f"⚙️ <b>Шаблон:</b>\n"
+        f"<code>{current_template}</code>\n\n"
+        f"🧪 <b>Примеры с этим шаблоном:</b>\n"
+    )
+    
+    for i, example in enumerate(test_examples, 1):
+        try:
+            formatted = current_template.format(message=example)
+            info_text += f"\n{i}. <b>Исходный текст:</b> {example}\n"
+            info_text += f"   <b>Результат:</b>\n{formatted}\n"
+        except Exception as e:
+            info_text += f"\n{i}. ❌ Ошибка форматирования: {e}\n"
+    
+    info_text += (
+        f"\n💾 <b>Статус сохранения:</b>\n"
+        f"• Файл настроек: {BOT_SETTINGS_FILE}\n"
+        f"• Автосохранение: включено\n"
+        f"• Загрузка при старте: да\n\n"
+        f"🔧 <b>Управление:</b>\n"
+        f"/set_template [новый шаблон] - изменить\n"
+        f"/send_message [ID] [текст] - протестировать\n"
+        f"/broadcast [текст] - массовая рассылка"
+    )
+    
+    await update.message.reply_html(info_text)
+
 def main() -> None:
     """Запуск бота - минимальная версия"""
     logger.info("🚀 Запуск бота...")
     
     # Загружаем данные пользователей при старте
     load_user_data()
+    
+    # Загружаем настройки бота при старте
+    load_bot_settings()
     
     # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
@@ -855,6 +1165,9 @@ def main() -> None:
     application.add_handler(CommandHandler("users_info", users_info_command))
     application.add_handler(CommandHandler("add_user", add_user_command))
     application.add_handler(CommandHandler("remove_user", remove_user_command))
+    application.add_handler(CommandHandler("send_message", send_message_command))
+    application.add_handler(CommandHandler("set_template", set_template_command))
+    application.add_handler(CommandHandler("get_template", get_template_command))
 
     # Обработчик всех текстовых сообщений (эхо)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
