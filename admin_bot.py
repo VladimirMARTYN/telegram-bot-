@@ -547,6 +547,10 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 /remove_feature [команда] - Удалить функцию
 /generation_stats - Статистика AI генерации
 
+<b>💾 Сохранение функций:</b>
+/save_features - Сохранить все AI-функции в файл
+/load_features - Загрузить функции из файла
+
 <b>🤖 Автоисправление ошибок:</b>
 /auto_fix [функция] - Диагностика и исправление через ChatGPT
 /apply_fix [функция] - Применить готовые исправления
@@ -757,6 +761,10 @@ async def add_feature(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 'timestamp': __import__('datetime').datetime.now().isoformat()
             })
             
+            # Автоматическое сохранение функций
+            logger.info("💾 Автосохранение функций...")
+            save_features()
+            
             await update.message.reply_html(
                 f"✅ <b>Функция успешно создана!</b>\n\n"
                 f"🎉 <b>Новая команда:</b> /{command_name}\n"
@@ -840,9 +848,13 @@ async def remove_feature(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if command_name in dynamic_functions:
         del dynamic_functions[command_name]
     
+    # Автоматическое сохранение функций
+    logger.info("💾 Автосохранение после удаления функции...")
+    save_features()
+    
     await update.message.reply_text(
         f"✅ Функция /{command_name} удалена!\n"
-        f"⚠️ Перезапусти бота для полного удаления."
+        f"💾 Изменения автоматически сохранены."
     )
 
 async def generation_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1205,6 +1217,10 @@ async def apply_fix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             # Удаляем из ожидающих исправлений
             del pending_fixes[function_name]
             
+            # Автоматическое сохранение функций
+            logger.info("💾 Автосохранение после применения исправлений...")
+            save_features()
+            
             await update.message.reply_html(
                 f"✅ <b>ИСПРАВЛЕНИЯ ПРИМЕНЕНЫ!</b>\n\n"
                 f"🔧 <b>Функция:</b> /{function_name}\n"
@@ -1492,6 +1508,10 @@ async def edit_feature(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 f"💡 <b>Протестируй:</b> /{command_name}",
                 parse_mode='HTML'
             )
+            
+            # Автоматическое сохранение функций
+            logger.info("💾 Автосохранение после редактирования...")
+            save_features()
         else:
             await edit_msg.edit_text(
                 f"❌ <b>Новая функция не найдена!</b>\n\nПопробуй другое описание.",
@@ -1656,11 +1676,178 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     current_time = datetime.now().strftime('%H:%M:%S')
     await update.message.reply_text(f"🏓 Понг! Время: {current_time}")
 
+def save_features():
+    """Сохраняет все AI-функции в файл для постоянного хранения"""
+    try:
+        import json
+        import os
+        
+        # Подготавливаем данные для сохранения
+        features_data = {
+            'dynamic_commands': {},
+            'generation_history': generation_history,
+            'saved_at': datetime.now().isoformat(),
+            'version': '1.0'
+        }
+        
+        # Сохраняем информацию о функциях (без самих объектов функций)
+        for cmd_name, cmd_info in dynamic_commands.items():
+            features_data['dynamic_commands'][cmd_name] = {
+                'description': cmd_info['description'],
+                'code': cmd_info['code'],
+                'created_at': cmd_info.get('created_at', datetime.now().isoformat()),
+                'edited_at': cmd_info.get('edited_at'),
+                'fixed_at': cmd_info.get('fixed_at'),
+                'fixed_error': cmd_info.get('fixed_error')
+            }
+        
+        # Сохраняем в файл
+        features_file = 'saved_features.json'
+        with open(features_file, 'w', encoding='utf-8') as f:
+            json.dump(features_data, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"✅ Сохранено {len(dynamic_commands)} функций в {features_file}")
+        return True, f"Сохранено {len(dynamic_commands)} функций"
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения функций: {e}")
+        return False, str(e)
+
+def load_features():
+    """Загружает AI-функции из файла при запуске бота"""
+    try:
+        import json
+        import os
+        
+        features_file = 'saved_features.json'
+        
+        if not os.path.exists(features_file):
+            logger.info("📝 Файл сохраненных функций не найден - начинаем с чистого листа")
+            return True, "Начинаем с чистого листа"
+        
+        # Загружаем данные из файла
+        with open(features_file, 'r', encoding='utf-8') as f:
+            features_data = json.load(f)
+        
+        loaded_count = 0
+        errors = []
+        
+        # Восстанавливаем функции
+        for cmd_name, cmd_info in features_data.get('dynamic_commands', {}).items():
+            try:
+                # Выполняем код функции
+                local_vars = {
+                    'Update': Update,
+                    'ContextTypes': ContextTypes,
+                    'logger': logger
+                }
+                
+                exec(cmd_info['code'], globals(), local_vars)
+                
+                # Находим функцию
+                new_function = None
+                for var_name, var_value in local_vars.items():
+                    if (var_name.endswith('_command') and 
+                        callable(var_value) and 
+                        hasattr(var_value, '__code__') and
+                        var_value.__code__.co_flags & 0x80):  # async функция
+                        new_function = var_value
+                        break
+                
+                if new_function:
+                    # Восстанавливаем функцию
+                    dynamic_functions[cmd_name] = new_function
+                    dynamic_commands[cmd_name] = {
+                        'function': new_function,
+                        'description': cmd_info['description'],
+                        'code': cmd_info['code'],
+                        'created_at': cmd_info.get('created_at', datetime.now().isoformat()),
+                        'edited_at': cmd_info.get('edited_at'),
+                        'fixed_at': cmd_info.get('fixed_at'),
+                        'fixed_error': cmd_info.get('fixed_error')
+                    }
+                    loaded_count += 1
+                    logger.info(f"✅ Восстановлена функция /{cmd_name}")
+                else:
+                    errors.append(f"/{cmd_name}: функция не найдена в коде")
+                    
+            except Exception as e:
+                errors.append(f"/{cmd_name}: {str(e)}")
+                logger.error(f"❌ Ошибка восстановления функции /{cmd_name}: {e}")
+        
+        # Восстанавливаем историю генерации
+        global generation_history
+        generation_history = features_data.get('generation_history', [])
+        
+        success_msg = f"Загружено {loaded_count} функций"
+        if errors:
+            success_msg += f", ошибок: {len(errors)}"
+        
+        logger.info(f"✅ {success_msg}")
+        logger.info(f"📅 Дата сохранения: {features_data.get('saved_at', 'неизвестно')}")
+        
+        return True, success_msg
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки функций: {e}")
+        return False, str(e)
+
+async def save_features_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Ручное сохранение AI-функций (только админ)"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен!")
+        return
+    
+    save_msg = await update.message.reply_text("💾 Сохраняю функции...")
+    
+    success, message = save_features()
+    
+    if success:
+        await save_msg.edit_text(
+            f"✅ <b>Функции сохранены!</b>\n\n"
+            f"📊 {message}\n"
+            f"📁 Файл: saved_features.json\n"
+            f"⏰ Время: {datetime.now().strftime('%H:%M:%S')}\n\n"
+            f"💡 Теперь функции переживут перезапуск бота!",
+            parse_mode='HTML'
+        )
+    else:
+        await save_msg.edit_text(f"❌ Ошибка сохранения:\n{message}")
+
+async def load_features_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Ручная загрузка AI-функций (только админ)"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен!")
+        return
+    
+    load_msg = await update.message.reply_text("📂 Загружаю сохраненные функции...")
+    
+    success, message = load_features()
+    
+    if success:
+        await load_msg.edit_text(
+            f"✅ <b>Функции загружены!</b>\n\n"
+            f"📊 {message}\n"
+            f"⏰ Время: {datetime.now().strftime('%H:%M:%S')}\n\n"
+            f"💡 Используй /list_features для просмотра",
+            parse_mode='HTML'
+        )
+    else:
+        await load_msg.edit_text(f"❌ Ошибка загрузки:\n{message}")
+
 def load_saved_features():
     """Загружает сохраненные функции при запуске (заглушка)"""
-    # В будущем здесь можно загружать функции из файла или базы данных
     logger.info("🔄 Загрузка сохраненных AI функций...")
-    # TODO: Реализовать сохранение/загрузку в файл или БД
+    success, message = load_features()
+    if success:
+        logger.info(f"✅ {message}")
+    else:
+        logger.warning(f"⚠️ {message}")
+    # Автоматическое сохранение функций после важных операций
 
 async def show_diff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показать различия между текущим и исправленным кодом (только админ)"""
@@ -1816,6 +2003,8 @@ def main() -> None:
     application.add_handler(CommandHandler("show_diff", show_diff)) # Добавляем новую команду
     application.add_handler(CommandHandler("cancel_fix", cancel_fix)) # Добавляем новую команду
     application.add_handler(CommandHandler("debug_errors", debug_errors)) # Добавляем новую команду
+    application.add_handler(CommandHandler("save_features", save_features_command)) # Добавляем новую команду
+    application.add_handler(CommandHandler("load_features", load_features_command)) # Добавляем новую команду
 
     # ВАЖНО: MessageHandler должен быть последним для обработки динамических команд
     application.add_handler(MessageHandler(filters.TEXT, echo))
