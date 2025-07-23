@@ -4,6 +4,10 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from config import BOT_TOKEN, OPENAI_API_KEY
 import openai
 import asyncio
+from datetime import datetime
+
+# Время запуска бота
+BOT_START_TIME = datetime.now()
 
 # Настройка логирования
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -104,6 +108,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"• /gpt [вопрос] - Развернутый ответ от AI\n"
         f"• /my_id - Узнать свой ID\n"
         f"• /help - Показать это меню\n\n"
+        f"🛠️ <b>Утилиты:</b>\n"
+        f"• /ping - Проверить работу бота\n"
+        f"• /currency - Курсы валют ЦБ РФ\n"
+        f"• /uptime - Время работы бота\n"
+        f"• /notify [сообщение] - Написать админу\n\n"
         f"🔧 <b>Статус:</b> {chatgpt_status}\n\n"
         f"💡 <b>Пример:</b> /ai Что такое Python?"
     )
@@ -537,6 +546,13 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 /list_features - Список созданных функций
 /remove_feature [команда] - Удалить функцию
 /generation_stats - Статистика AI генерации
+
+<b>🔧 Диагностика:</b>
+/debug_status - Полная диагностика системы
+/uptime - Время работы бота
+/system_info - Информация о системе
+/ping - Тест базовых функций
+/currency - Тест API запросов
 
 💡 <b>Примеры:</b>
 /ai Объясни алгоритм сортировки
@@ -1234,6 +1250,108 @@ async def debug_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     await update.message.reply_html(debug_report)
 
+async def uptime_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показать время работы бота"""
+    current_time = datetime.now()
+    uptime = current_time - BOT_START_TIME
+    
+    days = uptime.days
+    hours, remainder = divmod(uptime.seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    uptime_text = f"⏰ <b>Время работы бота:</b>\n\n"
+    uptime_text += f"🚀 <b>Запущен:</b> {BOT_START_TIME.strftime('%d.%m.%Y %H:%M:%S')}\n"
+    uptime_text += f"⏳ <b>Работает:</b> "
+    
+    if days > 0:
+        uptime_text += f"{days} дн. "
+    if hours > 0:
+        uptime_text += f"{hours} ч. "
+    if minutes > 0:
+        uptime_text += f"{minutes} мин. "
+    uptime_text += f"{seconds} сек.\n\n"
+    
+    uptime_text += f"📊 <b>Статистика за сессию:</b>\n"
+    uptime_text += f"• Всего запросов: {total_requests}\n"
+    uptime_text += f"• ChatGPT запросов: {sum(user_requests.values())}\n"
+    uptime_text += f"• Активных пользователей: {len(user_data)}\n"
+    uptime_text += f"• AI функций создано: {len(dynamic_functions)}"
+    
+    await update.message.reply_html(uptime_text)
+
+async def system_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Информация о системе (только админ)"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен!")
+        return
+    
+    import sys
+    import os
+    import platform
+    
+    try:
+        import psutil
+        memory_info = f"💾 <b>Память:</b> {psutil.virtual_memory().percent}% использовано\n"
+        cpu_info = f"⚡ <b>CPU:</b> {psutil.cpu_percent()}% нагрузка\n"
+    except ImportError:
+        memory_info = "💾 <b>Память:</b> Модуль psutil недоступен\n"
+        cpu_info = "⚡ <b>CPU:</b> Модуль psutil недоступен\n"
+    
+    system_text = f"🖥️ <b>ИНФОРМАЦИЯ О СИСТЕМЕ</b>\n\n"
+    system_text += f"🐍 <b>Python:</b> {sys.version.split()[0]}\n"
+    system_text += f"🤖 <b>Платформа:</b> {platform.system()} {platform.release()}\n"
+    system_text += f"📁 <b>Рабочая папка:</b> {os.getcwd()}\n"
+    system_text += f"{memory_info}"
+    system_text += f"{cpu_info}"
+    system_text += f"\n🔧 <b>Компоненты:</b>\n"
+    system_text += f"• Telegram Bot API: ✅\n"
+    system_text += f"• OpenAI API: {'✅' if CHATGPT_ENABLED else '❌'}\n"
+    system_text += f"• Requests: ✅\n"
+    system_text += f"• Asyncio: ✅"
+    
+    await update.message.reply_html(system_text)
+
+async def notify_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отправить уведомление админу (только для пользователей)"""
+    user_id = update.effective_user.id
+    user = update.effective_user
+    
+    if user_id == ADMIN_USER_ID:
+        await update.message.reply_text("ℹ️ Ты уже админ! Используй /admin_help для управления.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "📢 <b>Уведомление админу</b>\n\n"
+            "Отправь сообщение администратору бота:\n"
+            "<code>/notify [твое сообщение]</code>\n\n"
+            "<b>Пример:</b>\n/notify Привет! У меня есть предложение по улучшению бота.",
+            parse_mode='HTML'
+        )
+        return
+    
+    message_text = " ".join(context.args)
+    
+    # Отправляем уведомление админу
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_USER_ID,
+            text=f"📬 <b>УВЕДОМЛЕНИЕ ОТ ПОЛЬЗОВАТЕЛЯ</b>\n\n"
+                 f"👤 <b>Пользователь:</b> {user.mention_html()}\n"
+                 f"🆔 <b>ID:</b> {user_id}\n"
+                 f"📝 <b>Сообщение:</b>\n{message_text}\n\n"
+                 f"💬 <b>Ответить:</b> /broadcast [ответ]",
+            parse_mode='HTML'
+        )
+        
+        await update.message.reply_text("✅ Сообщение отправлено администратору!")
+        
+    except Exception as e:
+        logger.error(f"Ошибка отправки уведомления админу: {e}")
+        await update.message.reply_text("❌ Ошибка отправки уведомления. Попробуй позже.")
+
 async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Простая тестовая команда"""
     from datetime import datetime
@@ -1282,6 +1400,9 @@ def main() -> None:
     application.add_handler(CommandHandler("quick_model", quick_model))
     application.add_handler(CommandHandler("model_recommend", model_recommend))
     application.add_handler(CommandHandler("debug_status", debug_status)) # Добавляем новую команду
+    application.add_handler(CommandHandler("uptime", uptime_command)) # Добавляем новую команду
+    application.add_handler(CommandHandler("system_info", system_info)) # Добавляем новую команду
+    application.add_handler(CommandHandler("notify", notify_admin)) # Добавляем новую команду
 
     # ВАЖНО: MessageHandler должен быть последним для обработки динамических команд
     application.add_handler(MessageHandler(filters.TEXT, echo))
