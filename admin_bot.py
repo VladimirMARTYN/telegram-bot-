@@ -53,8 +53,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"/help - Справка\n"
         f"/ping - Проверка работы\n"
         f"/rates - Курсы валют и криптовалют\n"
-        f"/my_id - Узнать свой ID\n\n"
+        f"/my_id - Узнать свой ID\n"
     )
+    
+    # Показываем админские команды только администратору
+    if user_id == ADMIN_USER_ID:
+        welcome_text += f"/broadcast [текст] - Рассылка всем пользователям\n"
+    
+    welcome_text += "\n"
     
     if user_id == ADMIN_USER_ID:
         welcome_text += "👨‍💻 <b>Статус:</b> Администратор\n"
@@ -67,6 +73,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда /help"""
+    user_id = update.effective_user.id
+    is_admin = user_id == ADMIN_USER_ID
+    
     help_text = (
         "🤖 <b>Справка по боту</b>\n\n"
         
@@ -75,15 +84,29 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/help - Эта справка\n"
         "/ping - Проверка работы\n"
         "/rates - Курсы валют и криптовалют\n"
-        "/my_id - Узнать свой ID\n\n"
-        
-        "💱 <b>Функции:</b>\n"
+        "/my_id - Узнать свой ID\n"
+    )
+    
+    # Показываем админские команды только администратору
+    if is_admin:
+        help_text += "/broadcast [текст] - Рассылка всем пользователям\n"
+    
+    help_text += (
+        "\n💱 <b>Функции:</b>\n"
         "• Курсы валют ЦБ РФ (USD, EUR, CNY)\n"
-        "• Курсы криптовалют (Bitcoin, Ethereum, Dogecoin, TON)\n\n"
-        
-        "ℹ️ <b>Информация:</b>\n"
+        "• Курсы криптовалют (Bitcoin, Ethereum, Dogecoin, TON)\n"
+    )
+    
+    if is_admin:
+        help_text += "• Массовая рассылка сообщений (только админ)\n"
+    
+    help_text += (
+        "\nℹ️ <b>Информация:</b>\n"
         "Бот готов к расширению функционала."
     )
+    
+    if is_admin:
+        help_text += f"\n\n👨‍💻 <b>Статус:</b> Администратор\n📊 Пользователей в базе: {len(user_data)}"
     
     await update.message.reply_html(help_text)
 
@@ -134,11 +157,17 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"🔧 <b>Команды:</b>\n"
         f"/admin - Эта панель\n"
         f"/ping - Проверка работы\n"
-        f"/rates - Курсы валют и криптовалют\n\n"
+        f"/rates - Курсы валют и криптовалют\n"
+        f"/broadcast [текст] - Рассылка всем пользователям\n\n"
         
         f"💱 <b>Доступные функции:</b>\n"
         f"• Курсы валют ЦБ РФ (USD, EUR, CNY)\n"
-        f"• Курсы криптовалют (BTC, ETH, DOGE, TON)\n\n"
+        f"• Курсы криптовалют (BTC, ETH, DOGE, TON)\n"
+        f"• Массовая рассылка сообщений\n\n"
+        
+        f"📢 <b>Рассылка:</b>\n"
+        f"👥 Пользователей для рассылки: {len(user_data)}\n"
+        f"💡 Используй: <code>/broadcast Текст сообщения</code>\n\n"
         
         f"ℹ️ <b>Статус:</b> Бот готов к расширению"
     )
@@ -240,6 +269,111 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             f"🔄 Попробуйте позже или обратитесь к администратору."
         )
 
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Массовая рассылка сообщений всем пользователям (только админ)"""
+    user_id = update.effective_user.id
+    
+    # Проверяем права администратора
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен! Только администратор может использовать эту команду.")
+        return
+    
+    # Проверяем наличие текста для рассылки
+    if not context.args:
+        await update.message.reply_html(
+            "📢 <b>МАССОВАЯ РАССЫЛКА</b>\n\n"
+            "🔍 <b>Использование:</b>\n"
+            "<code>/broadcast [сообщение]</code>\n\n"
+            "💡 <b>Примеры:</b>\n"
+            "• <code>/broadcast Привет всем!</code>\n"
+            "• <code>/broadcast 🎉 Новое обновление бота!</code>\n"
+            "• <code>/broadcast Техническое обслуживание с 15:00 до 16:00</code>\n\n"
+            "📊 <b>Статистика:</b>\n"
+            f"👥 Пользователей для рассылки: <b>{len(user_data)}</b>\n\n"
+            "⚠️ <b>Внимание:</b> Сообщение будет отправлено ВСЕМ пользователям бота!"
+        )
+        return
+    
+    # Получаем текст сообщения
+    broadcast_text = " ".join(context.args)
+    
+    # Подтверждение рассылки
+    confirm_msg = await update.message.reply_html(
+        f"📢 <b>ПОДТВЕРЖДЕНИЕ РАССЫЛКИ</b>\n\n"
+        f"📝 <b>Сообщение для рассылки:</b>\n"
+        f"<code>{broadcast_text}</code>\n\n"
+        f"👥 <b>Получателей:</b> {len(user_data)} пользователей\n\n"
+        f"🚀 Начинаю рассылку..."
+    )
+    
+    # Счетчики для статистики
+    sent_count = 0
+    error_count = 0
+    errors = []
+    
+    # Отправляем сообщение каждому пользователю
+    for target_user_id, user_info in user_data.items():
+        try:
+            # Формируем сообщение с подписью админа
+            admin_message = f"📢 <b>Сообщение от администратора:</b>\n\n{broadcast_text}"
+            
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=admin_message,
+                parse_mode='HTML'
+            )
+            sent_count += 1
+            
+            # Небольшая задержка, чтобы не превысить лимиты Telegram
+            await asyncio.sleep(0.1)
+            
+        except Exception as e:
+            error_count += 1
+            user_name = user_info.get('name', 'Неизвестно')
+            error_msg = str(e)
+            
+            # Сокращаем сообщение об ошибке для отчета
+            if len(error_msg) > 50:
+                error_msg = error_msg[:47] + "..."
+            
+            errors.append(f"👤 {user_name} (ID: {target_user_id}): {error_msg}")
+            
+            logger.warning(f"Ошибка отправки рассылки пользователю {target_user_id}: {e}")
+    
+    # Формируем отчет о рассылке
+    report_text = f"📊 <b>ОТЧЕТ О РАССЫЛКЕ</b>\n\n"
+    report_text += f"✅ <b>Успешно отправлено:</b> {sent_count}\n"
+    report_text += f"❌ <b>Ошибок:</b> {error_count}\n"
+    report_text += f"📋 <b>Всего пользователей:</b> {len(user_data)}\n\n"
+    
+    if sent_count > 0:
+        success_rate = (sent_count / len(user_data)) * 100
+        report_text += f"📈 <b>Успешность:</b> {success_rate:.1f}%\n\n"
+    
+    report_text += f"📝 <b>Отправленное сообщение:</b>\n<code>{broadcast_text}</code>\n\n"
+    
+    # Добавляем детали ошибок (только первые 5)
+    if errors:
+        report_text += f"🔍 <b>Детали ошибок:</b>\n"
+        for error in errors[:5]:
+            report_text += f"• {error}\n"
+        
+        if len(errors) > 5:
+            report_text += f"• ... и еще {len(errors) - 5} ошибок\n"
+        
+        report_text += f"\n💡 <b>Причины ошибок:</b>\n"
+        report_text += f"• Пользователь заблокировал бота\n"
+        report_text += f"• Пользователь удалил аккаунт\n"
+        report_text += f"• Временные проблемы сети\n"
+    
+    report_text += f"\n⏰ <b>Время рассылки:</b> {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+    
+    # Отправляем отчет
+    await confirm_msg.edit_text(report_text, parse_mode='HTML')
+    
+    # Логируем результаты
+    logger.info(f"📢 Рассылка завершена: {sent_count} успешно, {error_count} ошибок")
+
 def main() -> None:
     """Запуск бота - минимальная версия"""
     logger.info("🤖 Запуск чистого бота...")
@@ -253,6 +387,7 @@ def main() -> None:
     application.add_handler(CommandHandler("my_id", my_id_command))
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("rates", rates_command))
+    application.add_handler(CommandHandler("broadcast", broadcast_command))
 
     # Обработчик всех текстовых сообщений (эхо)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
