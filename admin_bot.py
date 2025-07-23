@@ -1755,21 +1755,30 @@ def load_features():
         import os
         
         features_file = 'saved_features.json'
+        logger.info(f"🔍 Проверяю наличие файла {features_file}...")
         
         if not os.path.exists(features_file):
             logger.info("📝 Файл сохраненных функций не найден - начинаем с чистого листа")
             return True, "Начинаем с чистого листа"
         
+        logger.info(f"📂 Найден файл {features_file}, загружаю...")
+        
         # Загружаем данные из файла
         with open(features_file, 'r', encoding='utf-8') as f:
             features_data = json.load(f)
+        
+        logger.info(f"📋 Структура данных: {list(features_data.keys())}")
+        saved_functions = features_data.get('dynamic_commands', {})
+        logger.info(f"🔢 Функций в файле: {len(saved_functions)}")
         
         loaded_count = 0
         errors = []
         
         # Восстанавливаем функции
-        for cmd_name, cmd_info in features_data.get('dynamic_commands', {}).items():
+        for cmd_name, cmd_info in saved_functions.items():
             try:
+                logger.info(f"🔄 Восстанавливаю функцию /{cmd_name}...")
+                
                 # Выполняем код функции
                 local_vars = {
                     'Update': Update,
@@ -1802,29 +1811,34 @@ def load_features():
                         'fixed_error': cmd_info.get('fixed_error')
                     }
                     loaded_count += 1
-                    logger.info(f"✅ Восстановлена функция /{cmd_name}")
+                    logger.info(f"✅ Восстановлена функция /{cmd_name} - '{cmd_info.get('description', 'Без описания')}'")
                 else:
-                    errors.append(f"/{cmd_name}: функция не найдена в коде")
+                    error_msg = f"/{cmd_name}: функция не найдена в коде"
+                    errors.append(error_msg)
+                    logger.warning(f"⚠️ {error_msg}")
                     
             except Exception as e:
-                errors.append(f"/{cmd_name}: {str(e)}")
+                error_msg = f"/{cmd_name}: {str(e)}"
+                errors.append(error_msg)
                 logger.error(f"❌ Ошибка восстановления функции /{cmd_name}: {e}")
         
         # Восстанавливаем историю генерации
         global generation_history
         generation_history = features_data.get('generation_history', [])
+        logger.info(f"📚 Восстановлена история: {len(generation_history)} записей")
         
         success_msg = f"Загружено {loaded_count} функций"
         if errors:
             success_msg += f", ошибок: {len(errors)}"
         
-        logger.info(f"✅ {success_msg}")
+        logger.info(f"✅ Итого: {success_msg}")
         logger.info(f"📅 Дата сохранения: {features_data.get('saved_at', 'неизвестно')}")
+        logger.info(f"🔢 Текущее состояние: dynamic_commands={len(dynamic_commands)}, dynamic_functions={len(dynamic_functions)}")
         
         return True, success_msg
         
     except Exception as e:
-        logger.error(f"❌ Ошибка загрузки функций: {e}")
+        logger.error(f"❌ Критическая ошибка загрузки функций: {e}")
         return False, str(e)
 
 async def save_features_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1996,106 +2010,119 @@ async def debug_errors(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает полное меню всех доступных команд и функций"""
-    user_id = update.effective_user.id
-    is_admin = user_id == ADMIN_USER_ID
-    
-    menu_text = f"🤖 <b>МЕНЮ БОТА</b> 🤖\n\n"
-    
-    # Базовые команды для всех пользователей
-    menu_text += "📋 <b>ОСНОВНЫЕ КОМАНДЫ:</b>\n"
-    menu_text += "/start - Запуск и приветствие\n"
-    menu_text += "/help - Справка по использованию\n"
-    menu_text += "/menu - Это меню (все команды)\n"
-    menu_text += "/ping - Проверка работы бота\n"
-    menu_text += "/currency - Курсы валют (ЦБ РФ)\n"
-    menu_text += "/uptime - Время работы бота\n"
-    menu_text += "/system_info - Информация о системе\n\n"
-    
-    # Административные команды (только для админа)
-    if is_admin:
-        menu_text += "👨‍💻 <b>АДМИНИСТРИРОВАНИЕ:</b>\n"
-        menu_text += "/admin - Админ панель\n"
-        menu_text += "/notify [текст] - Уведомление пользователям\n"
-        menu_text += "/debug_status - Диагностика системы\n"
-        menu_text += "/debug_errors - История ошибок\n\n"
+    try:
+        logger.info(f"📜 Вызвана команда /menu от пользователя {update.effective_user.id}")
         
-        menu_text += "🤖 <b>AI МОДЕЛИ:</b>\n"
-        menu_text += "/set_model [модель] - Сменить модель ChatGPT\n"
-        menu_text += "/models - Список доступных моделей\n\n"
+        user_id = update.effective_user.id
+        is_admin = user_id == ADMIN_USER_ID
         
-        menu_text += "🛠️ <b>AI РАЗРАБОТКА:</b>\n"
-        menu_text += "/add_feature [описание] - Создать функцию\n"
-        menu_text += "/edit_feature [команда] - [описание] - Редактировать\n"
-        menu_text += "/remove_feature [команда] - Удалить функцию\n"
-        menu_text += "/list_features - Список созданных функций\n"
-        menu_text += "/generation_stats - Статистика AI генерации\n\n"
+        menu_text = f"🤖 <b>МЕНЮ БОТА</b> 🤖\n\n"
         
-        menu_text += "💾 <b>СОХРАНЕНИЕ ФУНКЦИЙ:</b>\n"
-        menu_text += "/save_features - Сохранить функции в файл\n"
-        menu_text += "/load_features - Загрузить функции из файла\n\n"
+        # Базовые команды для всех пользователей
+        menu_text += "📋 <b>ОСНОВНЫЕ КОМАНДЫ:</b>\n"
+        menu_text += "/start - Запуск и приветствие\n"
+        menu_text += "/help - Справка по использованию\n"
+        menu_text += "/menu - Это меню (все команды)\n"
+        menu_text += "/ping - Проверка работы бота\n"
+        menu_text += "/currency - Курсы валют (ЦБ РФ)\n"
+        menu_text += "/uptime - Время работы бота\n"
+        menu_text += "/system_info - Информация о системе\n\n"
         
-        menu_text += "🔧 <b>АВТОИСПРАВЛЕНИЕ ОШИБОК:</b>\n"
-        menu_text += "/auto_fix [команда] - Исправить ошибку AI\n"
-        menu_text += "/apply_fix [команда] - Применить исправление\n"
-        menu_text += "/show_diff [команда] - Показать различия\n"
-        menu_text += "/cancel_fix [команда] - Отменить исправление\n\n"
-    
-    # Созданные AI-функции
-    if dynamic_commands:
-        menu_text += "🧩 <b>СОЗДАННЫЕ AI-ФУНКЦИИ:</b>\n"
-        
-        # Сортируем функции по времени создания
-        sorted_functions = sorted(
-            dynamic_commands.items(), 
-            key=lambda x: x[1].get('created_at', ''), 
-            reverse=True
-        )
-        
-        for cmd_name, cmd_info in sorted_functions:
-            description = cmd_info.get('description', 'Без описания')
-            created_at = cmd_info.get('created_at', '')
-            
-            # Форматируем дату
-            try:
-                if created_at:
-                    from datetime import datetime
-                    dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                    date_str = dt.strftime('%d.%m %H:%M')
-                else:
-                    date_str = '??'
-            except:
-                date_str = '??'
-            
-            # Проверяем, была ли функция исправлена
-            status_icon = "✅" if cmd_info.get('fixed_at') else "🔵"
-            
-            menu_text += f"/{cmd_name} - {description[:50]}{'...' if len(description) > 50 else ''} {status_icon} <i>({date_str})</i>\n"
-        
-        menu_text += f"\n📊 <b>Всего функций:</b> {len(dynamic_commands)}\n\n"
-    else:
-        menu_text += "🧩 <b>СОЗДАННЫЕ AI-ФУНКЦИИ:</b>\n"
-        menu_text += "<i>Пока нет созданных функций</i>\n\n"
+        # Административные команды (только для админа)
         if is_admin:
-            menu_text += "💡 <i>Создайте первую функцию:</i> /add_feature [описание]\n\n"
-    
-    # Статистика использования (только для админа)
-    if is_admin:
-        menu_text += "📈 <b>СТАТИСТИКА:</b>\n"
-        menu_text += f"🔥 Функций создано: {len(generation_history)}\n"
-        menu_text += f"💾 Функций сохранено: {len(dynamic_commands)}\n"
-        menu_text += f"❌ Ошибок зафиксировано: {len(function_errors)}\n"
-        menu_text += f"🔧 Ожидает исправления: {len(pending_fixes)}\n\n"
-    
-    # Подсказки для пользователей
-    if not is_admin:
-        menu_text += "💡 <b>ПОДСКАЗКА:</b>\n"
-        menu_text += "<i>Этот бот может создавать новые команды через ИИ!\n"
-        menu_text += "Обратитесь к администратору для получения доступа.</i>\n\n"
-    
-    menu_text += "🚀 <b>Версия бота:</b> stable-v3.0\n"
-    menu_text += "⏰ <b>Обновлено:</b> " + datetime.now().strftime('%d.%m.%Y %H:%M')
-    
-    await update.message.reply_html(menu_text)
+            menu_text += "👨‍💻 <b>АДМИНИСТРИРОВАНИЕ:</b>\n"
+            menu_text += "/admin - Админ панель\n"
+            menu_text += "/notify [текст] - Уведомление пользователям\n"
+            menu_text += "/debug_status - Диагностика системы\n"
+            menu_text += "/debug_errors - История ошибок\n\n"
+            
+            menu_text += "🤖 <b>AI МОДЕЛИ:</b>\n"
+            menu_text += "/set_model [модель] - Сменить модель ChatGPT\n"
+            menu_text += "/models - Список доступных моделей\n\n"
+            
+            menu_text += "🛠️ <b>AI РАЗРАБОТКА:</b>\n"
+            menu_text += "/add_feature [описание] - Создать функцию\n"
+            menu_text += "/edit_feature [команда] - [описание] - Редактировать\n"
+            menu_text += "/remove_feature [команда] - Удалить функцию\n"
+            menu_text += "/list_features - Список созданных функций\n"
+            menu_text += "/generation_stats - Статистика AI генерации\n\n"
+            
+            menu_text += "💾 <b>СОХРАНЕНИЕ ФУНКЦИЙ:</b>\n"
+            menu_text += "/save_features - Сохранить функции в файл\n"
+            menu_text += "/load_features - Загрузить функции из файла\n\n"
+            
+            menu_text += "🔧 <b>АВТОИСПРАВЛЕНИЕ ОШИБОК:</b>\n"
+            menu_text += "/auto_fix [команда] - Исправить ошибку AI\n"
+            menu_text += "/apply_fix [команда] - Применить исправление\n"
+            menu_text += "/show_diff [команда] - Показать различия\n"
+            menu_text += "/cancel_fix [команда] - Отменить исправление\n\n"
+        
+        # Созданные AI-функции
+        if dynamic_commands:
+            menu_text += "🧩 <b>СОЗДАННЫЕ AI-ФУНКЦИИ:</b>\n"
+            
+            # Сортируем функции по времени создания
+            sorted_functions = sorted(
+                dynamic_commands.items(), 
+                key=lambda x: x[1].get('created_at', ''), 
+                reverse=True
+            )
+            
+            for cmd_name, cmd_info in sorted_functions:
+                description = cmd_info.get('description', 'Без описания')
+                created_at = cmd_info.get('created_at', '')
+                
+                # Форматируем дату
+                try:
+                    if created_at:
+                        dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        date_str = dt.strftime('%d.%m %H:%M')
+                    else:
+                        date_str = '??'
+                except:
+                    date_str = '??'
+                
+                # Проверяем, была ли функция исправлена
+                status_icon = "✅" if cmd_info.get('fixed_at') else "🔵"
+                
+                menu_text += f"/{cmd_name} - {description[:50]}{'...' if len(description) > 50 else ''} {status_icon} <i>({date_str})</i>\n"
+            
+            menu_text += f"\n📊 <b>Всего функций:</b> {len(dynamic_commands)}\n\n"
+        else:
+            menu_text += "🧩 <b>СОЗДАННЫЕ AI-ФУНКЦИИ:</b>\n"
+            menu_text += "<i>Пока нет созданных функций</i>\n\n"
+            if is_admin:
+                menu_text += "💡 <i>Создайте первую функцию:</i> /add_feature [описание]\n\n"
+        
+        # Статистика использования (только для админа)
+        if is_admin:
+            menu_text += "📈 <b>СТАТИСТИКА:</b>\n"
+            menu_text += f"🔥 Функций создано: {len(generation_history)}\n"
+            menu_text += f"💾 Функций сохранено: {len(dynamic_commands)}\n"
+            menu_text += f"❌ Ошибок зафиксировано: {len(function_errors)}\n"
+            menu_text += f"🔧 Ожидает исправления: {len(pending_fixes)}\n\n"
+        
+        # Подсказки для пользователей
+        if not is_admin:
+            menu_text += "💡 <b>ПОДСКАЗКА:</b>\n"
+            menu_text += "<i>Этот бот может создавать новые команды через ИИ!\n"
+            menu_text += "Обратитесь к администратору для получения доступа.</i>\n\n"
+        
+        menu_text += "🚀 <b>Версия бота:</b> stable-v3.1\n"
+        menu_text += "⏰ <b>Обновлено:</b> " + datetime.now().strftime('%d.%m.%Y %H:%M')
+        
+        await update.message.reply_html(menu_text)
+        logger.info(f"✅ Меню успешно отправлено пользователю {user_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в menu_command: {e}")
+        try:
+            await update.message.reply_text(
+                "❌ Произошла ошибка при генерации меню.\n"
+                "Попробуйте позже или обратитесь к администратору."
+            )
+        except:
+            logger.error("❌ Не удалось отправить сообщение об ошибке")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает справку по использованию бота"""
@@ -2138,10 +2165,62 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "📜 <b>Для просмотра всех команд:</b>\n"
         "👉 <b>/menu</b> - полный список команд и функций\n\n"
         
-        "🚀 <b>Версия:</b> stable-v3.0 с постоянным хранением"
+        "🚀 <b>Версия:</b> stable-v3.1 с постоянным хранением"
     )
     
     await update.message.reply_html(help_text)
+
+async def functions_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Быстрая диагностика состояния AI-функций"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен!")
+        return
+    
+    status_text = (
+        f"🔍 <b>СТАТУС AI-ФУНКЦИЙ</b>\n\n"
+        f"📊 <b>В памяти:</b>\n"
+        f"• dynamic_commands: {len(dynamic_commands)}\n"
+        f"• dynamic_functions: {len(dynamic_functions)}\n\n"
+        f"📚 <b>История:</b>\n"
+        f"• generation_history: {len(generation_history)}\n"
+        f"• function_errors: {len(function_errors)}\n"
+        f"• pending_fixes: {len(pending_fixes)}\n\n"
+    )
+    
+    # Проверяем файл сохранения
+    import os
+    features_file = 'saved_features.json'
+    if os.path.exists(features_file):
+        try:
+            import json
+            with open(features_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            saved_count = len(data.get('dynamic_commands', {}))
+            saved_at = data.get('saved_at', 'неизвестно')
+            
+            status_text += (
+                f"💾 <b>Файл saved_features.json:</b>\n"
+                f"• Существует: ✅\n"
+                f"• Функций в файле: {saved_count}\n"
+                f"• Дата сохранения: {saved_at[:19] if saved_at != 'неизвестно' else saved_at}\n\n"
+            )
+        except Exception as e:
+            status_text += f"💾 <b>Файл saved_features.json:</b>\n• Ошибка чтения: {e}\n\n"
+    else:
+        status_text += "💾 <b>Файл saved_features.json:</b>\n• Не существует ❌\n\n"
+    
+    # Список функций
+    if dynamic_commands:
+        status_text += "🧩 <b>ФУНКЦИИ В ПАМЯТИ:</b>\n"
+        for cmd_name, cmd_info in dynamic_commands.items():
+            desc = cmd_info.get('description', 'Без описания')[:30]
+            status_text += f"• /{cmd_name} - {desc}{'...' if len(cmd_info.get('description', '')) > 30 else ''}\n"
+    else:
+        status_text += "🧩 <b>ФУНКЦИИ В ПАМЯТИ:</b>\n• Нет функций\n"
+    
+    await update.message.reply_html(status_text)
 
 def main() -> None:
     """Запуск бота с ChatGPT и AI-генерацией функций"""
@@ -2190,6 +2269,7 @@ def main() -> None:
     application.add_handler(CommandHandler("debug_errors", debug_errors)) # Добавляем новую команду
     application.add_handler(CommandHandler("save_features", save_features_command)) # Добавляем новую команду
     application.add_handler(CommandHandler("load_features", load_features_command)) # Добавляем новую команду
+    application.add_handler(CommandHandler("functions_status", functions_status_command)) # Добавляем новую команду
 
     # ВАЖНО: MessageHandler должен быть последним для обработки динамических команд
     application.add_handler(MessageHandler(filters.TEXT, echo))
