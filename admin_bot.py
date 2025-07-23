@@ -999,6 +999,32 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"{dynamic_hint}"
         )
 
+async def currency_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Получить курс валют ЦБ РФ"""
+    try:
+        import requests
+        from datetime import datetime
+        
+        # API Центробанка РФ
+        response = requests.get("https://www.cbr-xml-daily.ru/daily_json.js", timeout=10)
+        data = response.json()
+        
+        # Получаем основные валюты
+        usd = data['Valute']['USD']
+        eur = data['Valute']['EUR']
+        
+        date = datetime.now().strftime("%d.%m.%Y")
+        
+        result = f"💰 <b>Курс валют ЦБ РФ</b>\n📅 {date}\n\n"
+        result += f"🇺🇸 <b>Доллар США:</b> {usd['Value']:.2f} ₽\n"
+        result += f"🇪🇺 <b>Евро:</b> {eur['Value']:.2f} ₽\n\n"
+        result += "<i>Данные Центрального Банка РФ</i>"
+        
+        await update.message.reply_html(result)
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка получения курса: {str(e)}")
+
 async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Простая тестовая команда"""
     from datetime import datetime
@@ -1027,6 +1053,7 @@ def main() -> None:
     # ChatGPT команды
     application.add_handler(CommandHandler("ai", ai_command))
     application.add_handler(CommandHandler("gpt", gpt_command))
+    application.add_handler(CommandHandler("currency", currency_command)) # Добавляем новую команду
 
     # Админ команды
     application.add_handler(CommandHandler("admin_help", admin_help))
