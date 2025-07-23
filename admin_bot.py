@@ -2348,6 +2348,137 @@ async def fix_crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка исправления: {str(e)}")
 
+async def fix_qr_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Принудительно исправляет функцию qr (только админ)"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен!")
+        return
+    
+    await update.message.reply_text("🔧 Исправляю функцию qr...")
+    
+    # Создаем правильную функцию QR генератора
+    async def qr_command_fixed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Исправленный QR генератор без внешних библиотек"""
+        try:
+            if not context.args:
+                await update.message.reply_text(
+                    "📝 <b>QR Генератор</b>\n\n"
+                    "🔍 <b>Использование:</b>\n"
+                    "<code>/qr [текст]</code>\n\n"
+                    "💡 <b>Примеры:</b>\n"
+                    "• <code>/qr Hello World</code>\n"
+                    "• <code>/qr https://google.com</code>\n"
+                    "• <code>/qr +7 999 123-45-67</code>\n\n"
+                    "⚠️ <b>Внимание:</b> Функция временно использует внешний сервис",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # Получаем текст для QR кода
+            qr_text = " ".join(context.args)
+            
+            # Используем онлайн сервис для генерации QR кода
+            import requests
+            from urllib.parse import quote
+            
+            try:
+                # Кодируем текст для URL
+                encoded_text = quote(qr_text)
+                
+                # Используем API qr-server.com (бесплатный сервис)
+                qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={encoded_text}"
+                
+                # Показываем процесс
+                process_msg = await update.message.reply_text("🔄 Генерирую QR код...")
+                
+                # Скачиваем изображение
+                response = requests.get(qr_url, timeout=10)
+                response.raise_for_status()
+                
+                # Проверяем, что это изображение
+                if response.headers.get('content-type', '').startswith('image/'):
+                    # Отправляем QR код
+                    from io import BytesIO
+                    
+                    qr_image = BytesIO(response.content)
+                    qr_image.name = 'qr_code.png'
+                    
+                    await update.message.reply_photo(
+                        photo=qr_image,
+                        caption=f"📱 <b>QR код готов!</b>\n\n"
+                               f"📝 <b>Текст:</b> <code>{qr_text[:100]}{'...' if len(qr_text) > 100 else ''}</code>\n"
+                               f"📏 <b>Размер:</b> 300x300 пикселей",
+                        parse_mode='HTML'
+                    )
+                    
+                    # Удаляем сообщение о процессе
+                    await process_msg.delete()
+                    
+                else:
+                    await process_msg.edit_text("❌ Ошибка: Сервис вернул некорректные данные")
+                    
+            except requests.exceptions.RequestException as e:
+                await update.message.reply_text(f"❌ Ошибка сети: {str(e)}")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Ошибка генерации QR: {str(e)}")
+                
+        except Exception as e:
+            logger.error(f"Общая ошибка qr_command: {e}")
+            await update.message.reply_text(
+                f"❌ <b>Произошла ошибка</b>\n\n"
+                f"🔍 <b>Детали:</b> {str(e)}\n\n"
+                f"💡 <b>Попробуйте:</b>\n"
+                f"• Проверить интернет соединение\n"
+                f"• Использовать более короткий текст\n"
+                f"• Обратиться к администратору",
+                parse_mode='HTML'
+            )
+    
+    try:
+        # Обновляем функцию
+        dynamic_functions['qr'] = qr_command_fixed
+        
+        if 'qr' in dynamic_commands:
+            old_info = dynamic_commands['qr']
+            dynamic_commands['qr'] = {
+                'function': qr_command_fixed,
+                'description': old_info.get('description', 'Генератор QR кодов'),
+                'code': 'Исправленная версия QR генератора с онлайн API',
+                'created_at': old_info.get('created_at', datetime.now().isoformat()),
+                'edited_at': datetime.now().isoformat(),
+                'fixed_at': datetime.now().isoformat(),
+                'fixed_error': 'Исправлен код для работы без локальных библиотек'
+            }
+        else:
+            dynamic_commands['qr'] = {
+                'function': qr_command_fixed,
+                'description': 'Генератор QR кодов с онлайн API',
+                'code': 'Исправленная версия QR генератора с онлайн API',
+                'created_at': datetime.now().isoformat(),
+                'fixed_at': datetime.now().isoformat(),
+                'fixed_error': 'Исправлен код для работы без локальных библиотек'
+            }
+        
+        # Удаляем ошибку из истории
+        if 'qr' in function_errors:
+            del function_errors['qr']
+        
+        # Сохраняем
+        save_features()
+        
+        await update.message.reply_html(
+            f"✅ <b>Функция qr исправлена!</b>\n\n"
+            f"🔧 Теперь использует онлайн API qr-server.com\n"
+            f"📱 Не требует локальных библиотек\n"
+            f"💾 Функция сохранена\n\n"
+            f"💡 <b>Протестируй:</b> /qr Hello World"
+        )
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка исправления: {str(e)}")
+
 def main() -> None:
     """Запуск бота с ChatGPT и AI-генерацией функций"""
     # Загружаем сохраненные функции
@@ -2397,6 +2528,7 @@ def main() -> None:
     application.add_handler(CommandHandler("load_features", load_features_command)) # Добавляем новую команду
     application.add_handler(CommandHandler("functions_status", functions_status_command)) # Добавляем новую команду
     application.add_handler(CommandHandler("fix_crypto", fix_crypto_command)) # Добавляем новую команду
+    application.add_handler(CommandHandler("fix_qr", fix_qr_command)) # Добавляем новую команду
 
     # ВАЖНО: MessageHandler должен быть последним для обработки динамических команд
     application.add_handler(MessageHandler(filters.TEXT, echo))
