@@ -6,4 +6,5 @@ beautifulsoup4==4.12.3
 lxml==5.2.2
 aiohttp==3.9.1
 pillow==10.3.0
-qrcode==7.4.2 
+qrcode==7.4.2
+pytz==2023.3 

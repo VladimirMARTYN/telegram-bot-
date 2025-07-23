@@ -5,6 +5,7 @@ import logging
 import asyncio
 import os
 from datetime import datetime
+import pytz
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import json
@@ -29,13 +30,18 @@ if ADMIN_USER_ID == 0:
     logger.warning("⚠️ ADMIN_USER_ID не установлен!")
 
 # Время запуска бота
-bot_start_time = datetime.now()
+bot_start_time = get_moscow_time()
 
 # Файл для сохранения данных пользователей
 USER_DATA_FILE = "user_data.json"
 
 # Словарь пользователей (будет загружен из файла)
 user_data = {}
+
+def get_moscow_time():
+    """Получить текущее московское время"""
+    moscow_tz = pytz.timezone('Europe/Moscow')
+    return datetime.now(moscow_tz)
 
 def save_user_data():
     """Сохранение данных пользователей в файл"""
@@ -75,15 +81,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user_data[user_id] = {
             'name': user.first_name,
             'username': user.username,
-            'first_seen': datetime.now().isoformat(),
-            'last_activity': datetime.now().isoformat()
+            'first_seen': get_moscow_time().isoformat(),
+            'last_activity': get_moscow_time().isoformat()
         }
         logger.info(f"👤 Новый пользователь: {user.first_name} (ID: {user_id})")
         # Сохраняем данные пользователей при добавлении нового
         save_user_data()
     else:
         # Обновляем время последней активности
-        user_data[user_id]['last_activity'] = datetime.now().isoformat()
+        user_data[user_id]['last_activity'] = get_moscow_time().isoformat()
         # Сохраняем обновленные данные
         save_user_data()
     
@@ -168,7 +174,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда /ping"""
-    current_time = datetime.now().strftime("%H:%M:%S")
+    current_time = get_moscow_time().strftime("%H:%M:%S")
     await update.message.reply_text(f"🏓 Понг! Время: {current_time}")
 
 async def my_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -199,7 +205,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("❌ Доступ запрещен!")
         return
     
-    uptime = datetime.now() - bot_start_time
+    uptime = get_moscow_time() - bot_start_time
     uptime_str = str(uptime).split('.')[0]  # Убираем микросекунды
     
     admin_text = (
@@ -247,7 +253,7 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     # Обновляем активность пользователя
     if user_id in user_data:
-        user_data[user_id]['last_active'] = datetime.now().isoformat()
+        user_data[user_id]['last_active'] = get_moscow_time().isoformat()
     
     # Простой эхо ответ
     await update.message.reply_text(
@@ -278,6 +284,9 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             cad_rate = cbr_data.get('Valute', {}).get('CAD', {}).get('Value', 'Н/Д')
             aud_rate = cbr_data.get('Valute', {}).get('AUD', {}).get('Value', 'Н/Д')
             
+            # Сохраняем курс доллара для конвертации криптовалют в рубли
+            usd_to_rub_rate = usd_rate if isinstance(usd_rate, (int, float)) else 0
+            
             # Форматируем валютные курсы
             usd_str = f"{usd_rate:.2f} ₽" if isinstance(usd_rate, (int, float)) else str(usd_rate)
             eur_str = f"{eur_rate:.2f} ₽" if isinstance(eur_rate, (int, float)) else str(eur_rate)
@@ -307,18 +316,45 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             dogecoin_price = crypto_data.get('dogecoin', {}).get('usd', 'Н/Д')
             ton_price = crypto_data.get('the-open-network', {}).get('usd', 'Н/Д')
             
-            # Форматируем криптовалютные цены
-            btc_str = f"${bitcoin_price:,.0f}" if isinstance(bitcoin_price, (int, float)) else str(bitcoin_price)
-            eth_str = f"${ethereum_price:,.0f}" if isinstance(ethereum_price, (int, float)) else str(ethereum_price)
-            doge_str = f"${dogecoin_price:.4f}" if isinstance(dogecoin_price, (int, float)) else str(dogecoin_price)
-            ton_str = f"${ton_price:.2f}" if isinstance(ton_price, (int, float)) else str(ton_price)
+            # Форматируем криптовалютные цены (доллары + рубли)
+            if isinstance(bitcoin_price, (int, float)) and usd_to_rub_rate > 0:
+                btc_rub = bitcoin_price * usd_to_rub_rate
+                btc_str = f"${bitcoin_price:,.0f} ({btc_rub:,.0f} ₽)"
+            elif isinstance(bitcoin_price, (int, float)):
+                btc_str = f"${bitcoin_price:,.0f}"
+            else:
+                btc_str = str(bitcoin_price)
+                
+            if isinstance(ethereum_price, (int, float)) and usd_to_rub_rate > 0:
+                eth_rub = ethereum_price * usd_to_rub_rate
+                eth_str = f"${ethereum_price:,.0f} ({eth_rub:,.0f} ₽)"
+            elif isinstance(ethereum_price, (int, float)):
+                eth_str = f"${ethereum_price:,.0f}"
+            else:
+                eth_str = str(ethereum_price)
+                
+            if isinstance(dogecoin_price, (int, float)) and usd_to_rub_rate > 0:
+                doge_rub = dogecoin_price * usd_to_rub_rate
+                doge_str = f"${dogecoin_price:.4f} ({doge_rub:.2f} ₽)"
+            elif isinstance(dogecoin_price, (int, float)):
+                doge_str = f"${dogecoin_price:.4f}"
+            else:
+                doge_str = str(dogecoin_price)
+                
+            if isinstance(ton_price, (int, float)) and usd_to_rub_rate > 0:
+                ton_rub = ton_price * usd_to_rub_rate
+                ton_str = f"${ton_price:.2f} ({ton_rub:.2f} ₽)"
+            elif isinstance(ton_price, (int, float)):
+                ton_str = f"${ton_price:.2f}"
+            else:
+                ton_str = str(ton_price)
                 
         except Exception as e:
             logger.error(f"Ошибка получения курсов криптовалют: {e}")
             btc_str = eth_str = doge_str = ton_str = "❌ Ошибка API"
         
         # Формируем итоговое сообщение
-        current_time = datetime.now().strftime("%d.%m.%Y %H:%M")
+        current_time = get_moscow_time().strftime("%d.%m.%Y %H:%M")
         
         message = f"""📊 <b>КУРСЫ ВАЛЮТ И КРИПТОВАЛЮТ</b>
 
@@ -417,12 +453,12 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         user_data[user_id] = {
             'name': user.first_name,
             'username': user.username,
-            'first_seen': datetime.now().isoformat(),
-            'last_activity': datetime.now().isoformat()
+            'first_seen': get_moscow_time().isoformat(),
+            'last_activity': get_moscow_time().isoformat()
         }
         save_user_data()
     else:
-        user_data[user_id]['last_activity'] = datetime.now().isoformat()
+        user_data[user_id]['last_activity'] = get_moscow_time().isoformat()
         save_user_data()
     
     loading_msg = await update.message.reply_html("📈 <b>Загружаю данные российских акций...</b>")
@@ -595,7 +631,7 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     result_text += f"   🏢 Капитализация: {cap_formatted}\n\n"
                 
                 # Добавляем время обновления
-                current_time = datetime.now().strftime('%d.%m.%Y %H:%M')
+                current_time = get_moscow_time().strftime('%d.%m.%Y %H:%M')
                 result_text += f"📊 <b>Сортировка:</b> По рыночной капитализации\n"
                 result_text += f"⏰ <b>Обновлено:</b> {current_time} (МСК)\n"
                 result_text += f"📡 <b>Источник:</b> Московская биржа (MOEX)\n\n"
@@ -632,12 +668,12 @@ async def convert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         user_data[user_id] = {
             'name': user.first_name,
             'username': user.username,
-            'first_seen': datetime.now().isoformat(),
-            'last_activity': datetime.now().isoformat()
+            'first_seen': get_moscow_time().isoformat(),
+            'last_activity': get_moscow_time().isoformat()
         }
         save_user_data()
     else:
-        user_data[user_id]['last_activity'] = datetime.now().isoformat()
+        user_data[user_id]['last_activity'] = get_moscow_time().isoformat()
         save_user_data()
     
     # Проверяем аргументы команды
@@ -752,7 +788,7 @@ async def convert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         }
         
         # Формируем результат
-        current_time = datetime.now().strftime('%d.%m.%Y %H:%M')
+        current_time = get_moscow_time().strftime('%d.%m.%Y %H:%M')
         
         result_text = f"💱 <b>РЕЗУЛЬТАТ КОНВЕРТАЦИИ</b>\n\n"
         result_text += f"{currency_emoji[from_currency]} <b>{amount:,.2f} {from_currency}</b>\n"
@@ -814,12 +850,12 @@ async def compare_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         user_data[user_id] = {
             'name': user.first_name,
             'username': user.username,
-            'first_seen': datetime.now().isoformat(),
-            'last_activity': datetime.now().isoformat()
+            'first_seen': get_moscow_time().isoformat(),
+            'last_activity': get_moscow_time().isoformat()
         }
         save_user_data()
     else:
-        user_data[user_id]['last_activity'] = datetime.now().isoformat()
+        user_data[user_id]['last_activity'] = get_moscow_time().isoformat()
         save_user_data()
     
     # Проверяем аргументы команды
@@ -956,7 +992,7 @@ async def compare_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 raise Exception("Не удалось получить данные криптовалют")
         
         # Формируем результат сравнения
-        current_time = datetime.now().strftime('%d.%m.%Y %H:%M')
+        current_time = get_moscow_time().strftime('%d.%m.%Y %H:%M')
         result_text = f"⚖️ <b>СРАВНЕНИЕ АКТИВОВ</b>\n\n"
         
         # Получаем данные для каждого актива
@@ -1114,12 +1150,12 @@ async def trending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         user_data[user_id] = {
             'name': user.first_name,
             'username': user.username,
-            'first_seen': datetime.now().isoformat(),
-            'last_activity': datetime.now().isoformat()
+            'first_seen': get_moscow_time().isoformat(),
+            'last_activity': get_moscow_time().isoformat()
         }
         save_user_data()
     else:
-        user_data[user_id]['last_activity'] = datetime.now().isoformat()
+        user_data[user_id]['last_activity'] = get_moscow_time().isoformat()
         save_user_data()
     
     loading_msg = await update.message.reply_html("🔥 <b>Анализирую тренды рынка...</b>")
@@ -1211,7 +1247,7 @@ async def trending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 })
         
         # Формируем результат
-        current_time = datetime.now().strftime('%d.%m.%Y %H:%M')
+        current_time = get_moscow_time().strftime('%d.%m.%Y %H:%M')
         result_text = f"🔥 <b>ТРЕНДЫ ДНЯ</b>\n\n"
         
         # Криптовалютные тренды
