@@ -555,6 +555,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 <b>🔧 Диагностика:</b>
 /debug_status - Полная диагностика системы
+/debug_errors - Отладка записи ошибок функций
 /uptime - Время работы бота
 /system_info - Информация о системе
 /ping - Тест базовых функций
@@ -974,16 +975,27 @@ async def auto_fix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     if not context.args:
         if not function_errors:
-            await update.message.reply_text("❌ Нет записей об ошибках функций для исправления!")
+            await update.message.reply_text(
+                "❌ <b>Нет записей об ошибках!</b>\n\n"
+                "🔍 <b>Для отладки используй:</b>\n"
+                "• /debug_errors - проверить систему ошибок\n"
+                "• /list_features - показать все функции\n\n"
+                "💡 <b>Чтобы получить ошибку:</b>\n"
+                "1. Выполни любую AI-функцию с проблемой\n"
+                "2. Ошибка автоматически запишется\n"
+                "3. Используй /auto_fix [название_функции]",
+                parse_mode='HTML'
+            )
             return
             
         error_list = "🔧 <b>Функции с ошибками:</b>\n\n"
         for func_name, error_info in function_errors.items():
             error_list += f"• <b>/{func_name}</b> - {error_info['error_type']}\n"
-            error_list += f"  📝 {error_info['error_message'][:50]}{'...' if len(error_info['error_message']) > 50 else ''}\n\n"
+            error_list += f"  📝 {error_info['error_message'][:50]}{'...' if len(error_info['error_message']) > 50 else ''}\n"
+            error_list += f"  ⏰ {error_info['timestamp'][:16]}\n\n"
         
         error_list += "💡 <b>Использование:</b>\n<code>/auto_fix [название_функции]</code>\n\n"
-        error_list += "<b>Пример:</b> /auto_fix currencybk"
+        error_list += f"<b>Пример:</b> /auto_fix {list(function_errors.keys())[0] if function_errors else 'stocks'}"
         
         await update.message.reply_html(error_list)
         return
@@ -1213,23 +1225,33 @@ async def dynamic_command_handler(update: Update, context: ContextTypes.DEFAULT_
     """Обработчик динамических команд"""
     command = update.message.text[1:].split()[0].lower()  # убираем / и берем первое слово
     
+    logger.info(f"🔧 Попытка выполнить динамическую команду: /{command}")
+    
     if command in dynamic_functions:
         try:
+            logger.info(f"✅ Найдена функция для команды /{command}")
             await dynamic_functions[command](update, context)
+            logger.info(f"✅ Команда /{command} выполнена успешно")
         except Exception as e:
             # Детальная диагностика ошибки
+            import traceback
             error_type = type(e).__name__
             error_message = str(e)
+            error_traceback = traceback.format_exc()
             
             logger.error(f"❌ Ошибка выполнения динамической команды /{command}: {error_type}: {error_message}")
+            logger.error(f"   Полный стек:\n{error_traceback}")
             
-            # Сохраняем информацию об ошибке для автоисправления
+            # ВАЖНО: Сохраняем информацию об ошибке для автоисправления
             function_errors[command] = {
                 'error_type': error_type,
                 'error_message': error_message,
                 'timestamp': datetime.now().isoformat(),
-                'function_code': dynamic_commands[command]['code'] if command in dynamic_commands else 'Код недоступен'
+                'function_code': dynamic_commands[command]['code'] if command in dynamic_commands else 'Код недоступен',
+                'traceback': error_traceback
             }
+            
+            logger.info(f"✅ Ошибка сохранена в function_errors для команды /{command}")
             
             # Отправляем пользователю понятное сообщение
             debug_info = f"""❌ <b>Ошибка команды /{command}</b>
@@ -1242,10 +1264,13 @@ async def dynamic_command_handler(update: Update, context: ContextTypes.DEFAULT_
             # Анализируем тип ошибки
             if "ModuleNotFoundError" in error_type:
                 debug_info += "\n• Отсутствует библиотека в requirements.txt"
-            elif "requests" in error_message.lower():
+            elif "requests" in error_message.lower() or "connection" in error_message.lower():
                 debug_info += "\n• Проблема с интернет-запросом"
             elif "KeyError" in error_type:
                 debug_info += "\n• API изменил формат данных"
+            elif "JSONDecodeError" in error_type or "Expecting value" in error_message:
+                debug_info += "\n• Сервер вернул некорректный JSON"
+                debug_info += "\n• Возможно, API недоступен или изменился"
             elif "timeout" in error_message.lower():
                 debug_info += "\n• Превышен таймаут запроса"
             else:
@@ -1255,9 +1280,13 @@ async def dynamic_command_handler(update: Update, context: ContextTypes.DEFAULT_
             debug_info += f"\n• /auto_fix {command} - 🤖 Автоисправление через ChatGPT"
             debug_info += f"\n• /remove_feature {command} - удалить функцию"
             debug_info += f"\n• /edit_feature {command} - [описание] - редактировать вручную"
+            debug_info += f"\n\n🔍 <b>Отладка:</b> Ошибка записана для диагностики"
             
             await update.message.reply_html(debug_info)
     else:
+        logger.warning(f"⚠️ Команда /{command} не найдена среди динамических функций")
+        logger.info(f"📋 Доступные динамические команды: {list(dynamic_functions.keys())}")
+        
         # Fallback к обычному echo
         await echo(update, context)
 
@@ -1697,6 +1726,52 @@ async def cancel_fix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     del pending_fixes[function_name]
     await update.message.reply_text(f"✅ Исправления для /{function_name} отменены.")
 
+async def debug_errors(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отладка системы записи ошибок (только админ)"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен!")
+        return
+    
+    debug_report = f"🔍 <b>ОТЛАДКА СИСТЕМЫ ОШИБОК</b>\n\n"
+    
+    # Показываем состояние систем
+    debug_report += f"📊 <b>Состояние систем:</b>\n"
+    debug_report += f"• function_errors: {len(function_errors)} записей\n"
+    debug_report += f"• dynamic_commands: {len(dynamic_commands)} функций\n"
+    debug_report += f"• dynamic_functions: {len(dynamic_functions)} функций\n"
+    
+    if 'pending_fixes' in globals():
+        debug_report += f"• pending_fixes: {len(pending_fixes)} исправлений\n"
+    else:
+        debug_report += f"• pending_fixes: не инициализировано\n"
+    
+    # Показываем записанные ошибки
+    if function_errors:
+        debug_report += f"\n❌ <b>Записанные ошибки:</b>\n"
+        for func_name, error_info in function_errors.items():
+            debug_report += f"• <b>/{func_name}</b> - {error_info['error_type']}\n"
+            debug_report += f"  📝 {error_info['error_message'][:50]}{'...' if len(error_info['error_message']) > 50 else ''}\n"
+            debug_report += f"  ⏰ {error_info['timestamp'][:16]}\n\n"
+    else:
+        debug_report += f"\n✅ <b>Нет записанных ошибок</b>\n"
+    
+    # Показываем доступные функции
+    if dynamic_commands:
+        debug_report += f"\n🧩 <b>AI Функции:</b>\n"
+        for cmd in list(dynamic_commands.keys())[:5]:
+            debug_report += f"• /{cmd}\n"
+        if len(dynamic_commands) > 5:
+            debug_report += f"• ... и еще {len(dynamic_commands)-5}\n"
+    
+    debug_report += f"\n💡 <b>Тестирование:</b>\n"
+    debug_report += f"1. Выполни команду с ошибкой\n"
+    debug_report += f"2. Проверь /debug_errors\n"
+    debug_report += f"3. Используй /auto_fix [команда]"
+    
+    await update.message.reply_html(debug_report)
+
 def main() -> None:
     """Запуск бота с ChatGPT и AI-генерацией функций"""
     # Загружаем сохраненные функции
@@ -1740,6 +1815,7 @@ def main() -> None:
     application.add_handler(CommandHandler("notify", notify_admin)) # Добавляем новую команду
     application.add_handler(CommandHandler("show_diff", show_diff)) # Добавляем новую команду
     application.add_handler(CommandHandler("cancel_fix", cancel_fix)) # Добавляем новую команду
+    application.add_handler(CommandHandler("debug_errors", debug_errors)) # Добавляем новую команду
 
     # ВАЖНО: MessageHandler должен быть последним для обработки динамических команд
     application.add_handler(MessageHandler(filters.TEXT, echo))
