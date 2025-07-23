@@ -400,12 +400,24 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         moex_url = "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json"
         
         # Получаем данные с Московской биржи
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
             async with session.get(moex_url) as response:
                 if response.status != 200:
-                    raise Exception(f"Ошибка API MOEX: {response.status}")
+                    error_text = await response.text()
+                    logger.error(f"MOEX API error {response.status}: {error_text[:200]}")
+                    raise Exception(f"Ошибка API MOEX: статус {response.status}")
                 
                 data = await response.json()
+                
+                # Проверяем структуру данных
+                if not data or 'securities' not in data or 'marketdata' not in data:
+                    raise Exception("Неверная структура данных от MOEX API")
+                
+                securities_data = data.get('securities', {}).get('data', [])
+                marketdata_data = data.get('marketdata', {}).get('data', [])
+                
+                if not securities_data or not marketdata_data:
+                    raise Exception("Пустые данные от MOEX API")
                 
                 # Извлекаем данные об акциях
                 securities = data['securities']['data']
@@ -434,32 +446,60 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     market_dict = dict(zip(marketdata_columns, market))
                     secid = market_dict.get('SECID')
                     if secid and secid in stocks_info:
+                        # Безопасное преобразование значений в числа
+                        def safe_float(value, default=0.0):
+                            if value is None or value == '':
+                                return default
+                            try:
+                                return float(value)
+                            except (ValueError, TypeError):
+                                return default
+                        
+                        def safe_int(value, default=0):
+                            if value is None or value == '':
+                                return default
+                            try:
+                                return int(float(value))
+                            except (ValueError, TypeError):
+                                return default
+                        
                         stocks_info[secid].update({
-                            'last': market_dict.get('LAST', 0),
-                            'change': market_dict.get('CHANGE', 0),
-                            'changeprcnt': market_dict.get('CHANGEPRCNT', 0),
-                            'voltoday': market_dict.get('VOLTODAY', 0),
-                            'valtoday': market_dict.get('VALTODAY', 0),
-                            'marketcap': market_dict.get('MARKETCAP', 0),
-                            'time': market_dict.get('TIME', ''),
-                            'updatetime': market_dict.get('UPDATETIME', '')
+                            'last': safe_float(market_dict.get('LAST'), 0),
+                            'change': safe_float(market_dict.get('CHANGE'), 0),
+                            'changeprcnt': safe_float(market_dict.get('CHANGEPRCNT'), 0),
+                            'voltoday': safe_int(market_dict.get('VOLTODAY'), 0),
+                            'valtoday': safe_float(market_dict.get('VALTODAY'), 0),
+                            'marketcap': safe_float(market_dict.get('MARKETCAP'), 0),
+                            'time': str(market_dict.get('TIME', '')),
+                            'updatetime': str(market_dict.get('UPDATETIME', ''))
                         })
                 
                 # Фильтруем акции с рыночными данными и сортируем по капитализации
                 active_stocks = []
                 for secid, info in stocks_info.items():
-                    if (info.get('last', 0) and info.get('last') > 0 and 
-                        info.get('marketcap', 0) and info.get('marketcap') > 0):
+                    # Проверяем что у акции есть цена и капитализация
+                    last_price = info.get('last', 0)
+                    market_cap = info.get('marketcap', 0)
+                    
+                    if (last_price and last_price > 0 and market_cap and market_cap > 0):
                         active_stocks.append(info)
                 
                 # Сортируем по рыночной капитализации (по убыванию)
-                active_stocks.sort(key=lambda x: x.get('marketcap', 0), reverse=True)
+                active_stocks.sort(key=lambda x: float(x.get('marketcap', 0)), reverse=True)
                 
                 # Берем топ 10
                 top_stocks = active_stocks[:10]
                 
                 if not top_stocks:
-                    raise Exception("Не удалось получить данные об акциях")
+                    # Если нет акций с полными данными, берем любые доступные
+                    all_stocks = list(stocks_info.values())
+                    available_stocks = [s for s in all_stocks if s.get('last', 0) and float(s.get('last', 0)) > 0]
+                    
+                    if available_stocks:
+                        available_stocks.sort(key=lambda x: float(x.get('last', 0)), reverse=True)
+                        top_stocks = available_stocks[:10]
+                    else:
+                        raise Exception("Нет доступных данных по российским акциям")
                 
                 # Формируем результат
                 result_text = "📈 <b>ТОП-10 РОССИЙСКИХ АКЦИЙ</b>\n"
@@ -472,9 +512,18 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     change_pct = stock.get('changeprcnt', 0)
                     marketcap = stock.get('marketcap', 0)
                     
+                    # Безопасное преобразование значений для отображения
+                    try:
+                        price = float(price) if price else 0
+                        change = float(change) if change else 0
+                        change_pct = float(change_pct) if change_pct else 0
+                        marketcap = float(marketcap) if marketcap else 0
+                    except (ValueError, TypeError):
+                        price = change = change_pct = marketcap = 0
+                    
                     # Форматируем название (обрезаем если слишком длинное)
-                    if len(name) > 25:
-                        name = name[:22] + "..."
+                    if len(str(name)) > 25:
+                        name = str(name)[:22] + "..."
                     
                     # Определяем эмодзи для изменения
                     if change > 0:
@@ -495,11 +544,22 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     elif marketcap >= 1_000_000:  # миллионы
                         cap_formatted = f"{marketcap/1_000_000:.1f} млн ₽"
                     else:
-                        cap_formatted = f"{marketcap:.0f} ₽"
+                        cap_formatted = f"{marketcap:.0f} ₽" if marketcap > 0 else "н/д"
                     
                     result_text += f"{i}. <b>{name}</b> ({stock.get('secid', '')})\n"
-                    result_text += f"   💰 <b>{price:.2f} ₽</b>\n"
-                    result_text += f"   {change_color} {change:+.2f} ₽ ({change_pct:+.2f}%) {change_emoji}\n"
+                    
+                    # Безопасное форматирование цены
+                    if price > 0:
+                        result_text += f"   💰 <b>{price:.2f} ₽</b>\n"
+                    else:
+                        result_text += f"   💰 <b>н/д</b>\n"
+                    
+                    # Безопасное форматирование изменения
+                    if price > 0:
+                        result_text += f"   {change_color} {change:+.2f} ₽ ({change_pct:+.2f}%) {change_emoji}\n"
+                    else:
+                        result_text += f"   ⚪ н/д ➡️\n"
+                    
                     result_text += f"   🏢 Капитализация: {cap_formatted}\n\n"
                 
                 # Добавляем время обновления
