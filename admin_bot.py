@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import json
 
 # Настройка логирования
 logging.basicConfig(
@@ -29,8 +30,39 @@ if ADMIN_USER_ID == 0:
 # Время запуска бота
 bot_start_time = datetime.now()
 
-# Простые данные в памяти
+# Файл для сохранения данных пользователей
+USER_DATA_FILE = "user_data.json"
+
+# Словарь пользователей (будет загружен из файла)
 user_data = {}
+
+def save_user_data():
+    """Сохранение данных пользователей в файл"""
+    try:
+        with open(USER_DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump(user_data, f, ensure_ascii=False, indent=2)
+        logger.info(f"💾 Данные {len(user_data)} пользователей сохранены в {USER_DATA_FILE}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения пользователей: {e}")
+
+def load_user_data():
+    """Загрузка данных пользователей из файла"""
+    global user_data
+    try:
+        if os.path.exists(USER_DATA_FILE):
+            with open(USER_DATA_FILE, 'r', encoding='utf-8') as f:
+                loaded_data = json.load(f)
+                # Преобразуем строковые ключи обратно в int
+                user_data = {int(user_id): user_info for user_id, user_info in loaded_data.items()}
+                logger.info(f"📂 Загружены данные {len(user_data)} пользователей из {USER_DATA_FILE}")
+        else:
+            logger.info(f"📂 Файл {USER_DATA_FILE} не найден, создаем новую базу пользователей")
+            user_data = {}
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки пользователей: {e}")
+        user_data = {}
+
+# Функции команд
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда /start"""
@@ -42,9 +74,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user_data[user_id] = {
             'name': user.first_name,
             'username': user.username,
-            'joined_at': datetime.now().isoformat()
+            'first_seen': datetime.now().isoformat(),
+            'last_activity': datetime.now().isoformat()
         }
-        logger.info(f"👤 Новый пользователь: {user.first_name} (@{user.username}, ID: {user_id})")
+        logger.info(f"👤 Новый пользователь: {user.first_name} (ID: {user_id})")
+        # Сохраняем данные пользователей при добавлении нового
+        save_user_data()
+    else:
+        # Обновляем время последней активности
+        user_data[user_id]['last_activity'] = datetime.now().isoformat()
+        # Сохраняем обновленные данные
+        save_user_data()
     
     welcome_text = (
         f"👋 <b>Привет, {user.first_name}!</b>\n\n"
@@ -60,6 +100,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if user_id == ADMIN_USER_ID:
         welcome_text += f"/broadcast [текст] - Рассылка всем пользователям\n"
         welcome_text += f"/fix_admin_id - Исправить права администратора\n"
+        welcome_text += f"/users_info - Информация о пользователях\n"
     elif ADMIN_USER_ID == 0:
         # Если ADMIN_USER_ID не настроен, показываем команду исправления
         welcome_text += f"/fix_admin_id - Стать администратором (не настроен)\n"
@@ -95,6 +136,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if is_admin:
         help_text += "/broadcast [текст] - Рассылка всем пользователям\n"
         help_text += "/fix_admin_id - Исправить права администратора\n"
+        help_text += "/users_info - Информация о пользователях\n"
     elif ADMIN_USER_ID == 0:
         # Если ADMIN_USER_ID не настроен, показываем команду исправления всем
         help_text += "/fix_admin_id - Стать администратором (не настроен)\n"
@@ -167,7 +209,8 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"/ping - Проверка работы\n"
         f"/rates - Курсы валют и криптовалют\n"
         f"/broadcast [текст] - Рассылка всем пользователям\n"
-        f"/fix_admin_id - Исправить права администратора\n\n"
+        f"/fix_admin_id - Исправить права администратора\n"
+        f"/users_info - Информация о пользователях бота\n\n"
         
         f"💱 <b>Доступные функции:</b>\n"
         f"• Курсы валют ЦБ РФ (USD, EUR, CNY)\n"
@@ -462,10 +505,81 @@ async def fix_admin_id_command(update: Update, context: ContextTypes.DEFAULT_TYP
     # Логируем изменение
     logger.info(f"🔧 ADMIN_USER_ID исправлен: {old_admin_id} → {ADMIN_USER_ID}")
 
+async def users_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Информация о пользователях бота (только админ)"""
+    user_id = update.effective_user.id
+    
+    # Проверяем права администратора
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен! Только администратор может использовать эту команду.")
+        return
+    
+    if not user_data:
+        await update.message.reply_html(
+            "👥 <b>ИНФОРМАЦИЯ О ПОЛЬЗОВАТЕЛЯХ</b>\n\n"
+            "📊 <b>Статистика:</b>\n"
+            "• Пользователей в базе: <b>0</b>\n\n"
+            "💡 <b>Возможные причины:</b>\n"
+            "• Никто еще не использовал команду /start\n"
+            "• Данные не сохранились из файла\n"
+            "• Файл user_data.json отсутствует\n\n"
+            "🔧 <b>Для исправления:</b>\n"
+            "Попросите пользователей выполнить /start"
+        )
+        return
+    
+    # Сортируем пользователей по времени последней активности
+    sorted_users = sorted(
+        user_data.items(), 
+        key=lambda x: x[1].get('last_activity', ''), 
+        reverse=True
+    )
+    
+    info_text = f"👥 <b>ИНФОРМАЦИЯ О ПОЛЬЗОВАТЕЛЯХ</b>\n\n"
+    info_text += f"📊 <b>Статистика:</b>\n"
+    info_text += f"• Всего пользователей: <b>{len(user_data)}</b>\n"
+    info_text += f"• Файл данных: <code>{USER_DATA_FILE}</code>\n\n"
+    
+    info_text += f"👤 <b>Список пользователей:</b>\n"
+    
+    # Показываем первых 10 пользователей
+    for i, (uid, info) in enumerate(sorted_users[:10], 1):
+        name = info.get('name', 'Неизвестно')
+        username = info.get('username', 'нет')
+        last_activity = info.get('last_activity', 'никогда')
+        
+        # Форматируем дату если она есть
+        try:
+            if last_activity != 'никогда':
+                dt = datetime.fromisoformat(last_activity)
+                last_activity = dt.strftime('%d.%m.%Y %H:%M')
+        except:
+            pass
+        
+        username_text = f"@{username}" if username and username != 'нет' else "без username"
+        
+        info_text += f"{i}. <b>{name}</b> ({username_text})\n"
+        info_text += f"   ID: <code>{uid}</code>\n"
+        info_text += f"   Активен: {last_activity}\n\n"
+    
+    if len(user_data) > 10:
+        info_text += f"... и еще {len(user_data) - 10} пользователей\n\n"
+    
+    info_text += f"💾 <b>Сохранение данных:</b>\n"
+    info_text += f"• Автосохранение при каждом /start\n"
+    info_text += f"• Загрузка при запуске бота\n"
+    info_text += f"• Защита от потери при редеплое"
+    
+    await update.message.reply_html(info_text)
+
 def main() -> None:
     """Запуск бота - минимальная версия"""
-    logger.info("🤖 Запуск чистого бота...")
+    logger.info("🚀 Запуск бота...")
     
+    # Загружаем данные пользователей при старте
+    load_user_data()
+    
+    # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
 
     # Основные команды
@@ -477,6 +591,7 @@ def main() -> None:
     application.add_handler(CommandHandler("rates", rates_command))
     application.add_handler(CommandHandler("broadcast", broadcast_command))
     application.add_handler(CommandHandler("fix_admin_id", fix_admin_id_command))
+    application.add_handler(CommandHandler("users_info", users_info_command))
 
     # Обработчик всех текстовых сообщений (эхо)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
