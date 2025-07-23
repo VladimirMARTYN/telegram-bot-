@@ -95,6 +95,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"/ping - Проверка работы\n"
         f"/rates - Курсы валют и криптовалют\n"
         f"/convert - Конвертер валют\n"
+        f"/compare - Сравнение активов\n"
         f"/stocks - Топ российских акций\n"
         f"/my_id - Узнать свой ID\n"
     )
@@ -131,6 +132,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/ping - Проверка работы\n"
         "/rates - Курсы валют и криптовалют\n"
         "/convert - Конвертер валют\n"
+        "/compare - Сравнение активов\n"
         "/stocks - Топ российских акций\n"
         "/my_id - Узнать свой ID\n"
     )
@@ -144,8 +146,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     help_text += (
         "\n💱 <b>Функции:</b>\n"
-        "• Курсы валют ЦБ РФ (USD, EUR, CNY)\n"
+        "• Курсы валют ЦБ РФ (9 валют)\n"
         "• Конвертер валют с актуальными курсами\n"
+        "• Сравнение валют и криптовалют\n"
         "• Курсы криптовалют (Bitcoin, Ethereum, Dogecoin, TON)\n"
         "• Топ российских акций (Московская биржа)\n"
     )
@@ -209,11 +212,14 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"/ping - Проверка работы\n"
         f"/rates - Курсы валют и криптовалют\n"
         f"/convert - Конвертер валют\n"
+        f"/compare - Сравнение активов\n"
         f"/stocks - Топ российских акций\n"
         f"/fix_admin_id - Исправить права администратора\n\n"
         
         f"💱 <b>Доступные функции:</b>\n"
-        f"• Курсы валют ЦБ РФ (USD, EUR, CNY)\n"
+        f"• Курсы валют ЦБ РФ (9 валют)\n"
+        f"• Конвертер валют между всеми парами\n"
+        f"• Сравнение активов с аналитикой\n"
         f"• Курсы криптовалют (BTC, ETH, DOGE, TON)\n"
         f"• Топ российских акций (Московская биржа)\n\n"
         
@@ -793,6 +799,306 @@ async def convert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
         logger.error(f"Ошибка конвертации валют: {e}")
 
+async def compare_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Сравнение валют и криптовалют - /compare [актив1] [актив2]"""
+    user_id = update.effective_user.id
+    user = update.effective_user
+    
+    # Регистрируем/обновляем пользователя
+    if user_id not in user_data:
+        user_data[user_id] = {
+            'name': user.first_name,
+            'username': user.username,
+            'first_seen': datetime.now().isoformat(),
+            'last_activity': datetime.now().isoformat()
+        }
+        save_user_data()
+    else:
+        user_data[user_id]['last_activity'] = datetime.now().isoformat()
+        save_user_data()
+    
+    # Проверяем аргументы команды
+    if len(context.args) != 2:
+        await update.message.reply_html(
+            "⚖️ <b>СРАВНЕНИЕ АКТИВОВ</b>\n\n"
+            "🔍 <b>Использование:</b>\n"
+            "<code>/compare [актив1] [актив2]</code>\n\n"
+            "💡 <b>Примеры:</b>\n"
+            "<b>Валюты:</b>\n"
+            "• <code>/compare USD EUR</code> - доллар vs евро\n"
+            "• <code>/compare GBP JPY</code> - фунт vs иена\n"
+            "• <code>/compare RUB CNY</code> - рубль vs юань\n\n"
+            "<b>Криптовалюты:</b>\n"
+            "• <code>/compare BTC ETH</code> - Bitcoin vs Ethereum\n"
+            "• <code>/compare ETH TON</code> - Ethereum vs TON\n"
+            "• <code>/compare BTC DOGE</code> - Bitcoin vs Dogecoin\n\n"
+            "💰 <b>Поддерживаемые активы:</b>\n"
+            "<b>Валюты:</b> RUB, USD, EUR, CNY, GBP, JPY, CHF, CAD, AUD\n"
+            "<b>Криптовалюты:</b> BTC, ETH, DOGE, TON\n\n"
+            "📊 <b>В результате вы получите подробное сравнение</b>"
+        )
+        return
+    
+    try:
+        # Парсим аргументы
+        asset1, asset2 = context.args
+        asset1 = asset1.upper()
+        asset2 = asset2.upper()
+        
+        # Если сравниваем один и тот же актив
+        if asset1 == asset2:
+            await update.message.reply_html(
+                f"⚖️ <b>СРАВНЕНИЕ АКТИВОВ</b>\n\n"
+                f"💡 <b>{asset1} = {asset2}</b>\n\n"
+                f"Сравнение актива с самим собой 😊\n"
+                f"Попробуйте сравнить разные активы!"
+            )
+            return
+        
+        # Определяем поддерживаемые активы
+        currencies = ['RUB', 'USD', 'EUR', 'CNY', 'GBP', 'JPY', 'CHF', 'CAD', 'AUD']
+        crypto_assets = ['BTC', 'ETH', 'DOGE', 'TON']
+        all_assets = currencies + crypto_assets
+        
+        # Проверяем что активы поддерживаются
+        if asset1 not in all_assets or asset2 not in all_assets:
+            unsupported = []
+            if asset1 not in all_assets:
+                unsupported.append(asset1)
+            if asset2 not in all_assets:
+                unsupported.append(asset2)
+                
+            await update.message.reply_html(
+                f"❌ <b>Неподдерживаемые активы!</b>\n\n"
+                f"🚫 <b>Не поддерживаются:</b> {', '.join(unsupported)}\n\n"
+                f"💰 <b>Поддерживаемые валюты:</b>\n{', '.join(currencies)}\n\n"
+                f"₿ <b>Поддерживаемые криптовалюты:</b>\n{', '.join(crypto_assets)}\n\n"
+                f"💡 <b>Попробуйте:</b> <code>/compare BTC ETH</code>"
+            )
+            return
+        
+        loading_msg = await update.message.reply_html("⚖️ <b>Получаю данные для сравнения...</b>")
+        
+        # Получаем данные
+        import requests
+        
+        # Данные валют от ЦБ РФ
+        currency_data = {}
+        if asset1 in currencies or asset2 in currencies:
+            try:
+                cbr_response = requests.get("https://www.cbr-xml-daily.ru/daily_json.js", timeout=10)
+                cbr_response.raise_for_status()
+                cbr_data = cbr_response.json()
+                
+                currency_data = {
+                    'RUB': {'value': 1.0, 'name': 'Российский рубль', 'flag': '🇷🇺'},
+                    'USD': {'value': cbr_data.get('Valute', {}).get('USD', {}).get('Value', 0), 'name': 'Доллар США', 'flag': '🇺🇸'},
+                    'EUR': {'value': cbr_data.get('Valute', {}).get('EUR', {}).get('Value', 0), 'name': 'Евро', 'flag': '🇪🇺'},
+                    'CNY': {'value': cbr_data.get('Valute', {}).get('CNY', {}).get('Value', 0), 'name': 'Китайский юань', 'flag': '🇨🇳'},
+                    'GBP': {'value': cbr_data.get('Valute', {}).get('GBP', {}).get('Value', 0), 'name': 'Британский фунт', 'flag': '🇬🇧'},
+                    'JPY': {'value': cbr_data.get('Valute', {}).get('JPY', {}).get('Value', 0), 'name': 'Японская иена', 'flag': '🇯🇵'},
+                    'CHF': {'value': cbr_data.get('Valute', {}).get('CHF', {}).get('Value', 0), 'name': 'Швейцарский франк', 'flag': '🇨🇭'},
+                    'CAD': {'value': cbr_data.get('Valute', {}).get('CAD', {}).get('Value', 0), 'name': 'Канадский доллар', 'flag': '🇨🇦'},
+                    'AUD': {'value': cbr_data.get('Valute', {}).get('AUD', {}).get('Value', 0), 'name': 'Австралийский доллар', 'flag': '🇦🇺'}
+                }
+            except Exception as e:
+                logger.error(f"Ошибка получения курсов валют для сравнения: {e}")
+                raise Exception("Не удалось получить курсы валют")
+        
+        # Данные криптовалют от CoinGecko
+        crypto_data = {}
+        if asset1 in crypto_assets or asset2 in crypto_assets:
+            try:
+                crypto_response = requests.get(
+                    "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,dogecoin,the-open-network&vs_currencies=usd&include_24hr_change=true&include_market_cap=true",
+                    timeout=10
+                )
+                crypto_response.raise_for_status()
+                crypto_json = crypto_response.json()
+                
+                crypto_data = {
+                    'BTC': {
+                        'value': crypto_json.get('bitcoin', {}).get('usd', 0),
+                        'change': crypto_json.get('bitcoin', {}).get('usd_24h_change', 0),
+                        'market_cap': crypto_json.get('bitcoin', {}).get('usd_market_cap', 0),
+                        'name': 'Bitcoin',
+                        'emoji': '🟠'
+                    },
+                    'ETH': {
+                        'value': crypto_json.get('ethereum', {}).get('usd', 0),
+                        'change': crypto_json.get('ethereum', {}).get('usd_24h_change', 0),
+                        'market_cap': crypto_json.get('ethereum', {}).get('usd_market_cap', 0),
+                        'name': 'Ethereum',
+                        'emoji': '🔷'
+                    },
+                    'DOGE': {
+                        'value': crypto_json.get('dogecoin', {}).get('usd', 0),
+                        'change': crypto_json.get('dogecoin', {}).get('usd_24h_change', 0),
+                        'market_cap': crypto_json.get('dogecoin', {}).get('usd_market_cap', 0),
+                        'name': 'Dogecoin',
+                        'emoji': '🐕'
+                    },
+                    'TON': {
+                        'value': crypto_json.get('the-open-network', {}).get('usd', 0),
+                        'change': crypto_json.get('the-open-network', {}).get('usd_24h_change', 0),
+                        'market_cap': crypto_json.get('the-open-network', {}).get('usd_market_cap', 0),
+                        'name': 'TON',
+                        'emoji': '💎'
+                    }
+                }
+            except Exception as e:
+                logger.error(f"Ошибка получения данных криптовалют для сравнения: {e}")
+                raise Exception("Не удалось получить данные криптовалют")
+        
+        # Формируем результат сравнения
+        current_time = datetime.now().strftime('%d.%m.%Y %H:%M')
+        result_text = f"⚖️ <b>СРАВНЕНИЕ АКТИВОВ</b>\n\n"
+        
+        # Получаем данные для каждого актива
+        def get_asset_info(asset):
+            if asset in currencies:
+                data = currency_data[asset]
+                return {
+                    'type': 'currency',
+                    'symbol': data['flag'],
+                    'name': data['name'],
+                    'value_rub': data['value'],
+                    'code': asset
+                }
+            else:
+                data = crypto_data[asset]
+                return {
+                    'type': 'crypto',
+                    'symbol': data['emoji'],
+                    'name': data['name'],
+                    'value_usd': data['value'],
+                    'change_24h': data['change'],
+                    'market_cap': data['market_cap'],
+                    'code': asset
+                }
+        
+        info1 = get_asset_info(asset1)
+        info2 = get_asset_info(asset2)
+        
+        # Заголовки активов
+        result_text += f"{info1['symbol']} <b>{info1['name']} ({asset1})</b>\n"
+        
+        if info1['type'] == 'currency':
+            if asset1 == 'RUB':
+                result_text += f"💰 Курс: 1.00 ₽ (базовая валюта)\n"
+            else:
+                result_text += f"💰 Курс: {info1['value_rub']:.4f} ₽\n"
+        else:
+            change_emoji = "📈" if info1['change_24h'] > 0 else "📉" if info1['change_24h'] < 0 else "➡️"
+            result_text += f"💰 Цена: ${info1['value_usd']:,.2f}\n"
+            result_text += f"📊 24ч: {info1['change_24h']:+.2f}% {change_emoji}\n"
+            if info1['market_cap'] > 0:
+                market_cap_b = info1['market_cap'] / 1_000_000_000
+                result_text += f"🏛️ Капитализация: ${market_cap_b:.1f}B\n"
+        
+        result_text += f"\n              🆚\n\n"
+        
+        result_text += f"{info2['symbol']} <b>{info2['name']} ({asset2})</b>\n"
+        
+        if info2['type'] == 'currency':
+            if asset2 == 'RUB':
+                result_text += f"💰 Курс: 1.00 ₽ (базовая валюта)\n"
+            else:
+                result_text += f"💰 Курс: {info2['value_rub']:.4f} ₽\n"
+        else:
+            change_emoji = "📈" if info2['change_24h'] > 0 else "📉" if info2['change_24h'] < 0 else "➡️"
+            result_text += f"💰 Цена: ${info2['value_usd']:,.2f}\n"
+            result_text += f"📊 24ч: {info2['change_24h']:+.2f}% {change_emoji}\n"
+            if info2['market_cap'] > 0:
+                market_cap_b = info2['market_cap'] / 1_000_000_000
+                result_text += f"🏛️ Капитализация: ${market_cap_b:.1f}B\n"
+        
+        # Добавляем сравнительный анализ
+        result_text += f"\n📊 <b>АНАЛИЗ СРАВНЕНИЯ:</b>\n"
+        
+        # Сравнение валют
+        if info1['type'] == 'currency' and info2['type'] == 'currency':
+            if asset1 == 'RUB':
+                rate = 1 / info2['value_rub']
+                result_text += f"• 1 {asset2} = {info2['value_rub']:.4f} {asset1}\n"
+                result_text += f"• 1 {asset1} = {rate:.4f} {asset2}\n"
+            elif asset2 == 'RUB':
+                rate = 1 / info1['value_rub']
+                result_text += f"• 1 {asset1} = {info1['value_rub']:.4f} {asset2}\n"
+                result_text += f"• 1 {asset2} = {rate:.4f} {asset1}\n"
+            else:
+                cross_rate = info1['value_rub'] / info2['value_rub']
+                reverse_rate = info2['value_rub'] / info1['value_rub']
+                result_text += f"• 1 {asset1} = {cross_rate:.4f} {asset2}\n"
+                result_text += f"• 1 {asset2} = {reverse_rate:.4f} {asset1}\n"
+        
+        # Сравнение криптовалют
+        elif info1['type'] == 'crypto' and info2['type'] == 'crypto':
+            ratio = info1['value_usd'] / info2['value_usd'] if info2['value_usd'] > 0 else 0
+            reverse_ratio = info2['value_usd'] / info1['value_usd'] if info1['value_usd'] > 0 else 0
+            
+            result_text += f"• 1 {asset1} = {ratio:.4f} {asset2}\n"
+            result_text += f"• 1 {asset2} = {reverse_ratio:.4f} {asset1}\n"
+            
+            # Сравнение динамики
+            if abs(info1['change_24h']) > abs(info2['change_24h']):
+                result_text += f"• {asset1} более волатилен сегодня\n"
+            elif abs(info2['change_24h']) > abs(info1['change_24h']):
+                result_text += f"• {asset2} более волатилен сегодня\n"
+            else:
+                result_text += f"• Похожая волатильность\n"
+            
+            # Сравнение капитализации
+            if info1['market_cap'] > info2['market_cap'] * 2:
+                result_text += f"• {asset1} значительно крупнее по капитализации\n"
+            elif info2['market_cap'] > info1['market_cap'] * 2:
+                result_text += f"• {asset2} значительно крупнее по капитализации\n"
+            else:
+                result_text += f"• Сопоставимые по капитализации\n"
+        
+        # Смешанное сравнение (валюта vs крипто)
+        else:
+            result_text += f"• Сравнение валюты и криптовалюты\n"
+            result_text += f"• Разные классы активов\n"
+            result_text += f"• Разные источники данных\n"
+        
+        result_text += f"\n⏰ <b>Время:</b> {current_time} (МСК)\n"
+        result_text += f"📡 <b>Источники:</b> "
+        
+        sources = []
+        if any(info['type'] == 'currency' for info in [info1, info2]):
+            sources.append("ЦБ РФ")
+        if any(info['type'] == 'crypto' for info in [info1, info2]):
+            sources.append("CoinGecko")
+        
+        result_text += ", ".join(sources)
+        
+        result_text += f"\n\n💡 <b>Другие сравнения:</b>\n"
+        result_text += f"<code>/compare BTC ETH</code>\n"
+        result_text += f"<code>/compare USD EUR</code>"
+        
+        await loading_msg.edit_text(result_text, parse_mode='HTML')
+        
+    except Exception as e:
+        error_text = (
+            f"❌ <b>Ошибка сравнения активов</b>\n\n"
+            f"🚫 <b>Причина:</b> {str(e)}\n\n"
+            f"💡 <b>Возможные причины:</b>\n"
+            f"• Проблемы с API (ЦБ РФ или CoinGecko)\n"
+            f"• Временные неполадки сети\n"
+            f"• Технические работы\n\n"
+            f"🔄 <b>Попробуйте позже или используйте:</b>\n"
+            f"/rates - просмотр курсов\n"
+            f"/convert - конвертер валют"
+        )
+        
+        if 'loading_msg' in locals():
+            await loading_msg.edit_text(error_text, parse_mode='HTML')
+        else:
+            await update.message.reply_html(error_text)
+        
+        logger.error(f"Ошибка сравнения активов: {e}")
+
 def main() -> None:
     """Запуск бота - минимальная версия"""
     logger.info("🚀 Запуск бота...")
@@ -811,6 +1117,7 @@ def main() -> None:
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("rates", rates_command))
     application.add_handler(CommandHandler("convert", convert_command))
+    application.add_handler(CommandHandler("compare", compare_command))
     application.add_handler(CommandHandler("fix_admin_id", fix_admin_id_command))
     application.add_handler(CommandHandler("stocks", stocks_command))
 
