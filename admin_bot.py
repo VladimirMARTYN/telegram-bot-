@@ -52,6 +52,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"📋 <b>Доступные команды:</b>\n"
         f"/help - Справка\n"
         f"/ping - Проверка работы\n"
+        f"/rates - Курсы валют и криптовалют\n"
         f"/my_id - Узнать свой ID\n\n"
     )
     
@@ -73,7 +74,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/start - Запуск бота\n"
         "/help - Эта справка\n"
         "/ping - Проверка работы\n"
+        "/rates - Курсы валют и криптовалют\n"
         "/my_id - Узнать свой ID\n\n"
+        
+        "💱 <b>Функции:</b>\n"
+        "• Курсы валют ЦБ РФ (USD, EUR, CNY)\n"
+        "• Курсы криптовалют (Bitcoin, Ethereum, Dogecoin, TON)\n\n"
         
         "ℹ️ <b>Информация:</b>\n"
         "Бот готов к расширению функционала."
@@ -127,9 +133,14 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         
         f"🔧 <b>Команды:</b>\n"
         f"/admin - Эта панель\n"
-        f"/ping - Проверка работы\n\n"
+        f"/ping - Проверка работы\n"
+        f"/rates - Курсы валют и криптовалют\n\n"
         
-        f"ℹ️ <b>Статус:</b> Бот очищен и готов к настройке"
+        f"💱 <b>Доступные функции:</b>\n"
+        f"• Курсы валют ЦБ РФ (USD, EUR, CNY)\n"
+        f"• Курсы криптовалют (BTC, ETH, DOGE, TON)\n\n"
+        
+        f"ℹ️ <b>Статус:</b> Бот готов к расширению"
     )
     
     await update.message.reply_html(admin_text)
@@ -149,6 +160,86 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"💡 Используй /help для списка команд"
     )
 
+async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Получить курсы валют и криптовалют"""
+    try:
+        await update.message.reply_text("📊 Получаю курсы валют и криптовалют...")
+        
+        import requests
+        
+        # 1. Курсы валют ЦБ РФ
+        try:
+            cbr_response = requests.get("https://www.cbr-xml-daily.ru/daily_json.js", timeout=10)
+            cbr_response.raise_for_status()
+            cbr_data = cbr_response.json()
+            
+            # Получаем курсы валют
+            usd_rate = cbr_data.get('Valute', {}).get('USD', {}).get('Value', 'Н/Д')
+            eur_rate = cbr_data.get('Valute', {}).get('EUR', {}).get('Value', 'Н/Д')
+            cny_rate = cbr_data.get('Valute', {}).get('CNY', {}).get('Value', 'Н/Д')
+            
+            # Форматируем валютные курсы
+            usd_str = f"{usd_rate:.2f} ₽" if isinstance(usd_rate, (int, float)) else str(usd_rate)
+            eur_str = f"{eur_rate:.2f} ₽" if isinstance(eur_rate, (int, float)) else str(eur_rate)
+            cny_str = f"{cny_rate:.2f} ₽" if isinstance(cny_rate, (int, float)) else str(cny_rate)
+                
+        except Exception as e:
+            logger.error(f"Ошибка получения курсов ЦБ РФ: {e}")
+            usd_str = eur_str = cny_str = "❌ Ошибка API"
+        
+        # 2. Курсы криптовалют CoinGecko
+        try:
+            crypto_response = requests.get(
+                "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,dogecoin,the-open-network&vs_currencies=usd",
+                timeout=10
+            )
+            crypto_response.raise_for_status()
+            crypto_data = crypto_response.json()
+            
+            # Получаем цены криптовалют
+            bitcoin_price = crypto_data.get('bitcoin', {}).get('usd', 'Н/Д')
+            ethereum_price = crypto_data.get('ethereum', {}).get('usd', 'Н/Д')
+            dogecoin_price = crypto_data.get('dogecoin', {}).get('usd', 'Н/Д')
+            ton_price = crypto_data.get('the-open-network', {}).get('usd', 'Н/Д')
+            
+            # Форматируем криптовалютные цены
+            btc_str = f"${bitcoin_price:,.0f}" if isinstance(bitcoin_price, (int, float)) else str(bitcoin_price)
+            eth_str = f"${ethereum_price:,.0f}" if isinstance(ethereum_price, (int, float)) else str(ethereum_price)
+            doge_str = f"${dogecoin_price:.4f}" if isinstance(dogecoin_price, (int, float)) else str(dogecoin_price)
+            ton_str = f"${ton_price:.2f}" if isinstance(ton_price, (int, float)) else str(ton_price)
+                
+        except Exception as e:
+            logger.error(f"Ошибка получения курсов криптовалют: {e}")
+            btc_str = eth_str = doge_str = ton_str = "❌ Ошибка API"
+        
+        # Формируем итоговое сообщение
+        current_time = datetime.now().strftime("%d.%m.%Y %H:%M")
+        
+        message = f"""📊 <b>КУРСЫ ВАЛЮТ И КРИПТОВАЛЮТ</b>
+
+💱 <b>Курсы валют ЦБ РФ:</b>
+🇺🇸 USD: {usd_str}
+🇪🇺 EUR: {eur_str}
+🇨🇳 CNY: {cny_str}
+
+₿ <b>Криптовалюты:</b>
+🟠 Bitcoin: {btc_str}
+🔷 Ethereum: {eth_str}
+🐕 Dogecoin: {doge_str}
+💎 TON: {ton_str}
+
+⏰ <b>Время:</b> {current_time}
+📡 <b>Источники:</b> ЦБ РФ, CoinGecko"""
+
+        await update.message.reply_html(message)
+        
+    except Exception as e:
+        logger.error(f"Общая ошибка в rates_command: {e}")
+        await update.message.reply_text(
+            f"❌ Ошибка получения курсов: {str(e)}\n\n"
+            f"🔄 Попробуйте позже или обратитесь к администратору."
+        )
+
 def main() -> None:
     """Запуск бота - минимальная версия"""
     logger.info("🤖 Запуск чистого бота...")
@@ -161,6 +252,7 @@ def main() -> None:
     application.add_handler(CommandHandler("ping", ping_command))
     application.add_handler(CommandHandler("my_id", my_id_command))
     application.add_handler(CommandHandler("admin", admin_command))
+    application.add_handler(CommandHandler("rates", rates_command))
 
     # Обработчик всех текстовых сообщений (эхо)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
