@@ -533,6 +533,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 <b>🛠️ AI Разработка:</b>
 /add_feature [описание] - Создать функцию через AI
+/edit_feature [команда] - [новое описание] - Редактировать функцию
 /list_features - Список созданных функций
 /remove_feature [команда] - Удалить функцию
 /generation_stats - Статистика AI генерации
@@ -1052,6 +1053,143 @@ async def currency_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка получения курса: {str(e)}")
 
+async def edit_feature(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Редактировать существующую AI-функцию (только админ)"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен!")
+        return
+    
+    if not CHATGPT_ENABLED:
+        await update.message.reply_text("❌ ChatGPT отключен. Редактирование функций недоступно.")
+        return
+    
+    if not context.args:
+        # Показываем список доступных функций для редактирования
+        if not dynamic_commands:
+            await update.message.reply_text("❌ Нет функций для редактирования!\nИспользуй /add_feature для создания новых.")
+            return
+            
+        functions_list = "🛠️ <b>Функции для редактирования:</b>\n\n"
+        for cmd, info in dynamic_commands.items():
+            functions_list += f"• <b>/{cmd}</b> - {info['description']}\n"
+        
+        functions_list += f"\n💡 <b>Использование:</b>\n<code>/edit_feature [команда] - [новое описание]</code>\n\n"
+        functions_list += f"<b>Пример:</b>\n/edit_feature {list(dynamic_commands.keys())[0]} - улучшенное описание функции"
+        
+        await update.message.reply_html(functions_list)
+        return
+    
+    # Парсим команду для редактирования  
+    args = " ".join(context.args)
+    parts = args.split(' - ', 1)
+    
+    if len(parts) != 2:
+        await update.message.reply_text("❌ Неправильный формат!\nИспользуй: /edit_feature [команда] - [новое описание]")
+        return
+        
+    command_name = parts[0].strip().lower()
+    new_description = parts[1].strip()
+    
+    # Проверяем, что функция существует
+    if command_name not in dynamic_commands:
+        await update.message.reply_text(f"❌ Функция /{command_name} не найдена!\nИспользуй /list_features для просмотра всех функций.")
+        return
+    
+    old_description = dynamic_commands[command_name]['description']
+    
+    # Показываем что редактируем
+    edit_msg = await update.message.reply_html(
+        f"🛠️ <b>Редактирую функцию...</b>\n\n"
+        f"📝 <b>Команда:</b> /{command_name}\n"
+        f"📖 <b>Было:</b> {old_description}\n"
+        f"✨ <b>Стало:</b> {new_description}\n\n"
+        f"🤖 Генерирую новый код через ChatGPT..."
+    )
+    
+    # Генерируем новый код
+    try:
+        generated_code = await generate_function_code(new_description, command_name)
+        
+        if "❌ Ошибка" in generated_code or "Таймаут" in generated_code:
+            await edit_msg.edit_text(
+                f"❌ <b>Ошибка генерации!</b>\n\n{generated_code}",
+                parse_mode='HTML'
+            )
+            return
+        
+        # Проверяем код
+        is_valid, validation_message = validate_generated_code(generated_code)
+        if not is_valid:
+            await edit_msg.edit_text(
+                f"❌ <b>Некорректный код!</b>\n\n🚫 {validation_message}",
+                parse_mode='HTML'
+            )
+            return
+        
+        # Извлекаем и выполняем код
+        if '```python' in generated_code:
+            code_start = generated_code.find('```python') + 9
+            code_end = generated_code.find('```', code_start)
+            clean_code = generated_code[code_start:code_end].strip()
+        elif '```' in generated_code:
+            code_start = generated_code.find('```') + 3
+            code_end = generated_code.find('```', code_start)
+            clean_code = generated_code[code_start:code_end].strip()
+        else:
+            clean_code = generated_code.strip()
+        
+        # Выполняем новый код
+        local_vars = {
+            'Update': Update,
+            'ContextTypes': ContextTypes,
+            'logger': logger
+        }
+        
+        exec(clean_code, globals(), local_vars)
+        
+        # Находим новую функцию
+        new_function = None
+        for var_name, var_value in local_vars.items():
+            if (var_name.endswith('_command') and 
+                callable(var_value) and 
+                hasattr(var_value, '__code__') and
+                var_value.__code__.co_flags & 0x80):  # async функция
+                new_function = var_value
+                break
+        
+        if new_function:
+            # Обновляем функцию
+            dynamic_functions[command_name] = new_function
+            dynamic_commands[command_name] = {
+                'function': new_function,
+                'description': new_description,
+                'code': clean_code,
+                'created_at': dynamic_commands[command_name]['created_at'],  # сохраняем дату создания
+                'edited_at': __import__('datetime').datetime.now().isoformat()
+            }
+            
+            await edit_msg.edit_text(
+                f"✅ <b>Функция успешно обновлена!</b>\n\n"
+                f"🔄 <b>Команда:</b> /{command_name}\n"
+                f"📝 <b>Новое описание:</b> {new_description}\n\n"
+                f"🧩 <b>Обновленный код:</b>\n<code>{clean_code[:400]}{'...' if len(clean_code) > 400 else ''}</code>\n\n"
+                f"💡 <b>Протестируй:</b> /{command_name}",
+                parse_mode='HTML'
+            )
+        else:
+            await edit_msg.edit_text(
+                f"❌ <b>Новая функция не найдена!</b>\n\nПопробуй другое описание.",
+                parse_mode='HTML'
+            )
+            
+    except Exception as e:
+        await edit_msg.edit_text(
+            f"❌ <b>Ошибка выполнения:</b>\n\n{str(e)}\n\n🔄 Попробуй другое описание.",
+            parse_mode='HTML'
+        )
+
 async def debug_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Простая диагностика состояния бота (только админ)"""
     user_id = update.effective_user.id
@@ -1133,6 +1271,7 @@ def main() -> None:
     application.add_handler(CommandHandler("list_features", list_features))
     application.add_handler(CommandHandler("remove_feature", remove_feature))
     application.add_handler(CommandHandler("generation_stats", generation_stats))
+    application.add_handler(CommandHandler("edit_feature", edit_feature)) # Добавляем новую команду
     
     # Остальные админ команды
     application.add_handler(CommandHandler("stats", admin_stats))
