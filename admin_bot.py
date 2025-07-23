@@ -940,10 +940,37 @@ async def dynamic_command_handler(update: Update, context: ContextTypes.DEFAULT_
         try:
             await dynamic_functions[command](update, context)
         except Exception as e:
-            logger.error(f"Ошибка выполнения динамической команды {command}: {e}")
-            await update.message.reply_text(
-                f"❌ Ошибка выполнения команды /{command}:\n{str(e)}"
-            )
+            # Детальная диагностика ошибки
+            error_type = type(e).__name__
+            error_message = str(e)
+            
+            logger.error(f"❌ Ошибка выполнения динамической команды /{command}: {error_type}: {error_message}")
+            
+            # Отправляем пользователю понятное сообщение
+            debug_info = f"""❌ <b>Ошибка команды /{command}</b>
+
+🔍 <b>Тип:</b> {error_type}
+📝 <b>Описание:</b> {error_message}
+
+🛠️ <b>Возможные причины:</b>"""
+            
+            # Анализируем тип ошибки
+            if "ModuleNotFoundError" in error_type:
+                debug_info += "\n• Отсутствует библиотека в requirements.txt"
+            elif "requests" in error_message.lower():
+                debug_info += "\n• Проблема с интернет-запросом"
+            elif "KeyError" in error_type:
+                debug_info += "\n• API изменил формат данных"
+            elif "timeout" in error_message.lower():
+                debug_info += "\n• Превышен таймаут запроса"
+            else:
+                debug_info += "\n• Ошибка в коде функции"
+            
+            debug_info += f"\n\n🔄 <b>Действия:</b>"
+            debug_info += f"\n• /remove_feature {command} - удалить функцию"
+            debug_info += f"\n• /add_feature {command} - пересоздать функцию"
+            
+            await update.message.reply_html(debug_info)
     else:
         # Fallback к обычному echo
         await echo(update, context)
