@@ -590,6 +590,173 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await loading_msg.edit_text(error_text, parse_mode='HTML')
         logger.error(f"Ошибка получения акций: {e}")
 
+async def convert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Конвертер валют - /convert [сумма] [из] [в]"""
+    user_id = update.effective_user.id
+    user = update.effective_user
+    
+    # Регистрируем/обновляем пользователя
+    if user_id not in user_data:
+        user_data[user_id] = {
+            'name': user.first_name,
+            'username': user.username,
+            'first_seen': datetime.now().isoformat(),
+            'last_activity': datetime.now().isoformat()
+        }
+        save_user_data()
+    else:
+        user_data[user_id]['last_activity'] = datetime.now().isoformat()
+        save_user_data()
+    
+    # Проверяем аргументы команды
+    if len(context.args) != 3:
+        await update.message.reply_html(
+            "💱 <b>КОНВЕРТЕР ВАЛЮТ</b>\n\n"
+            "🔍 <b>Использование:</b>\n"
+            "<code>/convert [сумма] [из валюты] [в валюту]</code>\n\n"
+            "💡 <b>Примеры:</b>\n"
+            "• <code>/convert 100 USD RUB</code> - доллары в рубли\n"
+            "• <code>/convert 5000 RUB EUR</code> - рубли в евро\n"
+            "• <code>/convert 1000 CNY USD</code> - юани в доллары\n"
+            "• <code>/convert 50 EUR CNY</code> - евро в юани\n\n"
+            "💰 <b>Поддерживаемые валюты:</b>\n"
+            "🇷🇺 <code>RUB</code> - Российский рубль\n"
+            "🇺🇸 <code>USD</code> - Доллар США\n"
+            "🇪🇺 <code>EUR</code> - Евро\n"
+            "🇨🇳 <code>CNY</code> - Китайский юань\n\n"
+            "📊 <b>Курсы обновляются в реальном времени от ЦБ РФ</b>"
+        )
+        return
+    
+    try:
+        # Парсим аргументы
+        amount_str, from_currency, to_currency = context.args
+        amount = float(amount_str)
+        from_currency = from_currency.upper()
+        to_currency = to_currency.upper()
+        
+        # Проверяем корректность суммы
+        if amount <= 0:
+            await update.message.reply_html("❌ <b>Сумма должна быть положительным числом!</b>")
+            return
+            
+        if amount > 1_000_000_000:
+            await update.message.reply_html("❌ <b>Слишком большая сумма! Максимум 1 миллиард.</b>")
+            return
+        
+        # Список поддерживаемых валют
+        supported_currencies = ['RUB', 'USD', 'EUR', 'CNY']
+        if from_currency not in supported_currencies or to_currency not in supported_currencies:
+            await update.message.reply_html(
+                f"❌ <b>Неподдерживаемая валюта!</b>\n\n"
+                f"💰 <b>Поддерживаемые:</b> {', '.join(supported_currencies)}\n"
+                f"🚫 <b>Получено:</b> {from_currency} → {to_currency}"
+            )
+            return
+            
+        # Если конвертируем одну и ту же валюту
+        if from_currency == to_currency:
+            await update.message.reply_html(
+                f"💱 <b>РЕЗУЛЬТАТ КОНВЕРТАЦИИ</b>\n\n"
+                f"💰 <b>{amount:,.2f} {from_currency} = {amount:,.2f} {to_currency}</b>\n\n"
+                f"💡 Конвертация в ту же валюту 😊"
+            )
+            return
+        
+        loading_msg = await update.message.reply_html("💱 <b>Получаю курсы валют...</b>")
+        
+        # Получаем курсы валют от ЦБ РФ
+        import requests
+        
+        cbr_response = requests.get("https://www.cbr-xml-daily.ru/daily_json.js", timeout=10)
+        cbr_response.raise_for_status()
+        cbr_data = cbr_response.json()
+        
+        # Создаем словарь курсов относительно рубля
+        rates = {
+            'RUB': 1.0,  # Рубль как базовая валюта
+            'USD': cbr_data.get('Valute', {}).get('USD', {}).get('Value', 0),
+            'EUR': cbr_data.get('Valute', {}).get('EUR', {}).get('Value', 0),
+            'CNY': cbr_data.get('Valute', {}).get('CNY', {}).get('Value', 0)
+        }
+        
+        # Проверяем что получили курсы
+        if not rates[from_currency] or not rates[to_currency]:
+            raise Exception("Не удалось получить курсы валют")
+        
+        # Выполняем конвертацию через рубли
+        if from_currency == 'RUB':
+            # Из рублей в другую валюту
+            result = amount / rates[to_currency]
+        elif to_currency == 'RUB':
+            # Из другой валюты в рубли
+            result = amount * rates[from_currency]
+        else:
+            # Между двумя иностранными валютами через рубли
+            rub_amount = amount * rates[from_currency]
+            result = rub_amount / rates[to_currency]
+        
+        # Определяем эмодзи для валют
+        currency_emoji = {
+            'RUB': '🇷🇺',
+            'USD': '🇺🇸', 
+            'EUR': '🇪🇺',
+            'CNY': '🇨🇳'
+        }
+        
+        # Формируем результат
+        current_time = datetime.now().strftime('%d.%m.%Y %H:%M')
+        
+        result_text = f"💱 <b>РЕЗУЛЬТАТ КОНВЕРТАЦИИ</b>\n\n"
+        result_text += f"{currency_emoji[from_currency]} <b>{amount:,.2f} {from_currency}</b>\n"
+        result_text += f"                    ⬇️\n"
+        result_text += f"{currency_emoji[to_currency]} <b>{result:,.2f} {to_currency}</b>\n\n"
+        
+        # Добавляем курс
+        if from_currency == 'RUB':
+            rate_display = f"1 {to_currency} = {rates[to_currency]:.4f} RUB"
+        elif to_currency == 'RUB':
+            rate_display = f"1 {from_currency} = {rates[from_currency]:.4f} RUB"
+        else:
+            cross_rate = rates[from_currency] / rates[to_currency]
+            rate_display = f"1 {from_currency} = {cross_rate:.4f} {to_currency}"
+        
+        result_text += f"📊 <b>Курс:</b> {rate_display}\n"
+        result_text += f"⏰ <b>Время:</b> {current_time} (МСК)\n"
+        result_text += f"📡 <b>Источник:</b> ЦБ РФ\n\n"
+        result_text += f"💡 <b>Другие примеры:</b>\n"
+        result_text += f"<code>/convert 1000 {to_currency} {from_currency}</code>\n"
+        result_text += f"<code>/convert {amount} {from_currency} EUR</code>"
+        
+        await loading_msg.edit_text(result_text, parse_mode='HTML')
+        
+    except ValueError:
+        await update.message.reply_html(
+            "❌ <b>Неверный формат суммы!</b>\n\n"
+            "💡 <b>Примеры правильного формата:</b>\n"
+            "• <code>/convert 100 USD RUB</code>\n"
+            "• <code>/convert 50.5 EUR CNY</code>\n"
+            "• <code>/convert 1000 RUB USD</code>"
+        )
+    except Exception as e:
+        error_text = (
+            f"❌ <b>Ошибка конвертации валют</b>\n\n"
+            f"🚫 <b>Причина:</b> {str(e)}\n\n"
+            f"💡 <b>Возможные причины:</b>\n"
+            f"• Проблемы с API ЦБ РФ\n"
+            f"• Временные неполадки сети\n"
+            f"• Технические работы\n\n"
+            f"🔄 <b>Попробуйте позже или используйте:</b>\n"
+            f"/rates - просмотр курсов валют"
+        )
+        
+        if 'loading_msg' in locals():
+            await loading_msg.edit_text(error_text, parse_mode='HTML')
+        else:
+            await update.message.reply_html(error_text)
+        
+        logger.error(f"Ошибка конвертации валют: {e}")
+
 def main() -> None:
     """Запуск бота - минимальная версия"""
     logger.info("🚀 Запуск бота...")
