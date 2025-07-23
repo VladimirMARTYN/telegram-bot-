@@ -98,24 +98,59 @@ AVAILABLE_MODELS = {
 }
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /start"""
-    chatgpt_status = "✅ ChatGPT активен" if CHATGPT_ENABLED else "❌ ChatGPT отключен"
+    """Приветствие с информацией о боте"""
+    user = update.effective_user
+    user_id = user.id
     
-    await update.message.reply_html(
-        f"🤖 <b>Привет! Я умный бот с AI!</b>\n\n"
-        f"📋 <b>Основные команды:</b>\n"
-        f"• /ai [вопрос] - Задать вопрос ChatGPT\n"
-        f"• /gpt [вопрос] - Развернутый ответ от AI\n"
-        f"• /my_id - Узнать свой ID\n"
-        f"• /help - Показать это меню\n\n"
-        f"🛠️ <b>Утилиты:</b>\n"
-        f"• /ping - Проверить работу бота\n"
-        f"• /currency - Курсы валют ЦБ РФ\n"
-        f"• /uptime - Время работы бота\n"
-        f"• /notify [сообщение] - Написать админу\n\n"
-        f"🔧 <b>Статус:</b> {chatgpt_status}\n\n"
-        f"💡 <b>Пример:</b> /ai Что такое Python?"
+    # Регистрируем пользователя если новый
+    if user_id not in user_data:
+        user_data[user_id] = {
+            'name': user.first_name,
+            'username': user.username,
+            'joined_at': datetime.now().isoformat(),
+            'last_active': datetime.now().isoformat()
+        }
+        logger.info(f"👤 Новый пользователь: {user.first_name} (@{user.username}, ID: {user_id})")
+    else:
+        user_data[user_id]['last_active'] = datetime.now().isoformat()
+    
+    # Приветствие
+    welcome_text = (
+        f"👋 <b>Привет, {user.first_name}!</b>\n\n"
+        
+        "🤖 <b>Это умный Telegram бот с AI!</b>\n\n"
+        
+        "🎯 <b>Главные возможности:</b>\n"
+        "• 🧠 Интеграция с ChatGPT (8 моделей)\n"
+        "• 🛠️ Создание новых команд через ИИ\n"
+        "• 🔧 Автоисправление ошибок в коде\n"
+        "• 💾 Постоянное сохранение функций\n\n"
+        
+        f"🧩 <b>Созданных AI-функций:</b> {len(dynamic_commands)}\n"
+        f"📊 <b>Пользователей:</b> {len(user_data)}\n\n"
     )
+    
+    if user_id == ADMIN_USER_ID:
+        welcome_text += (
+            "👨‍💻 <b>Статус:</b> Администратор\n"
+            "✅ Доступны все функции разработки\n\n"
+        )
+    else:
+        welcome_text += (
+            "👤 <b>Статус:</b> Пользователь\n"
+            "✅ Доступны базовые команды и AI-функции\n\n"
+        )
+    
+    welcome_text += (
+        "📋 <b>Основные команды:</b>\n"
+        "/help - Справка по использованию\n"
+        "/menu - 📜 <b>ВСЕ КОМАНДЫ И ФУНКЦИИ</b>\n"
+        "/ping - Проверка работы\n\n"
+        
+        "🚀 <b>Начни с команды:</b> /menu"
+    )
+    
+    await update.message.reply_html(welcome_text)
 
 async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показать ID пользователя"""
@@ -1959,6 +1994,155 @@ async def debug_errors(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     await update.message.reply_html(debug_report)
 
+async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает полное меню всех доступных команд и функций"""
+    user_id = update.effective_user.id
+    is_admin = user_id == ADMIN_USER_ID
+    
+    menu_text = f"🤖 <b>МЕНЮ БОТА</b> 🤖\n\n"
+    
+    # Базовые команды для всех пользователей
+    menu_text += "📋 <b>ОСНОВНЫЕ КОМАНДЫ:</b>\n"
+    menu_text += "/start - Запуск и приветствие\n"
+    menu_text += "/help - Справка по использованию\n"
+    menu_text += "/menu - Это меню (все команды)\n"
+    menu_text += "/ping - Проверка работы бота\n"
+    menu_text += "/currency - Курсы валют (ЦБ РФ)\n"
+    menu_text += "/uptime - Время работы бота\n"
+    menu_text += "/system_info - Информация о системе\n\n"
+    
+    # Административные команды (только для админа)
+    if is_admin:
+        menu_text += "👨‍💻 <b>АДМИНИСТРИРОВАНИЕ:</b>\n"
+        menu_text += "/admin - Админ панель\n"
+        menu_text += "/notify [текст] - Уведомление пользователям\n"
+        menu_text += "/debug_status - Диагностика системы\n"
+        menu_text += "/debug_errors - История ошибок\n\n"
+        
+        menu_text += "🤖 <b>AI МОДЕЛИ:</b>\n"
+        menu_text += "/set_model [модель] - Сменить модель ChatGPT\n"
+        menu_text += "/models - Список доступных моделей\n\n"
+        
+        menu_text += "🛠️ <b>AI РАЗРАБОТКА:</b>\n"
+        menu_text += "/add_feature [описание] - Создать функцию\n"
+        menu_text += "/edit_feature [команда] - [описание] - Редактировать\n"
+        menu_text += "/remove_feature [команда] - Удалить функцию\n"
+        menu_text += "/list_features - Список созданных функций\n"
+        menu_text += "/generation_stats - Статистика AI генерации\n\n"
+        
+        menu_text += "💾 <b>СОХРАНЕНИЕ ФУНКЦИЙ:</b>\n"
+        menu_text += "/save_features - Сохранить функции в файл\n"
+        menu_text += "/load_features - Загрузить функции из файла\n\n"
+        
+        menu_text += "🔧 <b>АВТОИСПРАВЛЕНИЕ ОШИБОК:</b>\n"
+        menu_text += "/auto_fix [команда] - Исправить ошибку AI\n"
+        menu_text += "/apply_fix [команда] - Применить исправление\n"
+        menu_text += "/show_diff [команда] - Показать различия\n"
+        menu_text += "/cancel_fix [команда] - Отменить исправление\n\n"
+    
+    # Созданные AI-функции
+    if dynamic_commands:
+        menu_text += "🧩 <b>СОЗДАННЫЕ AI-ФУНКЦИИ:</b>\n"
+        
+        # Сортируем функции по времени создания
+        sorted_functions = sorted(
+            dynamic_commands.items(), 
+            key=lambda x: x[1].get('created_at', ''), 
+            reverse=True
+        )
+        
+        for cmd_name, cmd_info in sorted_functions:
+            description = cmd_info.get('description', 'Без описания')
+            created_at = cmd_info.get('created_at', '')
+            
+            # Форматируем дату
+            try:
+                if created_at:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                    date_str = dt.strftime('%d.%m %H:%M')
+                else:
+                    date_str = '??'
+            except:
+                date_str = '??'
+            
+            # Проверяем, была ли функция исправлена
+            status_icon = "✅" if cmd_info.get('fixed_at') else "🔵"
+            
+            menu_text += f"/{cmd_name} - {description[:50]}{'...' if len(description) > 50 else ''} {status_icon} <i>({date_str})</i>\n"
+        
+        menu_text += f"\n📊 <b>Всего функций:</b> {len(dynamic_commands)}\n\n"
+    else:
+        menu_text += "🧩 <b>СОЗДАННЫЕ AI-ФУНКЦИИ:</b>\n"
+        menu_text += "<i>Пока нет созданных функций</i>\n\n"
+        if is_admin:
+            menu_text += "💡 <i>Создайте первую функцию:</i> /add_feature [описание]\n\n"
+    
+    # Статистика использования (только для админа)
+    if is_admin:
+        menu_text += "📈 <b>СТАТИСТИКА:</b>\n"
+        menu_text += f"🔥 Функций создано: {len(generation_history)}\n"
+        menu_text += f"💾 Функций сохранено: {len(dynamic_commands)}\n"
+        menu_text += f"❌ Ошибок зафиксировано: {len(function_errors)}\n"
+        menu_text += f"🔧 Ожидает исправления: {len(pending_fixes)}\n\n"
+    
+    # Подсказки для пользователей
+    if not is_admin:
+        menu_text += "💡 <b>ПОДСКАЗКА:</b>\n"
+        menu_text += "<i>Этот бот может создавать новые команды через ИИ!\n"
+        menu_text += "Обратитесь к администратору для получения доступа.</i>\n\n"
+    
+    menu_text += "🚀 <b>Версия бота:</b> stable-v3.0\n"
+    menu_text += "⏰ <b>Обновлено:</b> " + datetime.now().strftime('%d.%m.%Y %H:%M')
+    
+    await update.message.reply_html(menu_text)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает справку по использованию бота"""
+    user_id = update.effective_user.id
+    
+    help_text = (
+        "🤖 <b>Telegram Bot с AI-функциями</b>\n\n"
+        
+        "📋 <b>Основные команды:</b>\n"
+        "/start - Запуск и приветствие\n"
+        "/help - Эта справка\n"
+        "/menu - 📜 <b>ПОЛНОЕ МЕНЮ ВСЕХ КОМАНД</b>\n"
+        "/ping - Проверка работы бота\n\n"
+        
+        "🧩 <b>AI-функции:</b>\n"
+        f"{'✅ Доступны созданные функции' if dynamic_commands else '❌ Нет созданных функций'}\n"
+        f"📊 Всего функций: {len(dynamic_commands)}\n\n"
+    )
+    
+    if user_id == ADMIN_USER_ID:
+        help_text += (
+            "👨‍💻 <b>Администратор:</b>\n"
+            "• Создание AI-функций через ChatGPT\n"
+            "• Автоисправление ошибок в коде\n"
+            "• Управление моделями ИИ\n"
+            "• Полная диагностика системы\n\n"
+        )
+    else:
+        help_text += (
+            "💡 <b>Обычный пользователь:</b>\n"
+            "• Использование созданных команд\n"
+            "• Базовые функции бота\n\n"
+        )
+    
+    help_text += (
+        "🎯 <b>Главная особенность:</b>\n"
+        "Этот бот может создавать новые команды\n"
+        "автоматически через ChatGPT!\n\n"
+        
+        "📜 <b>Для просмотра всех команд:</b>\n"
+        "👉 <b>/menu</b> - полный список команд и функций\n\n"
+        
+        "🚀 <b>Версия:</b> stable-v3.0 с постоянным хранением"
+    )
+    
+    await update.message.reply_html(help_text)
+
 def main() -> None:
     """Запуск бота с ChatGPT и AI-генерацией функций"""
     # Загружаем сохраненные функции
@@ -1968,9 +2152,10 @@ def main() -> None:
 
     # Обычные команды
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", start))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("my_id", my_id))
     application.add_handler(CommandHandler("ping", ping_command))  # Тестовая команда
+    application.add_handler(CommandHandler("menu", menu_command))  # Универсальное меню
 
     # ChatGPT команды
     application.add_handler(CommandHandler("ai", ai_command))
