@@ -6,8 +6,8 @@ import asyncio
 import os
 from datetime import datetime
 import pytz
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import json
 import aiohttp
 
@@ -33,6 +33,90 @@ def get_moscow_time():
     """Получить текущее московское время"""
     moscow_tz = pytz.timezone('Europe/Moscow')
     return datetime.now(moscow_tz)
+
+# Создание inline клавиатур
+def create_main_menu_keyboard():
+    """Создать главное меню с inline кнопками"""
+    keyboard = [
+        [
+            InlineKeyboardButton("💱 Курсы валют", callback_data="rates"),
+            InlineKeyboardButton("🔄 Конвертер", callback_data="convert_menu")
+        ],
+        [
+            InlineKeyboardButton("📊 Сравнение", callback_data="compare_menu"),
+            InlineKeyboardButton("📈 Тренды", callback_data="trending")
+        ],
+        [
+            InlineKeyboardButton("🏆 Топ акций", callback_data="stocks"),
+            InlineKeyboardButton("❓ Справка", callback_data="help")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def create_rates_keyboard():
+    """Создать клавиатуру для быстрого выбора валют"""
+    keyboard = [
+        [
+            InlineKeyboardButton("💵 USD", callback_data="rate_USD"),
+            InlineKeyboardButton("💶 EUR", callback_data="rate_EUR"),
+            InlineKeyboardButton("💷 GBP", callback_data="rate_GBP")
+        ],
+        [
+            InlineKeyboardButton("💴 JPY", callback_data="rate_JPY"),
+            InlineKeyboardButton("🇨🇭 CHF", callback_data="rate_CHF"),
+            InlineKeyboardButton("🇨🇳 CNY", callback_data="rate_CNY")
+        ],
+        [
+            InlineKeyboardButton("₿ Bitcoin", callback_data="rate_BTC"),
+            InlineKeyboardButton("⟠ Ethereum", callback_data="rate_ETH"),
+            InlineKeyboardButton("🅣 Tether", callback_data="rate_USDT")
+        ],
+        [
+            InlineKeyboardButton("📊 Все курсы", callback_data="rates_all"),
+            InlineKeyboardButton("🔙 Назад", callback_data="main_menu")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def create_convert_keyboard():
+    """Создать клавиатуру для быстрой конвертации"""
+    keyboard = [
+        [
+            InlineKeyboardButton("USD → RUB", callback_data="convert_USD_RUB"),
+            InlineKeyboardButton("EUR → RUB", callback_data="convert_EUR_RUB")
+        ],
+        [
+            InlineKeyboardButton("RUB → USD", callback_data="convert_RUB_USD"),
+            InlineKeyboardButton("RUB → EUR", callback_data="convert_RUB_EUR")
+        ],
+        [
+            InlineKeyboardButton("BTC → USD", callback_data="convert_BTC_USD"),
+            InlineKeyboardButton("ETH → USD", callback_data="convert_ETH_USD")
+        ],
+        [
+            InlineKeyboardButton("💰 Ввести сумму", callback_data="convert_custom"),
+            InlineKeyboardButton("🔙 Назад", callback_data="main_menu")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def create_compare_keyboard():
+    """Создать клавиатуру для быстрого сравнения активов"""
+    keyboard = [
+        [
+            InlineKeyboardButton("USD vs EUR", callback_data="compare_USD_EUR"),
+            InlineKeyboardButton("BTC vs ETH", callback_data="compare_BTC_ETH")
+        ],
+        [
+            InlineKeyboardButton("Gold vs Silver", callback_data="compare_XAU_XAG"),
+            InlineKeyboardButton("USD vs CNY", callback_data="compare_USD_CNY")
+        ],
+        [
+            InlineKeyboardButton("🔍 Выбрать пару", callback_data="compare_custom"),
+            InlineKeyboardButton("🔙 Назад", callback_data="main_menu")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
 # Время запуска бота
 bot_start_time = get_moscow_time()
@@ -121,9 +205,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         welcome_text += "👤 <b>Статус:</b> Пользователь\n"
     
-    welcome_text += f"📊 <b>Пользователей:</b> {len(user_data)}"
+    welcome_text += f"📊 <b>Пользователей:</b> {len(user_data)}\n\n"
+    welcome_text += "Используйте кнопки ниже для быстрого доступа к функциям:"
     
-    await update.message.reply_html(welcome_text)
+    await update.message.reply_html(
+        welcome_text,
+        reply_markup=create_main_menu_keyboard()
+    )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда /help"""
@@ -1373,6 +1461,324 @@ async def trending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await loading_msg.edit_text(error_text, parse_mode='HTML')
         logger.error(f"Ошибка получения трендов: {e}")
 
+async def show_single_rate(query, currency: str):
+    """Показать курс одной валюты"""
+    try:
+        if currency in ['BTC', 'ETH', 'USDT']:
+            # Криптовалюта
+            async with aiohttp.ClientSession() as session:
+                crypto_map = {'BTC': 'bitcoin', 'ETH': 'ethereum', 'USDT': 'tether'}
+                crypto_id = crypto_map.get(currency, currency.lower())
+                
+                async with session.get(f'https://api.coingecko.com/api/v3/simple/price?ids={crypto_id}&vs_currencies=usd,rub') as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        crypto_data = data.get(crypto_id, {})
+                        
+                        usd_price = crypto_data.get('usd', 0)
+                        rub_price = crypto_data.get('rub', 0)
+                        
+                        icons = {'BTC': '₿', 'ETH': '⟠', 'USDT': '🅣'}
+                        icon = icons.get(currency, '💰')
+                        
+                        text = (
+                            f"{icon} <b>{currency}</b>\n\n"
+                            f"💵 <b>USD:</b> ${usd_price:,.2f}\n"
+                            f"🇷🇺 <b>RUB:</b> ₽{rub_price:,.2f}\n\n"
+                            f"🕐 {get_moscow_time().strftime('%H:%M, %d.%m.%Y')} МСК"
+                        )
+        else:
+            # Обычная валюта
+            async with aiohttp.ClientSession() as session:
+                async with session.get('https://www.cbr-xml-daily.ru/daily_json.js') as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        valute_data = data.get('Valute', {})
+                        
+                        if currency == 'RUB':
+                            text = (
+                                f"🇷🇺 <b>Российский рубль</b>\n\n"
+                                f"💵 <b>Базовая валюта</b>\n\n"
+                                f"🕐 {get_moscow_time().strftime('%H:%M, %d.%m.%Y')} МСК"
+                            )
+                        elif currency in valute_data:
+                            rate_info = valute_data[currency]
+                            rate = rate_info['Value']
+                            prev_rate = rate_info['Previous']
+                            change = rate - prev_rate
+                            change_pct = (change / prev_rate) * 100 if prev_rate != 0 else 0
+                            
+                            trend = "📈" if change > 0 else ("📉" if change < 0 else "➡️")
+                            change_text = f"{change:+.4f} ({change_pct:+.2f}%)"
+                            
+                            icons = {
+                                'USD': '💵', 'EUR': '💶', 'GBP': '💷', 
+                                'JPY': '💴', 'CHF': '🇨🇭', 'CNY': '🇨🇳'
+                            }
+                            icon = icons.get(currency, '💰')
+                            
+                            text = (
+                                f"{icon} <b>{rate_info['Name']} ({currency})</b>\n\n"
+                                f"💰 <b>Курс:</b> {rate:.4f} ₽\n"
+                                f"{trend} <b>Изменение:</b> {change_text}\n\n"
+                                f"🕐 {get_moscow_time().strftime('%H:%M, %d.%m.%Y')} МСК"
+                            )
+                        else:
+                            text = f"❌ Валюта {currency} не найдена"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="rates")]]
+        await query.edit_message_text(
+            text=text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    except Exception as e:
+        logger.error(f"Ошибка показа курса {currency}: {e}")
+        await query.edit_message_text("❌ Ошибка получения курса")
+
+async def quick_convert(query, from_curr: str, to_curr: str, amount: float):
+    """Быстрая конвертация валют"""
+    try:
+        # Используем существующую логику из convert_command
+        # Получаем курсы валют
+        rates = {}
+        
+        async with aiohttp.ClientSession() as session:
+            # Курсы ЦБ РФ
+            async with session.get('https://www.cbr-xml-daily.ru/daily_json.js') as resp:
+                if resp.status == 200:
+                    cbr_data = await resp.json()
+                    valute_data = cbr_data.get('Valute', {})
+                    rates['RUB'] = 1.0
+                    
+                    for code, info in valute_data.items():
+                        rates[code] = info['Value']
+            
+            # Курсы криптовалют
+            crypto_ids = {'BTC': 'bitcoin', 'ETH': 'ethereum', 'USDT': 'tether'}
+            if from_curr in crypto_ids or to_curr in crypto_ids:
+                crypto_params = ','.join(crypto_ids.values())
+                async with session.get(f'https://api.coingecko.com/api/v3/simple/price?ids={crypto_params}&vs_currencies=usd') as resp:
+                    if resp.status == 200:
+                        crypto_data = await resp.json()
+                        usd_rate = rates.get('USD', 75)  # fallback
+                        
+                        for symbol, crypto_id in crypto_ids.items():
+                            if crypto_id in crypto_data:
+                                rates[symbol] = crypto_data[crypto_id]['usd'] * usd_rate
+        
+        # Конвертация
+        if from_curr in rates and to_curr in rates:
+            if from_curr == 'RUB':
+                result = amount / rates[to_curr]
+            elif to_curr == 'RUB':
+                result = amount * rates[from_curr]
+            else:
+                # Через рубли
+                rub_amount = amount * rates[from_curr]
+                result = rub_amount / rates[to_curr]
+            
+            text = (
+                f"🔄 <b>Конвертация</b>\n\n"
+                f"💰 <b>{amount} {from_curr}</b> = <b>{result:.6f} {to_curr}</b>\n\n"
+                f"🕐 {get_moscow_time().strftime('%H:%M, %d.%m.%Y')} МСК"
+            )
+        else:
+            text = f"❌ Не удалось получить курс для {from_curr} или {to_curr}"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="convert_menu")]]
+        await query.edit_message_text(
+            text=text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    except Exception as e:
+        logger.error(f"Ошибка конвертации {from_curr} -> {to_curr}: {e}")
+        await query.edit_message_text("❌ Ошибка конвертации")
+
+async def quick_compare(query, asset1: str, asset2: str):
+    """Быстрое сравнение активов"""
+    try:
+        # Используем существующую логику из compare_command
+        # Здесь упрощенная версия - можно расширить
+        text = (
+            f"📊 <b>Сравнение: {asset1} vs {asset2}</b>\n\n"
+            f"Используйте команду:\n"
+            f"<code>/compare {asset1} {asset2}</code>\n\n"
+            f"для подробного сравнения"
+        )
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="compare_menu")]]
+        await query.edit_message_text(
+            text=text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    except Exception as e:
+        logger.error(f"Ошибка сравнения {asset1} vs {asset2}: {e}")
+        await query.edit_message_text("❌ Ошибка сравнения")
+
+async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик inline кнопок"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    
+    # Обновляем активность пользователя
+    if user_id in user_data:
+        user_data[user_id]['last_activity'] = get_moscow_time().isoformat()
+        save_user_data()
+    
+    data = query.data
+    
+    try:
+        if data == "main_menu":
+            # Возврат к главному меню
+            welcome_text = (
+                f"👋 <b>Главное меню</b>\n\n"
+                f"Выберите нужную функцию:"
+            )
+            await query.edit_message_text(
+                text=welcome_text,
+                parse_mode='HTML',
+                reply_markup=create_main_menu_keyboard()
+            )
+        
+        elif data == "help":
+            # Показать справку
+            help_text = (
+                "🤖 <b>Справка по боту</b>\n\n"
+                "💱 <b>Курсы валют</b> - текущие курсы валют и криптовалют\n"
+                "🔄 <b>Конвертер</b> - конвертация между валютами\n"
+                "📊 <b>Сравнение</b> - сравнение двух активов\n"
+                "📈 <b>Тренды</b> - тренды и лидеры дня\n"
+                "🏆 <b>Топ акций</b> - топ российских акций\n\n"
+                "Используйте кнопки для быстрого доступа к функциям!"
+            )
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]]
+            await query.edit_message_text(
+                text=help_text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        
+        elif data == "rates":
+            # Показать меню курсов валют
+            rates_text = (
+                "💱 <b>Курсы валют и криптовалют</b>\n\n"
+                "Выберите валюту или криптовалюту для просмотра курса:"
+            )
+            await query.edit_message_text(
+                text=rates_text,
+                parse_mode='HTML',
+                reply_markup=create_rates_keyboard()
+            )
+        
+        elif data == "rates_all":
+            # Показать все курсы - используем существующую команду
+            await rates_command(update, context)
+            return
+        
+        elif data.startswith("rate_"):
+            # Показать курс конкретной валюты
+            currency = data.replace("rate_", "")
+            await show_single_rate(query, currency)
+        
+        elif data == "convert_menu":
+            # Показать меню конвертера
+            convert_text = (
+                "🔄 <b>Конвертер валют</b>\n\n"
+                "Выберите популярную пару или введите свою:"
+            )
+            await query.edit_message_text(
+                text=convert_text,
+                parse_mode='HTML',
+                reply_markup=create_convert_keyboard()
+            )
+        
+        elif data.startswith("convert_"):
+            # Быстрая конвертация
+            parts = data.replace("convert_", "").split("_")
+            if len(parts) == 2:
+                from_curr, to_curr = parts
+                await quick_convert(query, from_curr, to_curr, 1.0)
+        
+        elif data == "convert_custom":
+            # Показать инструкцию для пользовательской конвертации
+            instruction_text = (
+                "💰 <b>Конвертация с указанием суммы</b>\n\n"
+                "Используйте команду:\n"
+                "<code>/convert [сумма] [из] [в]</code>\n\n"
+                "Примеры:\n"
+                "• <code>/convert 100 USD RUB</code>\n"
+                "• <code>/convert 50 EUR USD</code>\n"
+                "• <code>/convert 0.01 BTC USD</code>"
+            )
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="convert_menu")]]
+            await query.edit_message_text(
+                text=instruction_text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        
+        elif data == "compare_menu":
+            # Показать меню сравнения
+            compare_text = (
+                "📊 <b>Сравнение активов</b>\n\n"
+                "Выберите пару для сравнения:"
+            )
+            await query.edit_message_text(
+                text=compare_text,
+                parse_mode='HTML',
+                reply_markup=create_compare_keyboard()
+            )
+        
+        elif data.startswith("compare_"):
+            # Быстрое сравнение
+            parts = data.replace("compare_", "").split("_")
+            if len(parts) == 2:
+                asset1, asset2 = parts
+                await quick_compare(query, asset1, asset2)
+        
+        elif data == "compare_custom":
+            # Показать инструкцию для пользовательского сравнения
+            instruction_text = (
+                "🔍 <b>Сравнение активов</b>\n\n"
+                "Используйте команду:\n"
+                "<code>/compare [актив1] [актив2]</code>\n\n"
+                "Примеры:\n"
+                "• <code>/compare USD EUR</code>\n"
+                "• <code>/compare BTC ETH</code>\n"
+                "• <code>/compare XAU XAG</code>"
+            )
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="compare_menu")]]
+            await query.edit_message_text(
+                text=instruction_text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        
+        elif data == "trending":
+            # Показать тренды - используем существующую команду
+            await trending_command(update, context)
+            return
+        
+        elif data == "stocks":
+            # Показать топ акций - используем существующую команду
+            await stocks_command(update, context)
+            return
+        
+        else:
+            await query.edit_message_text("❌ Неизвестная команда")
+    
+    except Exception as e:
+        logger.error(f"Ошибка в обработчике кнопок: {e}")
+        await query.edit_message_text("❌ Произошла ошибка при обработке запроса")
+
 def main() -> None:
     """Запуск бота - минимальная версия"""
     logger.info("🚀 Запуск бота...")
@@ -1395,6 +1801,9 @@ def main() -> None:
     application.add_handler(CommandHandler("trending", trending_command))
     application.add_handler(CommandHandler("fix_admin_id", fix_admin_id_command))
     application.add_handler(CommandHandler("stocks", stocks_command))
+
+    # Обработчик inline кнопок
+    application.add_handler(CallbackQueryHandler(handle_callback_query))
 
     # Обработчик всех текстовых сообщений (эхо)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
