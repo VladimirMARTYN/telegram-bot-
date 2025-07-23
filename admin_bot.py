@@ -59,6 +59,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Показываем админские команды только администратору
     if user_id == ADMIN_USER_ID:
         welcome_text += f"/broadcast [текст] - Рассылка всем пользователям\n"
+        welcome_text += f"/fix_admin_id - Исправить права администратора\n"
+    elif ADMIN_USER_ID == 0:
+        # Если ADMIN_USER_ID не настроен, показываем команду исправления
+        welcome_text += f"/fix_admin_id - Стать администратором (не настроен)\n"
     
     welcome_text += "\n"
     
@@ -90,6 +94,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Показываем админские команды только администратору
     if is_admin:
         help_text += "/broadcast [текст] - Рассылка всем пользователям\n"
+        help_text += "/fix_admin_id - Исправить права администратора\n"
+    elif ADMIN_USER_ID == 0:
+        # Если ADMIN_USER_ID не настроен, показываем команду исправления всем
+        help_text += "/fix_admin_id - Стать администратором (не настроен)\n"
     
     help_text += (
         "\n💱 <b>Функции:</b>\n"
@@ -158,7 +166,8 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"/admin - Эта панель\n"
         f"/ping - Проверка работы\n"
         f"/rates - Курсы валют и криптовалют\n"
-        f"/broadcast [текст] - Рассылка всем пользователям\n\n"
+        f"/broadcast [текст] - Рассылка всем пользователям\n"
+        f"/fix_admin_id - Исправить права администратора\n\n"
         
         f"💱 <b>Доступные функции:</b>\n"
         f"• Курсы валют ЦБ РФ (USD, EUR, CNY)\n"
@@ -168,6 +177,10 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"📢 <b>Рассылка:</b>\n"
         f"👥 Пользователей для рассылки: {len(user_data)}\n"
         f"💡 Используй: <code>/broadcast Текст сообщения</code>\n\n"
+        
+        f"🔧 <b>ADMIN_USER_ID:</b> {ADMIN_USER_ID}\n"
+        f"🆔 <b>Ваш ID:</b> {user_id}\n"
+        f"✅ <b>Права:</b> {'Корректные' if user_id == ADMIN_USER_ID else '❌ Требуют исправления (/fix_admin_id)'}\n\n"
         
         f"ℹ️ <b>Статус:</b> Бот готов к расширению"
     )
@@ -273,9 +286,37 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     """Массовая рассылка сообщений всем пользователям (только админ)"""
     user_id = update.effective_user.id
     
+    # ВРЕМЕННАЯ ОТЛАДКА - покажем реальные значения
+    debug_info = (
+        f"🐛 <b>ОТЛАДОЧНАЯ ИНФОРМАЦИЯ:</b>\n"
+        f"• Ваш ID: <code>{user_id}</code>\n"
+        f"• ADMIN_USER_ID: <code>{ADMIN_USER_ID}</code>\n"
+        f"• Совпадают: {'✅ Да' if user_id == ADMIN_USER_ID else '❌ Нет'}\n\n"
+    )
+    
+    # Если ADMIN_USER_ID = 0, показываем инструкцию по настройке
+    if ADMIN_USER_ID == 0:
+        await update.message.reply_html(
+            debug_info +
+            f"⚠️ <b>ПРОБЛЕМА НАСТРОЙКИ!</b>\n\n"
+            f"🔧 <b>ADMIN_USER_ID не установлен!</b>\n"
+            f"• Текущее значение: {ADMIN_USER_ID} (неправильно)\n"
+            f"• Ваш ID: {user_id}\n\n"
+            f"🛠️ <b>Для исправления:</b>\n"
+            f"1. Установить переменную окружения ADMIN_USER_ID = {user_id}\n"
+            f"2. Или я могу временно использовать ваш ID\n\n"
+            f"💡 Используйте: /fix_admin_id чтобы исправить"
+        )
+        return
+    
     # Проверяем права администратора
     if user_id != ADMIN_USER_ID:
-        await update.message.reply_text("❌ Доступ запрещен! Только администратор может использовать эту команду.")
+        await update.message.reply_html(
+            debug_info +
+            f"❌ <b>Доступ запрещен!</b>\n"
+            f"Только администратор может использовать эту команду.\n\n"
+            f"💡 Если это ошибка, используйте: /fix_admin_id"
+        )
         return
     
     # Проверяем наличие текста для рассылки
@@ -374,6 +415,53 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # Логируем результаты
     logger.info(f"📢 Рассылка завершена: {sent_count} успешно, {error_count} ошибок")
 
+async def fix_admin_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Временное исправление ADMIN_USER_ID"""
+    global ADMIN_USER_ID
+    user_id = update.effective_user.id
+    
+    # Показываем текущее состояние
+    current_info = (
+        f"🔧 <b>ИСПРАВЛЕНИЕ ADMIN_USER_ID</b>\n\n"
+        f"📊 <b>Текущие значения:</b>\n"
+        f"• Ваш ID: <code>{user_id}</code>\n"
+        f"• ADMIN_USER_ID: <code>{ADMIN_USER_ID}</code>\n"
+        f"• Из переменной окружения: <code>{os.getenv('ADMIN_USER_ID', 'НЕ УСТАНОВЛЕНА')}</code>\n\n"
+    )
+    
+    # Если уже правильно настроено
+    if ADMIN_USER_ID == user_id:
+        await update.message.reply_html(
+            current_info +
+            f"✅ <b>УЖЕ НАСТРОЕНО ПРАВИЛЬНО!</b>\n\n"
+            f"ADMIN_USER_ID = {ADMIN_USER_ID} совпадает с вашим ID.\n"
+            f"Попробуйте команду /broadcast снова."
+        )
+        return
+    
+    # Исправляем ADMIN_USER_ID
+    old_admin_id = ADMIN_USER_ID
+    ADMIN_USER_ID = user_id
+    
+    success_msg = (
+        current_info +
+        f"✅ <b>ИСПРАВЛЕНО УСПЕШНО!</b>\n\n"
+        f"🔄 <b>Изменения:</b>\n"
+        f"• Было: <code>{old_admin_id}</code>\n"
+        f"• Стало: <code>{ADMIN_USER_ID}</code>\n\n"
+        f"🎉 <b>Теперь вы администратор!</b>\n"
+        f"Попробуйте команду /broadcast\n\n"
+        f"⚠️ <b>ВНИМАНИЕ:</b> Это временное исправление!\n"
+        f"После перезапуска бота нужно будет:\n"
+        f"1. Установить переменную ADMIN_USER_ID = {user_id} на Railway\n"
+        f"2. Или снова использовать /fix_admin_id"
+    )
+    
+    await update.message.reply_html(success_msg)
+    
+    # Логируем изменение
+    logger.info(f"🔧 ADMIN_USER_ID исправлен: {old_admin_id} → {ADMIN_USER_ID}")
+
 def main() -> None:
     """Запуск бота - минимальная версия"""
     logger.info("🤖 Запуск чистого бота...")
@@ -388,6 +476,7 @@ def main() -> None:
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("rates", rates_command))
     application.add_handler(CommandHandler("broadcast", broadcast_command))
+    application.add_handler(CommandHandler("fix_admin_id", fix_admin_id_command))
 
     # Обработчик всех текстовых сообщений (эхо)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
