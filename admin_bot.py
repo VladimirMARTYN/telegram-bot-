@@ -96,6 +96,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"/rates - Курсы валют и криптовалют\n"
         f"/convert - Конвертер валют\n"
         f"/compare - Сравнение активов\n"
+        f"/trending - Тренды и лидеры дня\n"
         f"/stocks - Топ российских акций\n"
         f"/my_id - Узнать свой ID\n"
     )
@@ -133,6 +134,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/rates - Курсы валют и криптовалют\n"
         "/convert - Конвертер валют\n"
         "/compare - Сравнение активов\n"
+        "/trending - Тренды и лидеры дня\n"
         "/stocks - Топ российских акций\n"
         "/my_id - Узнать свой ID\n"
     )
@@ -149,6 +151,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• Курсы валют ЦБ РФ (9 валют)\n"
         "• Конвертер валют с актуальными курсами\n"
         "• Сравнение валют и криптовалют\n"
+        "• Анализ трендов и лидеров дня\n"
         "• Курсы криптовалют (Bitcoin, Ethereum, Dogecoin, TON)\n"
         "• Топ российских акций (Московская биржа)\n"
     )
@@ -213,6 +216,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"/rates - Курсы валют и криптовалют\n"
         f"/convert - Конвертер валют\n"
         f"/compare - Сравнение активов\n"
+        f"/trending - Тренды и лидеры дня\n"
         f"/stocks - Топ российских акций\n"
         f"/fix_admin_id - Исправить права администратора\n\n"
         
@@ -220,6 +224,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"• Курсы валют ЦБ РФ (9 валют)\n"
         f"• Конвертер валют между всеми парами\n"
         f"• Сравнение активов с аналитикой\n"
+        f"• Анализ трендов и волатильности\n"
         f"• Курсы криптовалют (BTC, ETH, DOGE, TON)\n"
         f"• Топ российских акций (Московская биржа)\n\n"
         
@@ -1099,6 +1104,239 @@ async def compare_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
         logger.error(f"Ошибка сравнения активов: {e}")
 
+async def trending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Тренды дня - лидеры роста и падения /trending"""
+    user_id = update.effective_user.id
+    user = update.effective_user
+    
+    # Регистрируем/обновляем пользователя
+    if user_id not in user_data:
+        user_data[user_id] = {
+            'name': user.first_name,
+            'username': user.username,
+            'first_seen': datetime.now().isoformat(),
+            'last_activity': datetime.now().isoformat()
+        }
+        save_user_data()
+    else:
+        user_data[user_id]['last_activity'] = datetime.now().isoformat()
+        save_user_data()
+    
+    loading_msg = await update.message.reply_html("🔥 <b>Анализирую тренды рынка...</b>")
+    
+    try:
+        import requests
+        
+        # Получаем данные криптовалют с изменениями за 24ч
+        crypto_response = requests.get(
+            "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,dogecoin,the-open-network&vs_currencies=usd&include_24hr_change=true&include_market_cap=true",
+            timeout=10
+        )
+        crypto_response.raise_for_status()
+        crypto_data = crypto_response.json()
+        
+        # Получаем курсы валют (они обновляются ежедневно, поэтому изменения будут минимальными)
+        cbr_response = requests.get("https://www.cbr-xml-daily.ru/daily_json.js", timeout=10)
+        cbr_response.raise_for_status()
+        cbr_data = cbr_response.json()
+        
+        # Формируем данные криптовалют
+        crypto_assets = []
+        
+        bitcoin_data = crypto_data.get('bitcoin', {})
+        if bitcoin_data:
+            crypto_assets.append({
+                'symbol': 'BTC',
+                'name': 'Bitcoin',
+                'emoji': '🟠',
+                'price': bitcoin_data.get('usd', 0),
+                'change_24h': bitcoin_data.get('usd_24h_change', 0),
+                'market_cap': bitcoin_data.get('usd_market_cap', 0)
+            })
+        
+        ethereum_data = crypto_data.get('ethereum', {})
+        if ethereum_data:
+            crypto_assets.append({
+                'symbol': 'ETH',
+                'name': 'Ethereum',
+                'emoji': '🔷',
+                'price': ethereum_data.get('usd', 0),
+                'change_24h': ethereum_data.get('usd_24h_change', 0),
+                'market_cap': ethereum_data.get('usd_market_cap', 0)
+            })
+        
+        dogecoin_data = crypto_data.get('dogecoin', {})
+        if dogecoin_data:
+            crypto_assets.append({
+                'symbol': 'DOGE',
+                'name': 'Dogecoin',
+                'emoji': '🐕',
+                'price': dogecoin_data.get('usd', 0),
+                'change_24h': dogecoin_data.get('usd_24h_change', 0),
+                'market_cap': dogecoin_data.get('usd_market_cap', 0)
+            })
+        
+        ton_data = crypto_data.get('the-open-network', {})
+        if ton_data:
+            crypto_assets.append({
+                'symbol': 'TON',
+                'name': 'TON',
+                'emoji': '💎',
+                'price': ton_data.get('usd', 0),
+                'change_24h': ton_data.get('usd_24h_change', 0),
+                'market_cap': ton_data.get('usd_market_cap', 0)
+            })
+        
+        # Сортируем по изменению за 24ч
+        crypto_assets.sort(key=lambda x: x['change_24h'], reverse=True)
+        
+        # Формируем валютные данные (для валют изменения минимальны, но покажем курсы)
+        currency_assets = []
+        
+        currencies_info = {
+            'USD': {'name': 'Доллар США', 'flag': '🇺🇸', 'rate': cbr_data.get('Valute', {}).get('USD', {}).get('Value', 0)},
+            'EUR': {'name': 'Евро', 'flag': '🇪🇺', 'rate': cbr_data.get('Valute', {}).get('EUR', {}).get('Value', 0)},
+            'GBP': {'name': 'Британский фунт', 'flag': '🇬🇧', 'rate': cbr_data.get('Valute', {}).get('GBP', {}).get('Value', 0)},
+            'CNY': {'name': 'Китайский юань', 'flag': '🇨🇳', 'rate': cbr_data.get('Valute', {}).get('CNY', {}).get('Value', 0)},
+            'JPY': {'name': 'Японская иена', 'flag': '🇯🇵', 'rate': cbr_data.get('Valute', {}).get('JPY', {}).get('Value', 0)}
+        }
+        
+        for symbol, info in currencies_info.items():
+            if info['rate']:
+                currency_assets.append({
+                    'symbol': symbol,
+                    'name': info['name'],
+                    'flag': info['flag'],
+                    'rate': info['rate']
+                })
+        
+        # Формируем результат
+        current_time = datetime.now().strftime('%d.%m.%Y %H:%M')
+        result_text = f"🔥 <b>ТРЕНДЫ ДНЯ</b>\n\n"
+        
+        # Криптовалютные тренды
+        result_text += f"₿ <b>КРИПТОВАЛЮТЫ (24 часа):</b>\n\n"
+        
+        if crypto_assets:
+            # Лидер роста
+            best_crypto = crypto_assets[0]
+            if best_crypto['change_24h'] > 0:
+                result_text += f"📈 <b>ЛИДЕР РОСТА:</b>\n"
+                result_text += f"{best_crypto['emoji']} <b>{best_crypto['name']} ({best_crypto['symbol']})</b>\n"
+                result_text += f"💰 ${best_crypto['price']:,.2f}\n"
+                result_text += f"🚀 <b>+{best_crypto['change_24h']:.2f}%</b> 📈\n"
+                if best_crypto['market_cap'] > 0:
+                    cap_b = best_crypto['market_cap'] / 1_000_000_000
+                    result_text += f"🏛️ ${cap_b:.1f}B\n"
+                result_text += f"\n"
+            
+            # Лидер падения  
+            worst_crypto = crypto_assets[-1]
+            if worst_crypto['change_24h'] < 0:
+                result_text += f"📉 <b>ЛИДЕР ПАДЕНИЯ:</b>\n"
+                result_text += f"{worst_crypto['emoji']} <b>{worst_crypto['name']} ({worst_crypto['symbol']})</b>\n"
+                result_text += f"💰 ${worst_crypto['price']:,.2f}\n"
+                result_text += f"🔴 <b>{worst_crypto['change_24h']:.2f}%</b> 📉\n"
+                if worst_crypto['market_cap'] > 0:
+                    cap_b = worst_crypto['market_cap'] / 1_000_000_000
+                    result_text += f"🏛️ ${cap_b:.1f}B\n"
+                result_text += f"\n"
+            
+            # Все криптовалюты по порядку
+            result_text += f"📊 <b>ВСЕ КРИПТОВАЛЮТЫ:</b>\n"
+            for i, asset in enumerate(crypto_assets, 1):
+                change = asset['change_24h']
+                if change > 0:
+                    change_emoji = "📈"
+                    change_str = f"+{change:.2f}%"
+                    change_color = "🟢"
+                elif change < 0:
+                    change_emoji = "📉"
+                    change_str = f"{change:.2f}%"
+                    change_color = "🔴"
+                else:
+                    change_emoji = "➡️"
+                    change_str = "0.00%"
+                    change_color = "⚪"
+                
+                result_text += f"{i}. {asset['emoji']} <b>{asset['symbol']}</b> {change_color} {change_str} {change_emoji}\n"
+        
+        # Волатильность анализ
+        if crypto_assets:
+            volatilities = [abs(asset['change_24h']) for asset in crypto_assets]
+            max_volatility = max(volatilities)
+            most_volatile = next(asset for asset in crypto_assets if abs(asset['change_24h']) == max_volatility)
+            
+            result_text += f"\n🌡️ <b>ВОЛАТИЛЬНОСТЬ:</b>\n"
+            result_text += f"🔥 Самый волатильный: <b>{most_volatile['symbol']}</b> (±{max_volatility:.2f}%)\n"
+            
+            # Средняя волатильность
+            avg_volatility = sum(volatilities) / len(volatilities)
+            result_text += f"📊 Средняя волатильность: {avg_volatility:.2f}%\n"
+        
+        # Валютная секция
+        result_text += f"\n💱 <b>ОСНОВНЫЕ ВАЛЮТЫ (ЦБ РФ):</b>\n"
+        
+        if currency_assets:
+            for i, currency in enumerate(currency_assets[:5], 1):
+                if currency['symbol'] == 'JPY':
+                    rate_str = f"{currency['rate']:.4f} ₽"
+                else:
+                    rate_str = f"{currency['rate']:.2f} ₽"
+                
+                result_text += f"{i}. {currency['flag']} <b>{currency['symbol']}</b> - {rate_str}\n"
+        
+        # Добавляем общую аналитику
+        result_text += f"\n🎯 <b>РЫНОЧНАЯ СВОДКА:</b>\n"
+        
+        if crypto_assets:
+            positive_count = sum(1 for asset in crypto_assets if asset['change_24h'] > 0)
+            negative_count = sum(1 for asset in crypto_assets if asset['change_24h'] < 0)
+            
+            if positive_count > negative_count:
+                result_text += f"✅ Рынок криптовалют: <b>Растущий</b> ({positive_count} растут, {negative_count} падают)\n"
+            elif negative_count > positive_count:
+                result_text += f"❌ Рынок криптовалют: <b>Падающий</b> ({negative_count} падают, {positive_count} растут)\n"
+            else:
+                result_text += f"⚖️ Рынок криптовалют: <b>Смешанный</b> ({positive_count} растут, {negative_count} падают)\n"
+            
+            # Общий тренд
+            avg_change = sum(asset['change_24h'] for asset in crypto_assets) / len(crypto_assets)
+            if avg_change > 1:
+                result_text += f"📈 Общий тренд: <b>Сильный рост</b> (+{avg_change:.2f}%)\n"
+            elif avg_change > 0:
+                result_text += f"📈 Общий тренд: <b>Умеренный рост</b> (+{avg_change:.2f}%)\n"
+            elif avg_change < -1:
+                result_text += f"📉 Общий тренд: <b>Сильное падение</b> ({avg_change:.2f}%)\n"
+            elif avg_change < 0:
+                result_text += f"📉 Общий тренд: <b>Умеренное падение</b> ({avg_change:.2f}%)\n"
+            else:
+                result_text += f"➡️ Общий тренд: <b>Боковое движение</b> ({avg_change:.2f}%)\n"
+        
+        result_text += f"\n⏰ <b>Время:</b> {current_time} (МСК)\n"
+        result_text += f"📡 <b>Источники:</b> CoinGecko, ЦБ РФ\n\n"
+        result_text += f"💡 <b>Используйте для детального анализа:</b>\n"
+        result_text += f"<code>/compare BTC ETH</code> - сравнить активы\n"
+        result_text += f"<code>/rates</code> - текущие курсы"
+        
+        await loading_msg.edit_text(result_text, parse_mode='HTML')
+        
+    except Exception as e:
+        error_text = (
+            f"❌ <b>Ошибка получения трендов</b>\n\n"
+            f"🚫 <b>Причина:</b> {str(e)}\n\n"
+            f"💡 <b>Возможные причины:</b>\n"
+            f"• Проблемы с API CoinGecko или ЦБ РФ\n"
+            f"• Временные неполадки сети\n"
+            f"• Технические работы на биржах\n\n"
+            f"🔄 <b>Попробуйте позже или используйте:</b>\n"
+            f"/rates - текущие курсы\n"
+            f"/compare BTC ETH - сравнение активов"
+        )
+        
+        await loading_msg.edit_text(error_text, parse_mode='HTML')
+        logger.error(f"Ошибка получения трендов: {e}")
+
 def main() -> None:
     """Запуск бота - минимальная версия"""
     logger.info("🚀 Запуск бота...")
@@ -1118,6 +1356,7 @@ def main() -> None:
     application.add_handler(CommandHandler("rates", rates_command))
     application.add_handler(CommandHandler("convert", convert_command))
     application.add_handler(CommandHandler("compare", compare_command))
+    application.add_handler(CommandHandler("trending", trending_command))
     application.add_handler(CommandHandler("fix_admin_id", fix_admin_id_command))
     application.add_handler(CommandHandler("stocks", stocks_command))
 
