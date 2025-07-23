@@ -261,15 +261,25 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             usd_rate = cbr_data.get('Valute', {}).get('USD', {}).get('Value', 'Н/Д')
             eur_rate = cbr_data.get('Valute', {}).get('EUR', {}).get('Value', 'Н/Д')
             cny_rate = cbr_data.get('Valute', {}).get('CNY', {}).get('Value', 'Н/Д')
+            gbp_rate = cbr_data.get('Valute', {}).get('GBP', {}).get('Value', 'Н/Д')
+            jpy_rate = cbr_data.get('Valute', {}).get('JPY', {}).get('Value', 'Н/Д')
+            chf_rate = cbr_data.get('Valute', {}).get('CHF', {}).get('Value', 'Н/Д')
+            cad_rate = cbr_data.get('Valute', {}).get('CAD', {}).get('Value', 'Н/Д')
+            aud_rate = cbr_data.get('Valute', {}).get('AUD', {}).get('Value', 'Н/Д')
             
             # Форматируем валютные курсы
             usd_str = f"{usd_rate:.2f} ₽" if isinstance(usd_rate, (int, float)) else str(usd_rate)
             eur_str = f"{eur_rate:.2f} ₽" if isinstance(eur_rate, (int, float)) else str(eur_rate)
             cny_str = f"{cny_rate:.2f} ₽" if isinstance(cny_rate, (int, float)) else str(cny_rate)
+            gbp_str = f"{gbp_rate:.2f} ₽" if isinstance(gbp_rate, (int, float)) else str(gbp_rate)
+            jpy_str = f"{jpy_rate:.4f} ₽" if isinstance(jpy_rate, (int, float)) else str(jpy_rate)  # JPY обычно в копейках
+            chf_str = f"{chf_rate:.2f} ₽" if isinstance(chf_rate, (int, float)) else str(chf_rate)
+            cad_str = f"{cad_rate:.2f} ₽" if isinstance(cad_rate, (int, float)) else str(cad_rate)
+            aud_str = f"{aud_rate:.2f} ₽" if isinstance(aud_rate, (int, float)) else str(aud_rate)
                 
         except Exception as e:
             logger.error(f"Ошибка получения курсов ЦБ РФ: {e}")
-            usd_str = eur_str = cny_str = "❌ Ошибка API"
+            usd_str = eur_str = cny_str = gbp_str = jpy_str = chf_str = cad_str = aud_str = "❌ Ошибка API"
         
         # 2. Курсы криптовалют CoinGecko
         try:
@@ -301,10 +311,17 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         
         message = f"""📊 <b>КУРСЫ ВАЛЮТ И КРИПТОВАЛЮТ</b>
 
-💱 <b>Курсы валют ЦБ РФ:</b>
+💱 <b>Основные валюты ЦБ РФ:</b>
 🇺🇸 USD: {usd_str}
 🇪🇺 EUR: {eur_str}
 🇨🇳 CNY: {cny_str}
+
+🌍 <b>Дополнительные валюты:</b>
+🇬🇧 GBP: {gbp_str}
+🇯🇵 JPY: {jpy_str}
+🇨🇭 CHF: {chf_str}
+🇨🇦 CAD: {cad_str}
+🇦🇺 AUD: {aud_str}
 
 ₿ <b>Криптовалюты:</b>
 🟠 Bitcoin: {btc_str}
@@ -627,7 +644,12 @@ async def convert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "🇷🇺 <code>RUB</code> - Российский рубль\n"
             "🇺🇸 <code>USD</code> - Доллар США\n"
             "🇪🇺 <code>EUR</code> - Евро\n"
-            "🇨🇳 <code>CNY</code> - Китайский юань\n\n"
+            "🇨🇳 <code>CNY</code> - Китайский юань\n"
+            "🇬🇧 <code>GBP</code> - Британский фунт\n"
+            "🇯🇵 <code>JPY</code> - Японская иена\n"
+            "🇨🇭 <code>CHF</code> - Швейцарский франк\n"
+            "🇨🇦 <code>CAD</code> - Канадский доллар\n"
+            "🇦🇺 <code>AUD</code> - Австралийский доллар\n\n"
             "📊 <b>Курсы обновляются в реальном времени от ЦБ РФ</b>"
         )
         return
@@ -649,7 +671,7 @@ async def convert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         
         # Список поддерживаемых валют
-        supported_currencies = ['RUB', 'USD', 'EUR', 'CNY']
+        supported_currencies = ['RUB', 'USD', 'EUR', 'CNY', 'GBP', 'JPY', 'CHF', 'CAD', 'AUD']
         if from_currency not in supported_currencies or to_currency not in supported_currencies:
             await update.message.reply_html(
                 f"❌ <b>Неподдерживаемая валюта!</b>\n\n"
@@ -681,7 +703,12 @@ async def convert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             'RUB': 1.0,  # Рубль как базовая валюта
             'USD': cbr_data.get('Valute', {}).get('USD', {}).get('Value', 0),
             'EUR': cbr_data.get('Valute', {}).get('EUR', {}).get('Value', 0),
-            'CNY': cbr_data.get('Valute', {}).get('CNY', {}).get('Value', 0)
+            'CNY': cbr_data.get('Valute', {}).get('CNY', {}).get('Value', 0),
+            'GBP': cbr_data.get('Valute', {}).get('GBP', {}).get('Value', 0),
+            'JPY': cbr_data.get('Valute', {}).get('JPY', {}).get('Value', 0),
+            'CHF': cbr_data.get('Valute', {}).get('CHF', {}).get('Value', 0),
+            'CAD': cbr_data.get('Valute', {}).get('CAD', {}).get('Value', 0),
+            'AUD': cbr_data.get('Valute', {}).get('AUD', {}).get('Value', 0)
         }
         
         # Проверяем что получили курсы
@@ -705,7 +732,12 @@ async def convert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             'RUB': '🇷🇺',
             'USD': '🇺🇸', 
             'EUR': '🇪🇺',
-            'CNY': '🇨🇳'
+            'CNY': '🇨🇳',
+            'GBP': '🇬🇧',
+            'JPY': '🇯🇵',
+            'CHF': '🇨🇭',
+            'CAD': '🇨🇦',
+            'AUD': '🇦🇺'
         }
         
         # Формируем результат
