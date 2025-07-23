@@ -29,6 +29,11 @@ if not BOT_TOKEN:
 if ADMIN_USER_ID == 0:
     logger.warning("⚠️ ADMIN_USER_ID не установлен!")
 
+def get_moscow_time():
+    """Получить текущее московское время"""
+    moscow_tz = pytz.timezone('Europe/Moscow')
+    return datetime.now(moscow_tz)
+
 # Время запуска бота
 bot_start_time = get_moscow_time()
 
@@ -37,11 +42,6 @@ USER_DATA_FILE = "user_data.json"
 
 # Словарь пользователей (будет загружен из файла)
 user_data = {}
-
-def get_moscow_time():
-    """Получить текущее московское время"""
-    moscow_tz = pytz.timezone('Europe/Moscow')
-    return datetime.now(moscow_tz)
 
 def save_user_data():
     """Сохранение данных пользователей в файл"""
