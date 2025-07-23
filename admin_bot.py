@@ -547,6 +547,12 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 /remove_feature [команда] - Удалить функцию
 /generation_stats - Статистика AI генерации
 
+<b>🤖 Автоисправление ошибок:</b>
+/auto_fix [функция] - Диагностика и исправление через ChatGPT
+/apply_fix [функция] - Применить готовые исправления
+/show_diff [функция] - Сравнить код до и после
+/cancel_fix [функция] - Отменить исправления
+
 <b>🔧 Диагностика:</b>
 /debug_status - Полная диагностика системы
 /uptime - Время работы бота
@@ -557,6 +563,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 💡 <b>Примеры:</b>
 /ai Объясни алгоритм сортировки
 /add_feature курс - показать курс доллара и евро к рублю
+/auto_fix currencybk - исправить ошибки в функции через ChatGPT
 /broadcast Обновление бота завершено!
     """
     await update.message.reply_html(admin_commands)
@@ -732,6 +739,7 @@ async def add_feature(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             new_function = local_vars[function_name]
             
             # Сохраняем функцию
+            dynamic_commands[command_name] = new_function
             dynamic_functions[command_name] = new_function
             dynamic_commands[command_name] = {
                 'function': new_function,
@@ -949,6 +957,258 @@ dynamic_commands = {}
 # История генерации функций
 generation_history = []
 
+# История ошибок для диагностики
+function_errors = {}
+
+async def auto_fix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Автоматическое исправление ошибок в AI-функциях через ChatGPT (только админ)"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен!")
+        return
+    
+    if not CHATGPT_ENABLED:
+        await update.message.reply_text("❌ ChatGPT отключен. Автоисправление недоступно.")
+        return
+    
+    if not context.args:
+        if not function_errors:
+            await update.message.reply_text("❌ Нет записей об ошибках функций для исправления!")
+            return
+            
+        error_list = "🔧 <b>Функции с ошибками:</b>\n\n"
+        for func_name, error_info in function_errors.items():
+            error_list += f"• <b>/{func_name}</b> - {error_info['error_type']}\n"
+            error_list += f"  📝 {error_info['error_message'][:50]}{'...' if len(error_info['error_message']) > 50 else ''}\n\n"
+        
+        error_list += "💡 <b>Использование:</b>\n<code>/auto_fix [название_функции]</code>\n\n"
+        error_list += "<b>Пример:</b> /auto_fix currencybk"
+        
+        await update.message.reply_html(error_list)
+        return
+    
+    function_name = context.args[0].lower()
+    
+    # Проверяем, что функция существует
+    if function_name not in dynamic_commands:
+        await update.message.reply_text(f"❌ Функция /{function_name} не найдена!\nИспользуй /list_features для просмотра функций.")
+        return
+    
+    # Проверяем, есть ли информация об ошибке
+    if function_name not in function_errors:
+        await update.message.reply_text(f"❌ Нет записей об ошибках для функции /{function_name}!\nСначала выполни функцию, чтобы получить ошибку.")
+        return
+    
+    function_info = dynamic_commands[function_name]
+    error_info = function_errors[function_name]
+    
+    # Показываем процесс диагностики
+    fix_msg = await update.message.reply_html(
+        f"🔧 <b>АВТОИСПРАВЛЕНИЕ ФУНКЦИИ</b>\n\n"
+        f"📝 <b>Функция:</b> /{function_name}\n"
+        f"❌ <b>Ошибка:</b> {error_info['error_type']}\n"
+        f"📋 <b>Описание ошибки:</b> {error_info['error_message'][:100]}{'...' if len(error_info['error_message']) > 100 else ''}\n\n"
+        f"🤖 Анализирую код через ChatGPT..."
+    )
+    
+    # Составляем детальный промпт для диагностики
+    diagnostic_prompt = f"""
+Ты эксперт по отладке Python кода для Telegram ботов. Проанализируй и исправь следующий код:
+
+ФУНКЦИЯ: {function_name}_command
+ОПИСАНИЕ: {function_info['description']}
+
+ТЕКУЩИЙ КОД:
+```python
+{function_info['code']}
+```
+
+ОШИБКА:
+Тип: {error_info['error_type']}
+Сообщение: {error_info['error_message']}
+Время: {error_info['timestamp']}
+
+ЗАДАЧА:
+1. Проанализируй причину ошибки
+2. Исправь код, сохранив функциональность
+3. Улучши обработку ошибок
+4. Убедись, что функция работает правильно
+
+ТРЕБОВАНИЯ:
+- Функция должна называться ТОЧНО {function_name}_command
+- Обязательно async def
+- Используй await для Telegram операций
+- Добавь try/except для внешних API
+- Отвечай ТОЛЬКО исправленным кодом в формате:
+
+```python
+async def {function_name}_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # исправленный код
+```
+
+БЕЗ дополнительных объяснений!
+"""
+    
+    try:
+        # Отправляем запрос к ChatGPT для диагностики
+        await fix_msg.edit_text(
+            f"🔧 <b>АВТОИСПРАВЛЕНИЕ ФУНКЦИИ</b>\n\n"
+            f"📝 <b>Функция:</b> /{function_name}\n"
+            f"🤖 Отправляю код на анализ ChatGPT...\n"
+            f"⏳ Это может занять до 60 секунд...",
+            parse_mode='HTML'
+        )
+        
+        fixed_code = await ask_chatgpt(diagnostic_prompt)
+        
+        if "❌ Ошибка" in fixed_code or "Таймаут" in fixed_code:
+            await fix_msg.edit_text(
+                f"❌ <b>Ошибка диагностики!</b>\n\n{fixed_code}",
+                parse_mode='HTML'
+            )
+            return
+        
+        await fix_msg.edit_text(
+            f"🔧 <b>АВТОИСПРАВЛЕНИЕ ФУНКЦИИ</b>\n\n"
+            f"📝 <b>Функция:</b> /{function_name}\n"
+            f"✅ Анализ завершен! Проверяю исправленный код...",
+            parse_mode='HTML'
+        )
+        
+        # Проверяем исправленный код
+        is_valid, validation_message = validate_generated_code(fixed_code)
+        if not is_valid:
+            await fix_msg.edit_text(
+                f"❌ <b>Некорректный код!</b>\n\n🚫 {validation_message}",
+                parse_mode='HTML'
+            )
+            return
+        
+        # Извлекаем чистый код
+        if '```python' in fixed_code:
+            code_start = fixed_code.find('```python') + 9
+            code_end = fixed_code.find('```', code_start)
+            clean_fixed_code = fixed_code[code_start:code_end].strip()
+        elif '```' in fixed_code:
+            code_start = fixed_code.find('```') + 3
+            code_end = fixed_code.find('```', code_start)
+            clean_fixed_code = fixed_code[code_start:code_end].strip()
+        else:
+            clean_fixed_code = fixed_code.strip()
+        
+        # Показываем результат анализа
+        result_message = f"""🔧 <b>ДИАГНОСТИКА ЗАВЕРШЕНА</b>
+
+📝 <b>Функция:</b> /{function_name}
+❌ <b>Ошибка была:</b> {error_info['error_type']}
+
+🧩 <b>ИСПРАВЛЕННЫЙ КОД:</b>
+<code>{clean_fixed_code[:800]}{'...' if len(clean_fixed_code) > 800 else ''}</code>
+
+🔄 <b>ПРИМЕНИТЬ ИСПРАВЛЕНИЯ?</b>
+• /apply_fix {function_name} - применить исправления
+• /show_diff {function_name} - показать различия
+• /cancel_fix {function_name} - отменить
+
+⚠️ <b>Внимание:</b> Исправления заменят текущий код функции!"""
+        
+        await fix_msg.edit_text(result_message, parse_mode='HTML')
+        
+        # Сохраняем исправленный код для применения
+        if 'pending_fixes' not in globals():
+            global pending_fixes
+            pending_fixes = {}
+        
+        pending_fixes[function_name] = {
+            'fixed_code': clean_fixed_code,
+            'original_error': error_info,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        await fix_msg.edit_text(
+            f"❌ <b>Ошибка автоисправления:</b>\n\n{str(e)}",
+            parse_mode='HTML'
+        )
+
+async def apply_fix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Применить исправления от auto_fix (только админ)"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен!")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("❌ Укажи функцию для применения исправлений!\nПример: /apply_fix currencybk")
+        return
+    
+    function_name = context.args[0].lower()
+    
+    if 'pending_fixes' not in globals() or function_name not in pending_fixes:
+        await update.message.reply_text(f"❌ Нет готовых исправлений для /{function_name}!\nСначала используй /auto_fix {function_name}")
+        return
+    
+    try:
+        fix_info = pending_fixes[function_name]
+        fixed_code = fix_info['fixed_code']
+        
+        # Выполняем исправленный код
+        local_vars = {
+            'Update': Update,
+            'ContextTypes': ContextTypes,
+            'logger': logger
+        }
+        
+        exec(fixed_code, globals(), local_vars)
+        
+        # Находим исправленную функцию
+        new_function = None
+        for var_name, var_value in local_vars.items():
+            if (var_name.endswith('_command') and 
+                callable(var_value) and 
+                hasattr(var_value, '__code__') and
+                var_value.__code__.co_flags & 0x80):  # async функция
+                new_function = var_value
+                break
+        
+        if new_function:
+            # Обновляем функцию
+            old_description = dynamic_commands[function_name]['description']
+            dynamic_functions[function_name] = new_function
+            dynamic_commands[function_name] = {
+                'function': new_function,
+                'description': old_description,
+                'code': fixed_code,
+                'created_at': dynamic_commands[function_name]['created_at'],
+                'fixed_at': datetime.now().isoformat(),
+                'fixed_error': fix_info['original_error']['error_type']
+            }
+            
+            # Удаляем ошибку из истории
+            if function_name in function_errors:
+                del function_errors[function_name]
+            
+            # Удаляем из ожидающих исправлений
+            del pending_fixes[function_name]
+            
+            await update.message.reply_html(
+                f"✅ <b>ИСПРАВЛЕНИЯ ПРИМЕНЕНЫ!</b>\n\n"
+                f"🔧 <b>Функция:</b> /{function_name}\n"
+                f"🎯 <b>Статус:</b> Ошибка исправлена\n"
+                f"📅 <b>Время исправления:</b> {datetime.now().strftime('%H:%M:%S')}\n\n"
+                f"💡 <b>Протестируй функцию:</b> /{function_name}"
+            )
+        else:
+            await update.message.reply_text("❌ Ошибка применения исправлений: функция не найдена в коде.")
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка применения исправлений:\n{str(e)}")
+
+# Инициализируем глобальные переменные
+pending_fixes = {}
+
 async def dynamic_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик динамических команд"""
     command = update.message.text[1:].split()[0].lower()  # убираем / и берем первое слово
@@ -962,6 +1222,14 @@ async def dynamic_command_handler(update: Update, context: ContextTypes.DEFAULT_
             error_message = str(e)
             
             logger.error(f"❌ Ошибка выполнения динамической команды /{command}: {error_type}: {error_message}")
+            
+            # Сохраняем информацию об ошибке для автоисправления
+            function_errors[command] = {
+                'error_type': error_type,
+                'error_message': error_message,
+                'timestamp': datetime.now().isoformat(),
+                'function_code': dynamic_commands[command]['code'] if command in dynamic_commands else 'Код недоступен'
+            }
             
             # Отправляем пользователю понятное сообщение
             debug_info = f"""❌ <b>Ошибка команды /{command}</b>
@@ -984,8 +1252,9 @@ async def dynamic_command_handler(update: Update, context: ContextTypes.DEFAULT_
                 debug_info += "\n• Ошибка в коде функции"
             
             debug_info += f"\n\n🔄 <b>Действия:</b>"
+            debug_info += f"\n• /auto_fix {command} - 🤖 Автоисправление через ChatGPT"
             debug_info += f"\n• /remove_feature {command} - удалить функцию"
-            debug_info += f"\n• /add_feature {command} - пересоздать функцию"
+            debug_info += f"\n• /edit_feature {command} - [описание] - редактировать вручную"
             
             await update.message.reply_html(debug_info)
     else:
@@ -1364,6 +1633,70 @@ def load_saved_features():
     logger.info("🔄 Загрузка сохраненных AI функций...")
     # TODO: Реализовать сохранение/загрузку в файл или БД
 
+async def show_diff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показать различия между текущим и исправленным кодом (только админ)"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен!")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("❌ Укажи функцию для просмотра различий!\nПример: /show_diff currencybk")
+        return
+    
+    function_name = context.args[0].lower()
+    
+    if 'pending_fixes' not in globals() or function_name not in pending_fixes:
+        await update.message.reply_text(f"❌ Нет готовых исправлений для /{function_name}!\nСначала используй /auto_fix {function_name}")
+        return
+    
+    if function_name not in dynamic_commands:
+        await update.message.reply_text(f"❌ Функция /{function_name} не найдена!")
+        return
+    
+    fix_info = pending_fixes[function_name]
+    original_code = dynamic_commands[function_name]['code']
+    fixed_code = fix_info['fixed_code']
+    
+    diff_message = f"""📊 <b>СРАВНЕНИЕ КОДА</b>
+
+📝 <b>Функция:</b> /{function_name}
+❌ <b>Ошибка:</b> {fix_info['original_error']['error_type']}
+
+📜 <b>ТЕКУЩИЙ КОД:</b>
+<code>{original_code[:400]}{'...' if len(original_code) > 400 else ''}</code>
+
+🔧 <b>ИСПРАВЛЕННЫЙ КОД:</b>
+<code>{fixed_code[:400]}{'...' if len(fixed_code) > 400 else ''}</code>
+
+🔄 <b>ДЕЙСТВИЯ:</b>
+• /apply_fix {function_name} - применить исправления
+• /cancel_fix {function_name} - отменить исправления"""
+    
+    await update.message.reply_html(diff_message)
+
+async def cancel_fix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отменить готовые исправления (только админ)"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен!")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("❌ Укажи функцию для отмены исправлений!\nПример: /cancel_fix currencybk")
+        return
+    
+    function_name = context.args[0].lower()
+    
+    if 'pending_fixes' not in globals() or function_name not in pending_fixes:
+        await update.message.reply_text(f"❌ Нет готовых исправлений для /{function_name}!")
+        return
+    
+    del pending_fixes[function_name]
+    await update.message.reply_text(f"✅ Исправления для /{function_name} отменены.")
+
 def main() -> None:
     """Запуск бота с ChatGPT и AI-генерацией функций"""
     # Загружаем сохраненные функции
@@ -1390,6 +1723,8 @@ def main() -> None:
     application.add_handler(CommandHandler("remove_feature", remove_feature))
     application.add_handler(CommandHandler("generation_stats", generation_stats))
     application.add_handler(CommandHandler("edit_feature", edit_feature)) # Добавляем новую команду
+    application.add_handler(CommandHandler("auto_fix", auto_fix)) # Добавляем новую команду
+    application.add_handler(CommandHandler("apply_fix", apply_fix)) # Добавляем новую команду
     
     # Остальные админ команды
     application.add_handler(CommandHandler("stats", admin_stats))
@@ -1403,6 +1738,8 @@ def main() -> None:
     application.add_handler(CommandHandler("uptime", uptime_command)) # Добавляем новую команду
     application.add_handler(CommandHandler("system_info", system_info)) # Добавляем новую команду
     application.add_handler(CommandHandler("notify", notify_admin)) # Добавляем новую команду
+    application.add_handler(CommandHandler("show_diff", show_diff)) # Добавляем новую команду
+    application.add_handler(CommandHandler("cancel_fix", cancel_fix)) # Добавляем новую команду
 
     # ВАЖНО: MessageHandler должен быть последним для обработки динамических команд
     application.add_handler(MessageHandler(filters.TEXT, echo))
