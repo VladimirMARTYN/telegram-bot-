@@ -101,6 +101,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         welcome_text += f"/broadcast [текст] - Рассылка всем пользователям\n"
         welcome_text += f"/fix_admin_id - Исправить права администратора\n"
         welcome_text += f"/users_info - Информация о пользователях\n"
+        welcome_text += f"/add_user [ID] [имя] - Добавить пользователя\n"
+        welcome_text += f"/remove_user [ID] - Удалить пользователя\n"
     elif ADMIN_USER_ID == 0:
         # Если ADMIN_USER_ID не настроен, показываем команду исправления
         welcome_text += f"/fix_admin_id - Стать администратором (не настроен)\n"
@@ -137,6 +139,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         help_text += "/broadcast [текст] - Рассылка всем пользователям\n"
         help_text += "/fix_admin_id - Исправить права администратора\n"
         help_text += "/users_info - Информация о пользователях\n"
+        help_text += "/add_user [ID] [имя] - Добавить пользователя\n"
+        help_text += "/remove_user [ID] - Удалить пользователя\n"
     elif ADMIN_USER_ID == 0:
         # Если ADMIN_USER_ID не настроен, показываем команду исправления всем
         help_text += "/fix_admin_id - Стать администратором (не настроен)\n"
@@ -210,12 +214,20 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"/rates - Курсы валют и криптовалют\n"
         f"/broadcast [текст] - Рассылка всем пользователям\n"
         f"/fix_admin_id - Исправить права администратора\n"
-        f"/users_info - Информация о пользователях бота\n\n"
+        f"/users_info - Информация о пользователях бота\n"
+        f"/add_user [ID] [имя] - Добавить пользователя вручную\n"
+        f"/remove_user [ID] - Удалить пользователя из базы\n\n"
         
         f"💱 <b>Доступные функции:</b>\n"
         f"• Курсы валют ЦБ РФ (USD, EUR, CNY)\n"
         f"• Курсы криптовалют (BTC, ETH, DOGE, TON)\n"
-        f"• Массовая рассылка сообщений\n\n"
+        f"• Массовая рассылка сообщений\n"
+        f"• Управление базой пользователей\n\n"
+        
+        f"👥 <b>База пользователей:</b>\n"
+        f"• Всего пользователей: {len(user_data)}\n"
+        f"• Добавлено через /start: {sum(1 for u in user_data.values() if not u.get('added_by_admin'))}\n"
+        f"• Добавлено админом: {sum(1 for u in user_data.values() if u.get('added_by_admin'))}\n\n"
         
         f"📢 <b>Рассылка:</b>\n"
         f"👥 Пользователей для рассылки: {len(user_data)}\n"
@@ -558,7 +570,10 @@ async def users_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         username_text = f"@{username}" if username and username != 'нет' else "без username"
         
-        info_text += f"{i}. <b>{name}</b> ({username_text})\n"
+        # Добавляем метку для пользователей добавленных админом
+        admin_mark = " 👨‍💻" if info.get('added_by_admin') else ""
+        
+        info_text += f"{i}. <b>{name}</b>{admin_mark} ({username_text})\n"
         info_text += f"   ID: <code>{uid}</code>\n"
         info_text += f"   Активен: {last_activity}\n\n"
     
@@ -568,9 +583,255 @@ async def users_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     info_text += f"💾 <b>Сохранение данных:</b>\n"
     info_text += f"• Автосохранение при каждом /start\n"
     info_text += f"• Загрузка при запуске бота\n"
-    info_text += f"• Защита от потери при редеплое"
+    info_text += f"• Защита от потери при редеплое\n\n"
+    
+    info_text += f"💡 <b>Обозначения:</b>\n"
+    info_text += f"👨‍💻 - добавлен администратором\n"
+    info_text += f"• Без метки - присоединился через /start\n\n"
+    
+    info_text += f"🔧 <b>Управление:</b>\n"
+    info_text += f"/add_user [ID] [имя] - добавить пользователя\n"
+    info_text += f"/remove_user [ID] - удалить пользователя"
     
     await update.message.reply_html(info_text)
+
+async def add_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Ручное добавление пользователя по ID (только админ)"""
+    user_id = update.effective_user.id
+    
+    # Проверяем права администратора
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен! Только администратор может использовать эту команду.")
+        return
+    
+    # Проверяем аргументы
+    if not context.args:
+        await update.message.reply_html(
+            "➕ <b>ДОБАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯ</b>\n\n"
+            "🔍 <b>Использование:</b>\n"
+            "<code>/add_user [ID] [имя]</code>\n\n"
+            "💡 <b>Примеры:</b>\n"
+            "• <code>/add_user 123456789</code>\n"
+            "• <code>/add_user 123456789 Анна</code>\n"
+            "• <code>/add_user 987654321 Иван Петров</code>\n\n"
+            "📊 <b>Текущая база:</b>\n"
+            f"👥 Пользователей: <b>{len(user_data)}</b>\n\n"
+            "⚠️ <b>Примечание:</b>\n"
+            "• ID должен быть числом\n"
+            "• Имя опционально\n"
+            "• Если пользователь уже есть - данные обновятся"
+        )
+        return
+    
+    # Получаем ID пользователя
+    try:
+        target_user_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_html(
+            "❌ <b>ОШИБКА ФОРМАТА!</b>\n\n"
+            f"'{context.args[0]}' не является числом.\n\n"
+            "💡 <b>Правильный формат:</b>\n"
+            "<code>/add_user 123456789 Имя</code>"
+        )
+        return
+    
+    # Получаем имя пользователя (если указано)
+    if len(context.args) > 1:
+        user_name = " ".join(context.args[1:])
+    else:
+        user_name = "Пользователь (добавлен админом)"
+    
+    # Проверяем, существует ли уже пользователь
+    is_existing = target_user_id in user_data
+    
+    # Пытаемся получить информацию о пользователе через Telegram API
+    real_user_info = None
+    try:
+        # Попытка получить информацию через getChat
+        chat_info = await context.bot.get_chat(target_user_id)
+        if chat_info:
+            real_user_info = {
+                'first_name': chat_info.first_name or user_name,
+                'username': chat_info.username,
+                'type': chat_info.type
+            }
+    except Exception as e:
+        logger.info(f"Не удалось получить информацию о пользователе {target_user_id}: {e}")
+    
+    # Формируем данные пользователя
+    current_time = datetime.now().isoformat()
+    
+    if is_existing:
+        # Обновляем существующего пользователя
+        if real_user_info:
+            user_data[target_user_id]['name'] = real_user_info['first_name']
+            if real_user_info['username']:
+                user_data[target_user_id]['username'] = real_user_info['username']
+        else:
+            user_data[target_user_id]['name'] = user_name
+        
+        user_data[target_user_id]['last_activity'] = current_time
+        user_data[target_user_id]['updated_by_admin'] = current_time
+        
+        status = "обновлен"
+    else:
+        # Добавляем нового пользователя
+        user_data[target_user_id] = {
+            'name': real_user_info['first_name'] if real_user_info else user_name,
+            'username': real_user_info['username'] if real_user_info and real_user_info['username'] else None,
+            'first_seen': current_time,
+            'last_activity': current_time,
+            'added_by_admin': True,
+            'added_by_admin_time': current_time
+        }
+        status = "добавлен"
+    
+    # Сохраняем изменения
+    save_user_data()
+    
+    # Формируем ответ
+    result_text = f"✅ <b>ПОЛЬЗОВАТЕЛЬ {status.upper()}!</b>\n\n"
+    result_text += f"👤 <b>Информация:</b>\n"
+    result_text += f"• ID: <code>{target_user_id}</code>\n"
+    result_text += f"• Имя: <b>{user_data[target_user_id]['name']}</b>\n"
+    
+    if user_data[target_user_id].get('username'):
+        result_text += f"• Username: @{user_data[target_user_id]['username']}\n"
+    else:
+        result_text += f"• Username: не указан\n"
+    
+    result_text += f"• Статус: {status}\n"
+    
+    if real_user_info:
+        result_text += f"• Источник данных: Telegram API ✅\n"
+    else:
+        result_text += f"• Источник данных: ручной ввод 📝\n"
+    
+    result_text += f"\n📊 <b>Статистика базы:</b>\n"
+    result_text += f"• Всего пользователей: <b>{len(user_data)}</b>\n"
+    result_text += f"• Добавлено админом: <b>{sum(1 for u in user_data.values() if u.get('added_by_admin'))}</b>\n"
+    
+    result_text += f"\n💡 <b>Что теперь доступно:</b>\n"
+    result_text += f"• Пользователь включен в рассылки (/broadcast)\n"
+    result_text += f"• Отображается в /users_info\n"
+    result_text += f"• Может использовать команды бота\n"
+    
+    if not is_existing:
+        result_text += f"\n🎯 <b>Рекомендация:</b>\n"
+        result_text += f"Отправьте пользователю сообщение о том, что он добавлен в бота!"
+    
+    await update.message.reply_html(result_text)
+    
+    # Логируем действие
+    logger.info(f"👨‍💻 Админ {user_id} {status} пользователя {target_user_id}: {user_data[target_user_id]['name']}")
+
+async def remove_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Удаление пользователя по ID (только админ)"""
+    user_id = update.effective_user.id
+    
+    # Проверяем права администратора
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Доступ запрещен! Только администратор может использовать эту команду.")
+        return
+    
+    # Проверяем аргументы
+    if not context.args:
+        await update.message.reply_html(
+            "🗑️ <b>УДАЛЕНИЕ ПОЛЬЗОВАТЕЛЯ</b>\n\n"
+            "🔍 <b>Использование:</b>\n"
+            "<code>/remove_user [ID]</code>\n\n"
+            "💡 <b>Примеры:</b>\n"
+            "• <code>/remove_user 123456789</code>\n\n"
+            "📊 <b>Текущая база:</b>\n"
+            f"👥 Пользователей: <b>{len(user_data)}</b>\n\n"
+            "⚠️ <b>Внимание:</b>\n"
+            "• Пользователь будет полностью удален из базы\n"
+            "• Не сможет получать рассылки\n"
+            "• Отменить действие нельзя\n\n"
+            "💡 <b>Для просмотра пользователей:</b> /users_info"
+        )
+        return
+    
+    # Получаем ID пользователя
+    try:
+        target_user_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_html(
+            "❌ <b>ОШИБКА ФОРМАТА!</b>\n\n"
+            f"'{context.args[0]}' не является числом.\n\n"
+            "💡 <b>Правильный формат:</b>\n"
+            "<code>/remove_user 123456789</code>"
+        )
+        return
+    
+    # Проверяем, существует ли пользователь
+    if target_user_id not in user_data:
+        await update.message.reply_html(
+            f"❌ <b>ПОЛЬЗОВАТЕЛЬ НЕ НАЙДЕН!</b>\n\n"
+            f"Пользователь с ID <code>{target_user_id}</code> не найден в базе.\n\n"
+            f"📊 <b>Текущая база:</b> {len(user_data)} пользователей\n\n"
+            f"💡 <b>Для просмотра всех пользователей:</b> /users_info"
+        )
+        return
+    
+    # Защита от удаления самого администратора
+    if target_user_id == ADMIN_USER_ID:
+        await update.message.reply_html(
+            "🛡️ <b>ОПЕРАЦИЯ ЗАПРЕЩЕНА!</b>\n\n"
+            "Вы не можете удалить самого себя из базы пользователей.\n\n"
+            "👨‍💻 <b>Вы администратор</b> - ваши данные защищены от удаления."
+        )
+        return
+    
+    # Сохраняем информацию о пользователе для отчета
+    removed_user = user_data[target_user_id].copy()
+    
+    # Удаляем пользователя
+    del user_data[target_user_id]
+    
+    # Сохраняем изменения
+    save_user_data()
+    
+    # Формируем отчет
+    result_text = f"✅ <b>ПОЛЬЗОВАТЕЛЬ УДАЛЕН!</b>\n\n"
+    result_text += f"🗑️ <b>Удаленный пользователь:</b>\n"
+    result_text += f"• ID: <code>{target_user_id}</code>\n"
+    result_text += f"• Имя: <b>{removed_user.get('name', 'Неизвестно')}</b>\n"
+    
+    if removed_user.get('username'):
+        result_text += f"• Username: @{removed_user['username']}\n"
+    else:
+        result_text += f"• Username: не указан\n"
+    
+    # Показываем дополнительную информацию
+    if removed_user.get('added_by_admin'):
+        result_text += f"• Был добавлен: админом\n"
+    else:
+        result_text += f"• Был добавлен: через /start\n"
+    
+    if removed_user.get('first_seen'):
+        try:
+            dt = datetime.fromisoformat(removed_user['first_seen'])
+            result_text += f"• Первый визит: {dt.strftime('%d.%m.%Y %H:%M')}\n"
+        except:
+            pass
+    
+    result_text += f"\n📊 <b>Обновленная статистика:</b>\n"
+    result_text += f"• Пользователей осталось: <b>{len(user_data)}</b>\n"
+    result_text += f"• Добавлено админом: <b>{sum(1 for u in user_data.values() if u.get('added_by_admin'))}</b>\n"
+    
+    result_text += f"\n❌ <b>Что изменилось:</b>\n"
+    result_text += f"• Пользователь исключен из рассылок\n"
+    result_text += f"• Не отображается в /users_info\n"
+    result_text += f"• Может снова присоединиться через /start\n"
+    
+    result_text += f"\n💡 <b>Для восстановления:</b>\n"
+    result_text += f"Используйте <code>/add_user {target_user_id} {removed_user.get('name', '')}</code>"
+    
+    await update.message.reply_html(result_text)
+    
+    # Логируем действие
+    logger.info(f"👨‍💻 Админ {user_id} удалил пользователя {target_user_id}: {removed_user.get('name', 'Неизвестно')}")
 
 def main() -> None:
     """Запуск бота - минимальная версия"""
@@ -592,6 +853,8 @@ def main() -> None:
     application.add_handler(CommandHandler("broadcast", broadcast_command))
     application.add_handler(CommandHandler("fix_admin_id", fix_admin_id_command))
     application.add_handler(CommandHandler("users_info", users_info_command))
+    application.add_handler(CommandHandler("add_user", add_user_command))
+    application.add_handler(CommandHandler("remove_user", remove_user_command))
 
     # Обработчик всех текстовых сообщений (эхо)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
