@@ -73,11 +73,11 @@ def create_rates_keyboard():
         ],
         [
             InlineKeyboardButton("🟢 Сбер", callback_data="rate_SBER"),
-            InlineKeyboardButton("🔴 Яндекс", callback_data="rate_YNDX"),
+            InlineKeyboardButton("🔴 Яндекс", callback_data="rate_YDEX"),
             InlineKeyboardButton("🔵 ВК", callback_data="rate_VKCO")
         ],
         [
-            InlineKeyboardButton("🟡 Т-Банк", callback_data="rate_TCSG"),
+            InlineKeyboardButton("🟡 Т-Банк", callback_data="rate_T"),
             InlineKeyboardButton("💎 Газпром", callback_data="rate_GAZP")
         ],
         [
@@ -135,9 +135,9 @@ async def get_moex_stocks():
     # Список акций для мониторинга
     stocks = {
         'SBER': {'name': 'Сбер', 'emoji': '🟢'},
-        'YNDX': {'name': 'Яндекс', 'emoji': '🔴'},
+        'YDEX': {'name': 'Яндекс', 'emoji': '🔴'},
         'VKCO': {'name': 'ВК', 'emoji': '🔵'},
-        'TCSG': {'name': 'Т-Технологии', 'emoji': '🟡'},
+        'T': {'name': 'Т-Технологии', 'emoji': '🟡'},
         'GAZP': {'name': 'Газпром', 'emoji': '💎'}
     }
     
@@ -1686,7 +1686,7 @@ async def trending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def show_single_rate(query, currency: str):
     """Показать курс одной валюты или акции"""
     try:
-        if currency in ['SBER', 'YNDX', 'VKCO', 'TCSG', 'GAZP']:
+        if currency in ['SBER', 'YDEX', 'VKCO', 'T', 'GAZP']:
             # Российская акция
             moex_stocks = await get_moex_stocks()
             
