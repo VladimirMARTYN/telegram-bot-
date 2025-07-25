@@ -72,6 +72,15 @@ def create_rates_keyboard():
             InlineKeyboardButton("🅣 Tether", callback_data="rate_USDT")
         ],
         [
+            InlineKeyboardButton("🟢 Сбер", callback_data="rate_SBER"),
+            InlineKeyboardButton("🔴 Яндекс", callback_data="rate_YNDX"),
+            InlineKeyboardButton("🔵 ВК", callback_data="rate_VKCO")
+        ],
+        [
+            InlineKeyboardButton("🟡 Т-Банк", callback_data="rate_TCSG"),
+            InlineKeyboardButton("💎 Газпром", callback_data="rate_GAZP")
+        ],
+        [
             InlineKeyboardButton("📊 Все курсы", callback_data="rates_all"),
             InlineKeyboardButton("🔙 Назад", callback_data="main_menu")
         ]
@@ -117,6 +126,86 @@ def create_compare_keyboard():
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
+
+# Функция для получения данных акций с MOEX
+async def get_moex_stocks():
+    """Получить данные акций с Московской биржи"""
+    stocks_data = {}
+    
+    # Список акций для мониторинга
+    stocks = {
+        'SBER': {'name': 'Сбер', 'emoji': '🟢'},
+        'YNDX': {'name': 'Яндекс', 'emoji': '🔴'},
+        'VKCO': {'name': 'ВК', 'emoji': '🔵'},
+        'TCSG': {'name': 'Т-Технологии', 'emoji': '🟡'},
+        'GAZP': {'name': 'Газпром', 'emoji': '💎'}
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Получаем данные торгов
+            trading_url = "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json"
+            params = {
+                'securities': ','.join(stocks.keys()),
+                'iss.meta': 'off',
+                'iss.only': 'securities,marketdata'
+            }
+            
+            async with session.get(trading_url, params=params) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    
+                    # Парсим данные торгов
+                    securities_data = {}
+                    marketdata = {}
+                    
+                    if 'securities' in data and 'data' in data['securities']:
+                        securities_cols = data['securities']['columns']
+                        for row in data['securities']['data']:
+                            row_data = dict(zip(securities_cols, row))
+                            secid = row_data.get('SECID')
+                            if secid in stocks:
+                                securities_data[secid] = {
+                                    'shortname': row_data.get('SHORTNAME', stocks[secid]['name']),
+                                    'lotsize': row_data.get('LOTSIZE', 1)
+                                }
+                    
+                    if 'marketdata' in data and 'data' in data['marketdata']:
+                        marketdata_cols = data['marketdata']['columns']
+                        for row in data['marketdata']['data']:
+                            row_data = dict(zip(marketdata_cols, row))
+                            secid = row_data.get('SECID')
+                            if secid in stocks:
+                                marketdata[secid] = {
+                                    'last': row_data.get('LAST'),
+                                    'change': row_data.get('CHANGE'),
+                                    'changeprcnt': row_data.get('CHANGEPRCNT'),
+                                    'volume': row_data.get('VALTODAY'),
+                                    'open': row_data.get('OPEN'),
+                                    'high': row_data.get('HIGH'),
+                                    'low': row_data.get('LOW')
+                                }
+                    
+                    # Объединяем данные
+                    for ticker in stocks:
+                        if ticker in securities_data or ticker in marketdata:
+                            stocks_data[ticker] = {
+                                'name': stocks[ticker]['name'],
+                                'emoji': stocks[ticker]['emoji'],
+                                'shortname': securities_data.get(ticker, {}).get('shortname', stocks[ticker]['name']),
+                                'price': marketdata.get(ticker, {}).get('last'),
+                                'change': marketdata.get(ticker, {}).get('change'),
+                                'change_pct': marketdata.get(ticker, {}).get('changeprcnt'),
+                                'volume': marketdata.get(ticker, {}).get('volume'),
+                                'open': marketdata.get(ticker, {}).get('open'),
+                                'high': marketdata.get(ticker, {}).get('high'),
+                                'low': marketdata.get(ticker, {}).get('low')
+                            }
+    
+    except Exception as e:
+        logger.error(f"Ошибка получения данных MOEX: {e}")
+    
+    return stocks_data
 
 # Время запуска бота
 bot_start_time = get_moscow_time()
@@ -441,10 +530,48 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             logger.error(f"Ошибка получения курсов криптовалют: {e}")
             btc_str = eth_str = doge_str = ton_str = "❌ Ошибка API"
         
+        # 3. Получаем данные акций с MOEX
+        moex_stocks = await get_moex_stocks()
+        stock_strings = {}
+        
+        for ticker, data in moex_stocks.items():
+            price = data.get('price')
+            change_pct = data.get('change_pct')
+            
+            if price is not None:
+                price_str = f"{price:.2f} ₽"
+                
+                if change_pct is not None:
+                    if change_pct > 0:
+                        trend = "📈"
+                        change_str = f"+{change_pct:.2f}%"
+                    elif change_pct < 0:
+                        trend = "📉"
+                        change_str = f"{change_pct:.2f}%"
+                    else:
+                        trend = "➡️"
+                        change_str = "0.00%"
+                    
+                    stock_strings[ticker] = f"{price_str} ({trend} {change_str})"
+                else:
+                    stock_strings[ticker] = price_str
+            else:
+                stock_strings[ticker] = "❌ Н/Д"
+        
         # Формируем итоговое сообщение
         current_time = get_moscow_time().strftime("%d.%m.%Y %H:%M")
         
-        message = f"""📊 <b>КУРСЫ ВАЛЮТ И КРИПТОВАЛЮТ</b>
+        # Формируем строки для акций с эмоджи
+        stocks_info = []
+        for ticker, data in moex_stocks.items():
+            emoji = data.get('emoji', '📊')
+            name = data.get('name', ticker)
+            price_info = stock_strings.get(ticker, '❌ Н/Д')
+            stocks_info.append(f"{emoji} {name}: {price_info}")
+        
+        stocks_section = "\n".join(stocks_info) if stocks_info else "❌ Данные недоступны"
+
+        message = f"""📊 <b>КУРСЫ ВАЛЮТ, КРИПТОВАЛЮТ И АКЦИЙ</b>
 
 💱 <b>Основные валюты ЦБ РФ:</b>
 🇺🇸 USD: {usd_str}
@@ -464,8 +591,11 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 🐕 Dogecoin: {doge_str}
 💎 TON: {ton_str}
 
+📈 <b>Российские акции (MOEX):</b>
+{stocks_section}
+
 ⏰ <b>Время:</b> {current_time}
-📡 <b>Источники:</b> ЦБ РФ, CoinGecko"""
+📡 <b>Источники:</b> ЦБ РФ, CoinGecko, MOEX"""
 
         await update.message.reply_html(message)
         
@@ -1334,6 +1464,24 @@ async def trending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                     'rate': info['rate']
                 })
         
+        # Получаем данные акций MOEX
+        moex_stocks = await get_moex_stocks()
+        stock_assets = []
+        
+        for ticker, data in moex_stocks.items():
+            if data.get('price') is not None and data.get('change_pct') is not None:
+                stock_assets.append({
+                    'symbol': ticker,
+                    'name': data.get('name', ticker),
+                    'emoji': data.get('emoji', '📊'),
+                    'price': data.get('price'),
+                    'change_pct': data.get('change_pct'),
+                    'volume': data.get('volume', 0)
+                })
+        
+        # Сортируем акции по изменению
+        stock_assets.sort(key=lambda x: x['change_pct'], reverse=True)
+        
         # Формируем результат
         current_time = get_moscow_time().strftime('%d.%m.%Y %H:%M')
         result_text = f"🔥 <b>ТРЕНДЫ ДНЯ</b>\n\n"
@@ -1398,6 +1546,55 @@ async def trending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             avg_volatility = sum(volatilities) / len(volatilities)
             result_text += f"📊 Средняя волатильность: {avg_volatility:.2f}%\n"
         
+        # Секция российских акций
+        result_text += f"\n📈 <b>РОССИЙСКИЕ АКЦИИ (MOEX):</b>\n\n"
+        
+        if stock_assets:
+            # Лидер роста среди акций
+            if stock_assets[0]['change_pct'] > 0:
+                best_stock = stock_assets[0]
+                result_text += f"🚀 <b>ЛИДЕР РОСТА:</b>\n"
+                result_text += f"{best_stock['emoji']} <b>{best_stock['name']} ({best_stock['symbol']})</b>\n"
+                result_text += f"💰 {best_stock['price']:.2f} ₽\n"
+                result_text += f"📈 <b>+{best_stock['change_pct']:.2f}%</b>\n"
+                if best_stock['volume'] and best_stock['volume'] > 0:
+                    volume_m = best_stock['volume'] / 1_000_000
+                    result_text += f"📊 {volume_m:.1f}M ₽\n"
+                result_text += f"\n"
+            
+            # Лидер падения среди акций
+            if stock_assets[-1]['change_pct'] < 0:
+                worst_stock = stock_assets[-1]
+                result_text += f"📉 <b>ЛИДЕР ПАДЕНИЯ:</b>\n"
+                result_text += f"{worst_stock['emoji']} <b>{worst_stock['name']} ({worst_stock['symbol']})</b>\n"
+                result_text += f"💰 {worst_stock['price']:.2f} ₽\n"
+                result_text += f"🔴 <b>{worst_stock['change_pct']:.2f}%</b>\n"
+                if worst_stock['volume'] and worst_stock['volume'] > 0:
+                    volume_m = worst_stock['volume'] / 1_000_000
+                    result_text += f"📊 {volume_m:.1f}M ₽\n"
+                result_text += f"\n"
+            
+            # Все акции по порядку
+            result_text += f"📊 <b>ВСЕ АКЦИИ:</b>\n"
+            for i, stock in enumerate(stock_assets, 1):
+                change = stock['change_pct']
+                if change > 0:
+                    change_emoji = "📈"
+                    change_str = f"+{change:.2f}%"
+                    change_color = "🟢"
+                elif change < 0:
+                    change_emoji = "📉"
+                    change_str = f"{change:.2f}%"
+                    change_color = "🔴"
+                else:
+                    change_emoji = "➡️"
+                    change_str = "0.00%"
+                    change_color = "⚪"
+                
+                result_text += f"{i}. {stock['emoji']} <b>{stock['symbol']}</b> {change_color} {change_str} {change_emoji}\n"
+        else:
+            result_text += "❌ Данные по акциям недоступны\n"
+        
         # Валютная секция
         result_text += f"\n💱 <b>ОСНОВНЫЕ ВАЛЮТЫ (ЦБ РФ):</b>\n"
         
@@ -1418,27 +1615,52 @@ async def trending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             negative_count = sum(1 for asset in crypto_assets if asset['change_24h'] < 0)
             
             if positive_count > negative_count:
-                result_text += f"✅ Рынок криптовалют: <b>Растущий</b> ({positive_count} растут, {negative_count} падают)\n"
+                result_text += f"₿ Криптовалюты: <b>Растущий</b> ({positive_count} растут, {negative_count} падают)\n"
             elif negative_count > positive_count:
-                result_text += f"❌ Рынок криптовалют: <b>Падающий</b> ({negative_count} падают, {positive_count} растут)\n"
+                result_text += f"₿ Криптовалюты: <b>Падающий</b> ({negative_count} падают, {positive_count} растут)\n"
             else:
-                result_text += f"⚖️ Рынок криптовалют: <b>Смешанный</b> ({positive_count} растут, {negative_count} падают)\n"
+                result_text += f"₿ Криптовалюты: <b>Смешанный</b> ({positive_count} растут, {negative_count} падают)\n"
             
-            # Общий тренд
+            # Общий тренд криптовалют
             avg_change = sum(asset['change_24h'] for asset in crypto_assets) / len(crypto_assets)
             if avg_change > 1:
-                result_text += f"📈 Общий тренд: <b>Сильный рост</b> (+{avg_change:.2f}%)\n"
+                result_text += f"📈 Криптотренд: <b>Сильный рост</b> (+{avg_change:.2f}%)\n"
             elif avg_change > 0:
-                result_text += f"📈 Общий тренд: <b>Умеренный рост</b> (+{avg_change:.2f}%)\n"
+                result_text += f"📈 Криптотренд: <b>Умеренный рост</b> (+{avg_change:.2f}%)\n"
             elif avg_change < -1:
-                result_text += f"📉 Общий тренд: <b>Сильное падение</b> ({avg_change:.2f}%)\n"
+                result_text += f"📉 Криптотренд: <b>Сильное падение</b> ({avg_change:.2f}%)\n"
             elif avg_change < 0:
-                result_text += f"📉 Общий тренд: <b>Умеренное падение</b> ({avg_change:.2f}%)\n"
+                result_text += f"📉 Криптотренд: <b>Умеренное падение</b> ({avg_change:.2f}%)\n"
             else:
-                result_text += f"➡️ Общий тренд: <b>Боковое движение</b> ({avg_change:.2f}%)\n"
+                result_text += f"➡️ Криптотренд: <b>Боковое движение</b> ({avg_change:.2f}%)\n"
+        
+        # Аналитика по акциям
+        if stock_assets:
+            stock_positive = sum(1 for stock in stock_assets if stock['change_pct'] > 0)
+            stock_negative = sum(1 for stock in stock_assets if stock['change_pct'] < 0)
+            
+            if stock_positive > stock_negative:
+                result_text += f"📈 Российские акции: <b>Растущий</b> ({stock_positive} растут, {stock_negative} падают)\n"
+            elif stock_negative > stock_positive:
+                result_text += f"📉 Российские акции: <b>Падающий</b> ({stock_negative} падают, {stock_positive} растут)\n"
+            else:
+                result_text += f"⚖️ Российские акции: <b>Смешанный</b> ({stock_positive} растут, {stock_negative} падают)\n"
+            
+            # Средний тренд акций
+            avg_stock_change = sum(stock['change_pct'] for stock in stock_assets) / len(stock_assets)
+            if avg_stock_change > 1:
+                result_text += f"🚀 Тренд MOEX: <b>Сильный рост</b> (+{avg_stock_change:.2f}%)\n"
+            elif avg_stock_change > 0:
+                result_text += f"📈 Тренд MOEX: <b>Умеренный рост</b> (+{avg_stock_change:.2f}%)\n"
+            elif avg_stock_change < -1:
+                result_text += f"📉 Тренд MOEX: <b>Сильное падение</b> ({avg_stock_change:.2f}%)\n"
+            elif avg_stock_change < 0:
+                result_text += f"📉 Тренд MOEX: <b>Умеренное падение</b> ({avg_stock_change:.2f}%)\n"
+            else:
+                result_text += f"➡️ Тренд MOEX: <b>Боковое движение</b> ({avg_stock_change:.2f}%)\n"
         
         result_text += f"\n⏰ <b>Время:</b> {current_time} (МСК)\n"
-        result_text += f"📡 <b>Источники:</b> CoinGecko, ЦБ РФ\n\n"
+        result_text += f"📡 <b>Источники:</b> CoinGecko, ЦБ РФ, MOEX\n\n"
         result_text += f"💡 <b>Используйте для детального анализа:</b>\n"
         result_text += f"<code>/compare BTC ETH</code> - сравнить активы\n"
         result_text += f"<code>/rates</code> - текущие курсы"
@@ -1462,9 +1684,60 @@ async def trending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         logger.error(f"Ошибка получения трендов: {e}")
 
 async def show_single_rate(query, currency: str):
-    """Показать курс одной валюты"""
+    """Показать курс одной валюты или акции"""
     try:
-        if currency in ['BTC', 'ETH', 'USDT']:
+        if currency in ['SBER', 'YNDX', 'VKCO', 'TCSG', 'GAZP']:
+            # Российская акция
+            moex_stocks = await get_moex_stocks()
+            
+            if currency in moex_stocks:
+                stock_data = moex_stocks[currency]
+                price = stock_data.get('price')
+                change = stock_data.get('change')
+                change_pct = stock_data.get('change_pct')
+                volume = stock_data.get('volume')
+                high = stock_data.get('high')
+                low = stock_data.get('low')
+                open_price = stock_data.get('open')
+                
+                emoji = stock_data.get('emoji', '📊')
+                name = stock_data.get('name', currency)
+                
+                text = f"{emoji} <b>{name} ({currency})</b>\n\n"
+                
+                if price is not None:
+                    text += f"💰 <b>Цена:</b> {price:.2f} ₽\n"
+                    
+                    if change is not None and change_pct is not None:
+                        if change_pct > 0:
+                            trend = "📈"
+                            change_str = f"+{change:.2f} ₽ (+{change_pct:.2f}%)"
+                        elif change_pct < 0:
+                            trend = "📉"
+                            change_str = f"{change:.2f} ₽ ({change_pct:.2f}%)"
+                        else:
+                            trend = "➡️"
+                            change_str = f"0.00 ₽ (0.00%)"
+                        
+                        text += f"{trend} <b>Изменение:</b> {change_str}\n"
+                    
+                    if high is not None and low is not None:
+                        text += f"📊 <b>Диапазон:</b> {low:.2f} - {high:.2f} ₽\n"
+                    
+                    if open_price is not None:
+                        text += f"🌅 <b>Открытие:</b> {open_price:.2f} ₽\n"
+                    
+                    if volume is not None and volume > 0:
+                        volume_m = volume / 1_000_000
+                        text += f"📈 <b>Объем:</b> {volume_m:.1f}M ₽\n"
+                else:
+                    text += "❌ Данные недоступны\n"
+                
+                text += f"\n🕐 {get_moscow_time().strftime('%H:%M, %d.%m.%Y')} МСК"
+            else:
+                text = f"❌ Акция {currency} не найдена"
+                
+        elif currency in ['BTC', 'ETH', 'USDT']:
             # Криптовалюта
             async with aiohttp.ClientSession() as session:
                 crypto_map = {'BTC': 'bitcoin', 'ETH': 'ethereum', 'USDT': 'tether'}
