@@ -72,7 +72,7 @@ def create_rates_keyboard():
             InlineKeyboardButton("💎 Газпром", callback_data="rate_GAZP")
         ],
         [
-            InlineKeyboardButton("🏗️ ПИК", callback_data="rate_PIKS"),
+            InlineKeyboardButton("🏗️ ПИК", callback_data="rate_PIKK"),
             InlineKeyboardButton("✈️ Самолёт", callback_data="rate_SMLT")
         ],
         [
@@ -94,7 +94,7 @@ async def get_moex_stocks():
         'VKCO': {'name': 'ВК', 'emoji': '🔵'},
         'T': {'name': 'Т-Технологии', 'emoji': '🟡'},
         'GAZP': {'name': 'Газпром', 'emoji': '💎'},
-        'PIKS': {'name': 'ПИК', 'emoji': '🏗️'},
+        'PIKK': {'name': 'ПИК', 'emoji': '🏗️'},
         'SMLT': {'name': 'Самолёт', 'emoji': '✈️'}
     }
     
@@ -343,7 +343,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         real_estate_stocks = {}
         
         for ticker, data in moex_stocks.items():
-            if ticker in ['PIKS', 'SMLT']:
+            if ticker in ['PIKK', 'SMLT']:
                 real_estate_stocks[ticker] = data
             else:
                 main_stocks[ticker] = data
@@ -465,7 +465,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def show_single_rate(query, currency: str):
     """Показать курс одной валюты или акции"""
     try:
-        if currency in ['SBER', 'YDEX', 'VKCO', 'T', 'GAZP', 'PIKS', 'SMLT']:
+        if currency in ['SBER', 'YDEX', 'VKCO', 'T', 'GAZP', 'PIKK', 'SMLT']:
             # Российская акция
             moex_stocks = await get_moex_stocks()
             
