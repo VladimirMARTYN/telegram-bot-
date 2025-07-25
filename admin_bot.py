@@ -38,8 +38,8 @@ def create_main_menu_keyboard():
     """Создать главное меню с inline кнопками"""
     keyboard = [
         [
-            InlineKeyboardButton("💱 Курсы валют", callback_data="rates"),
-            InlineKeyboardButton("❓ Справка", callback_data="help")
+            InlineKeyboardButton("Курсы валют", callback_data="rates"),
+            InlineKeyboardButton("Справка", callback_data="help")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -48,36 +48,37 @@ def create_rates_keyboard():
     """Создать клавиатуру для быстрого выбора валют"""
     keyboard = [
         [
-            InlineKeyboardButton("💵 USD", callback_data="rate_USD"),
-            InlineKeyboardButton("💶 EUR", callback_data="rate_EUR"),
-            InlineKeyboardButton("💷 GBP", callback_data="rate_GBP")
+            InlineKeyboardButton("USD", callback_data="rate_USD"),
+            InlineKeyboardButton("EUR", callback_data="rate_EUR")
         ],
         [
-            InlineKeyboardButton("💴 JPY", callback_data="rate_JPY"),
-            InlineKeyboardButton("🇨🇭 CHF", callback_data="rate_CHF"),
-            InlineKeyboardButton("🇨🇳 CNY", callback_data="rate_CNY")
+            InlineKeyboardButton("CNY", callback_data="rate_CNY"),
+            InlineKeyboardButton("GBP", callback_data="rate_GBP")
         ],
         [
-            InlineKeyboardButton("₿ Bitcoin", callback_data="rate_BTC"),
-            InlineKeyboardButton("⟠ Ethereum", callback_data="rate_ETH"),
-            InlineKeyboardButton("🅣 Tether", callback_data="rate_USDT")
+            InlineKeyboardButton("Bitcoin", callback_data="rate_BTC"),
+            InlineKeyboardButton("Ethereum", callback_data="rate_ETH"),
+            InlineKeyboardButton("TON", callback_data="rate_TON")
         ],
         [
-            InlineKeyboardButton("🟢 Сбер", callback_data="rate_SBER"),
-            InlineKeyboardButton("🔴 Яндекс", callback_data="rate_YDEX"),
-            InlineKeyboardButton("🔵 ВК", callback_data="rate_VKCO")
+            InlineKeyboardButton("Сбер", callback_data="rate_SBER"),
+            InlineKeyboardButton("Яндекс", callback_data="rate_YDEX")
         ],
         [
-            InlineKeyboardButton("🟡 Т-Банк", callback_data="rate_T"),
-            InlineKeyboardButton("💎 Газпром", callback_data="rate_GAZP")
+            InlineKeyboardButton("ВК", callback_data="rate_VKCO"),
+            InlineKeyboardButton("Т-Банк", callback_data="rate_T")
         ],
         [
-            InlineKeyboardButton("🏗️ ПИК", callback_data="rate_PIKK"),
-            InlineKeyboardButton("✈️ Самолёт", callback_data="rate_SMLT")
+            InlineKeyboardButton("Газпром", callback_data="rate_GAZP"),
+            InlineKeyboardButton("Норникель", callback_data="rate_GMKN")
         ],
         [
-            InlineKeyboardButton("📊 Все курсы", callback_data="rates_all"),
-            InlineKeyboardButton("🔙 Назад", callback_data="main_menu")
+            InlineKeyboardButton("ПИК", callback_data="rate_PIKK"),
+            InlineKeyboardButton("Самолёт", callback_data="rate_SMLT")
+        ],
+        [
+            InlineKeyboardButton("Все курсы", callback_data="rates_all"),
+            InlineKeyboardButton("Назад", callback_data="main_menu")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -94,6 +95,7 @@ async def get_moex_stocks():
         'VKCO': {'name': 'ВК', 'emoji': '🔵'},
         'T': {'name': 'Т-Технологии', 'emoji': '🟡'},
         'GAZP': {'name': 'Газпром', 'emoji': '💎'},
+        'GMKN': {'name': 'Норникель', 'emoji': '⚡'},
         'PIKK': {'name': 'ПИК', 'emoji': '🏗️'},
         'SMLT': {'name': 'Самолёт', 'emoji': '✈️'}
     }
@@ -269,13 +271,11 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             cbr_response.raise_for_status()
             cbr_data = cbr_response.json()
             
-            # Получаем курсы валют
+            # Получаем курсы валют (только 4 основные)
             usd_rate = cbr_data.get('Valute', {}).get('USD', {}).get('Value', 'Н/Д')
             eur_rate = cbr_data.get('Valute', {}).get('EUR', {}).get('Value', 'Н/Д')
             cny_rate = cbr_data.get('Valute', {}).get('CNY', {}).get('Value', 'Н/Д')
             gbp_rate = cbr_data.get('Valute', {}).get('GBP', {}).get('Value', 'Н/Д')
-            jpy_rate = cbr_data.get('Valute', {}).get('JPY', {}).get('Value', 'Н/Д')
-            chf_rate = cbr_data.get('Valute', {}).get('CHF', {}).get('Value', 'Н/Д')
             
             # Сохраняем курс доллара для конвертации криптовалют в рубли
             usd_to_rub_rate = usd_rate if isinstance(usd_rate, (int, float)) else 0
@@ -285,12 +285,10 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             eur_str = f"{eur_rate:.2f} ₽" if isinstance(eur_rate, (int, float)) else str(eur_rate)
             cny_str = f"{cny_rate:.2f} ₽" if isinstance(cny_rate, (int, float)) else str(cny_rate)
             gbp_str = f"{gbp_rate:.2f} ₽" if isinstance(gbp_rate, (int, float)) else str(gbp_rate)
-            jpy_str = f"{jpy_rate:.4f} ₽" if isinstance(jpy_rate, (int, float)) else str(jpy_rate)
-            chf_str = f"{chf_rate:.2f} ₽" if isinstance(chf_rate, (int, float)) else str(chf_rate)
                 
         except Exception as e:
             logger.error(f"Ошибка получения курсов ЦБ РФ: {e}")
-            usd_str = eur_str = cny_str = gbp_str = jpy_str = chf_str = "❌ Ошибка API"
+            usd_str = eur_str = cny_str = gbp_str = "❌ Ошибка API"
         
         # 2. Курсы криптовалют CoinGecko
         try:
@@ -359,16 +357,13 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 
                 if change_pct is not None:
                     if change_pct > 0:
-                        trend = "📈"
-                        change_str = f"+{change_pct:.2f}%"
+                        change_str = f"(+{change_pct:.2f}%)"
                     elif change_pct < 0:
-                        trend = "📉"
-                        change_str = f"{change_pct:.2f}%"
+                        change_str = f"({change_pct:.2f}%)"
                     else:
-                        trend = "➡️"
-                        change_str = "0.00%"
+                        change_str = "(0.00%)"
                     
-                    main_stock_strings[ticker] = f"{price_str} ({trend} {change_str})"
+                    main_stock_strings[ticker] = f"{price_str} {change_str}"
                 else:
                     main_stock_strings[ticker] = price_str
             else:
@@ -385,73 +380,66 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 
                 if change_pct is not None:
                     if change_pct > 0:
-                        trend = "📈"
-                        change_str = f"+{change_pct:.2f}%"
+                        change_str = f"(+{change_pct:.2f}%)"
                     elif change_pct < 0:
-                        trend = "📉"
-                        change_str = f"{change_pct:.2f}%"
+                        change_str = f"({change_pct:.2f}%)"
                     else:
-                        trend = "➡️"
-                        change_str = "0.00%"
+                        change_str = "(0.00%)"
                     
-                    real_estate_stock_strings[ticker] = f"{price_str} ({trend} {change_str})"
+                    real_estate_stock_strings[ticker] = f"{price_str} {change_str}"
                 else:
                     real_estate_stock_strings[ticker] = price_str
             else:
                 real_estate_stock_strings[ticker] = "❌ Н/Д"
         
-        # Формируем строки для основных акций с эмоджи
+        # Формируем строки для основных акций
         main_stocks_info = []
         for ticker, data in main_stocks.items():
-            emoji = data.get('emoji', '📊')
             name = data.get('name', ticker)
             price_info = main_stock_strings.get(ticker, '❌ Н/Д')
-            main_stocks_info.append(f"{emoji} {name}: {price_info}")
+            main_stocks_info.append(f"{name}: {price_info}")
         
         main_stocks_section = "\n".join(main_stocks_info) if main_stocks_info else "❌ Данные недоступны"
         
-        # Формируем строки для акций застройщиков с эмоджи
+        # Формируем строки для акций застройщиков
         real_estate_info = []
         for ticker, data in real_estate_stocks.items():
-            emoji = data.get('emoji', '🏗️')
             name = data.get('name', ticker)
             price_info = real_estate_stock_strings.get(ticker, '❌ Н/Д')
-            real_estate_info.append(f"{emoji} {name}: {price_info}")
+            real_estate_info.append(f"{name}: {price_info}")
         
         real_estate_section = "\n".join(real_estate_info) if real_estate_info else "❌ Данные недоступны"
         
         # Формируем итоговое сообщение
         current_time = get_moscow_time().strftime("%d.%m.%Y %H:%M")
 
-        message = f"""📊 <b>КУРСЫ ВАЛЮТ, КРИПТОВАЛЮТ И АКЦИЙ</b>
+        message = f"""<b>КУРСЫ ВАЛЮТ, КРИПТОВАЛЮТ И АКЦИЙ</b>
 
-🏛️ <b>Ключевая ставка ЦБ РФ:</b> 20,00%
+<b>Ключевая ставка ЦБ РФ:</b> 20,00%
 
-💱 <b>Основные валюты ЦБ РФ:</b>
-🇺🇸 USD: {usd_str}
-🇪🇺 EUR: {eur_str}
-🇨🇳 CNY: {cny_str}
-🇬🇧 GBP: {gbp_str}
-🇯🇵 JPY: {jpy_str}
-🇨🇭 CHF: {chf_str}
+<b>Основные валюты ЦБ РФ:</b>
+USD: {usd_str}
+EUR: {eur_str}
+CNY: {cny_str}
+GBP: {gbp_str}
 
-₿ <b>Криптовалюты:</b>
-🟠 Bitcoin: {btc_str}
-🔷 Ethereum: {eth_str}
-💎 TON: {ton_str}
+<b>Криптовалюты:</b>
+Bitcoin: {btc_str}
+Ethereum: {eth_str}
+TON: {ton_str}
 
-📈 <b>Российские акции (MOEX):</b>
+<b>Российские акции (MOEX):</b>
 {main_stocks_section}
 
-🏠 <b>Недвижимость:</b>
+<b>Недвижимость:</b>
 {real_estate_section}
 
-💳 <b>Ипотечные ставки:</b>
-📊 Минимальная: от 5,75% (Абсолют Банк)
-📊 Максимальная: до 22,10% (Сбербанк)
+<b>Банковские продукты:</b>
+Ипотека: от 5,75% до 22,10%
+Вклады: от 15,50% до 22,00%
 
-⏰ <b>Время:</b> {current_time}
-📡 <b>Источники:</b> ЦБ РФ, CoinGecko, MOEX, Банки РФ"""
+<b>Время:</b> {current_time}
+<b>Источники:</b> ЦБ РФ, CoinGecko, MOEX, Банки РФ"""
 
         await update.message.reply_html(message)
         
@@ -465,7 +453,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def show_single_rate(query, currency: str):
     """Показать курс одной валюты или акции"""
     try:
-        if currency in ['SBER', 'YDEX', 'VKCO', 'T', 'GAZP', 'PIKK', 'SMLT']:
+        if currency in ['SBER', 'YDEX', 'VKCO', 'T', 'GAZP', 'GMKN', 'PIKK', 'SMLT']:
             # Российская акция
             moex_stocks = await get_moex_stocks()
             
