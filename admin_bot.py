@@ -5,8 +5,8 @@ import logging
 import os
 from datetime import datetime
 import pytz
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import json
 import aiohttp
 
@@ -34,54 +34,7 @@ def get_moscow_time():
     return datetime.now(moscow_tz)
 
 # Создание inline клавиатур
-def create_main_menu_keyboard():
-    """Создать главное меню с inline кнопками"""
-    keyboard = [
-        [
-            InlineKeyboardButton("Курсы валют", callback_data="rates"),
-            InlineKeyboardButton("Справка", callback_data="help")
-        ]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def create_rates_keyboard():
-    """Создать клавиатуру для быстрого выбора валют"""
-    keyboard = [
-        [
-            InlineKeyboardButton("USD", callback_data="rate_USD"),
-            InlineKeyboardButton("EUR", callback_data="rate_EUR")
-        ],
-        [
-            InlineKeyboardButton("CNY", callback_data="rate_CNY"),
-            InlineKeyboardButton("GBP", callback_data="rate_GBP")
-        ],
-        [
-            InlineKeyboardButton("Bitcoin", callback_data="rate_BTC"),
-            InlineKeyboardButton("Ethereum", callback_data="rate_ETH"),
-            InlineKeyboardButton("TON", callback_data="rate_TON")
-        ],
-        [
-            InlineKeyboardButton("Сбер", callback_data="rate_SBER"),
-            InlineKeyboardButton("Яндекс", callback_data="rate_YDEX")
-        ],
-        [
-            InlineKeyboardButton("ВК", callback_data="rate_VKCO"),
-            InlineKeyboardButton("Т-Банк", callback_data="rate_T")
-        ],
-        [
-            InlineKeyboardButton("Газпром", callback_data="rate_GAZP"),
-            InlineKeyboardButton("Норникель", callback_data="rate_GMKN")
-        ],
-        [
-            InlineKeyboardButton("ПИК", callback_data="rate_PIKK"),
-            InlineKeyboardButton("Самолёт", callback_data="rate_SMLT")
-        ],
-        [
-            InlineKeyboardButton("Все курсы", callback_data="rates_all"),
-            InlineKeyboardButton("Назад", callback_data="main_menu")
-        ]
-    ]
-    return InlineKeyboardMarkup(keyboard)
+# УДАЛЕНО: inline клавиатуры больше не используются
 
 # Функция для получения данных акций с MOEX
 async def get_moex_stocks():
@@ -230,8 +183,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     
     await update.message.reply_html(
-        welcome_text,
-        reply_markup=create_main_menu_keyboard()
+        welcome_text
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -450,208 +402,6 @@ TON: {ton_str}
             f"🔄 Попробуйте позже или обратитесь к администратору."
         )
 
-async def show_single_rate(query, currency: str):
-    """Показать курс одной валюты или акции"""
-    try:
-        if currency in ['SBER', 'YDEX', 'VKCO', 'T', 'GAZP', 'GMKN', 'PIKK', 'SMLT']:
-            # Российская акция
-            moex_stocks = await get_moex_stocks()
-            
-            if currency in moex_stocks:
-                stock_data = moex_stocks[currency]
-                price = stock_data.get('price')
-                change = stock_data.get('change')
-                change_pct = stock_data.get('change_pct')
-                volume = stock_data.get('volume')
-                high = stock_data.get('high')
-                low = stock_data.get('low')
-                open_price = stock_data.get('open')
-                
-                emoji = stock_data.get('emoji', '📊')
-                name = stock_data.get('name', currency)
-                
-                text = f"{emoji} <b>{name} ({currency})</b>\n\n"
-                
-                if price is not None:
-                    text += f"💰 <b>Цена:</b> {price:.2f} ₽\n"
-                    
-                    if change is not None and change_pct is not None:
-                        if change_pct > 0:
-                            trend = "📈"
-                            change_str = f"+{change:.2f} ₽ (+{change_pct:.2f}%)"
-                        elif change_pct < 0:
-                            trend = "📉"
-                            change_str = f"{change:.2f} ₽ ({change_pct:.2f}%)"
-                        else:
-                            trend = "➡️"
-                            change_str = f"0.00 ₽ (0.00%)"
-                        
-                        text += f"{trend} <b>Изменение:</b> {change_str}\n"
-                    
-                    if high is not None and low is not None:
-                        text += f"📊 <b>Диапазон:</b> {low:.2f} - {high:.2f} ₽\n"
-                    
-                    if open_price is not None:
-                        text += f"🌅 <b>Открытие:</b> {open_price:.2f} ₽\n"
-                    
-                    if volume is not None and volume > 0:
-                        volume_m = volume / 1_000_000
-                        text += f"📈 <b>Объем:</b> {volume_m:.1f}M ₽\n"
-                else:
-                    text += "❌ Данные недоступны\n"
-                
-                text += f"\n🕐 {get_moscow_time().strftime('%H:%M, %d.%m.%Y')} МСК"
-            else:
-                text = f"❌ Акция {currency} не найдена"
-                
-        elif currency in ['BTC', 'ETH', 'USDT']:
-            # Криптовалюта
-            async with aiohttp.ClientSession() as session:
-                crypto_map = {'BTC': 'bitcoin', 'ETH': 'ethereum', 'USDT': 'tether'}
-                crypto_id = crypto_map.get(currency, currency.lower())
-                
-                async with session.get(f'https://api.coingecko.com/api/v3/simple/price?ids={crypto_id}&vs_currencies=usd,rub') as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        crypto_data = data.get(crypto_id, {})
-                        
-                        usd_price = crypto_data.get('usd', 0)
-                        rub_price = crypto_data.get('rub', 0)
-                        
-                        icons = {'BTC': '₿', 'ETH': '⟠', 'USDT': '🅣'}
-                        icon = icons.get(currency, '💰')
-                        
-                        text = (
-                            f"{icon} <b>{currency}</b>\n\n"
-                            f"💵 <b>USD:</b> ${usd_price:,.2f}\n"
-                            f"🇷🇺 <b>RUB:</b> ₽{rub_price:,.2f}\n\n"
-                            f"🕐 {get_moscow_time().strftime('%H:%M, %d.%m.%Y')} МСК"
-                        )
-        else:
-            # Обычная валюта
-            async with aiohttp.ClientSession() as session:
-                async with session.get('https://www.cbr-xml-daily.ru/daily_json.js') as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        valute_data = data.get('Valute', {})
-                        
-                        if currency == 'RUB':
-                            text = (
-                                f"🇷🇺 <b>Российский рубль</b>\n\n"
-                                f"💵 <b>Базовая валюта</b>\n\n"
-                                f"🕐 {get_moscow_time().strftime('%H:%M, %d.%m.%Y')} МСК"
-                            )
-                        elif currency in valute_data:
-                            rate_info = valute_data[currency]
-                            rate = rate_info['Value']
-                            prev_rate = rate_info['Previous']
-                            change = rate - prev_rate
-                            change_pct = (change / prev_rate) * 100 if prev_rate != 0 else 0
-                            
-                            trend = "📈" if change > 0 else ("📉" if change < 0 else "➡️")
-                            change_text = f"{change:+.4f} ({change_pct:+.2f}%)"
-                            
-                            icons = {
-                                'USD': '💵', 'EUR': '💶', 'GBP': '💷', 
-                                'JPY': '💴', 'CHF': '🇨🇭', 'CNY': '🇨🇳'
-                            }
-                            icon = icons.get(currency, '💰')
-                            
-                            text = (
-                                f"{icon} <b>{rate_info['Name']} ({currency})</b>\n\n"
-                                f"💰 <b>Курс:</b> {rate:.4f} ₽\n"
-                                f"{trend} <b>Изменение:</b> {change_text}\n\n"
-                                f"🕐 {get_moscow_time().strftime('%H:%M, %d.%m.%Y')} МСК"
-                            )
-                        else:
-                            text = f"❌ Валюта {currency} не найдена"
-        
-        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="rates")]]
-        await query.edit_message_text(
-            text=text,
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    
-    except Exception as e:
-        logger.error(f"Ошибка показа курса {currency}: {e}")
-        await query.edit_message_text("❌ Ошибка получения курса")
-
-async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик inline кнопок"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    
-    # Обновляем активность пользователя
-    if user_id in user_data:
-        user_data[user_id]['last_activity'] = get_moscow_time().isoformat()
-        save_user_data()
-    
-    data = query.data
-    
-    try:
-        if data == "main_menu":
-            # Возврат к главному меню
-            welcome_text = (
-                f"👋 <b>Главное меню</b>\n\n"
-                f"Выберите нужную функцию:"
-            )
-            await query.edit_message_text(
-                text=welcome_text,
-                parse_mode='HTML',
-                reply_markup=create_main_menu_keyboard()
-            )
-        
-        elif data == "help":
-            # Показать справку
-            help_text = (
-                "🤖 <b>Справка по боту</b>\n\n"
-                "💱 <b>Курсы валют</b> - текущие курсы валют, криптовалют и российских акций\n\n"
-                "📋 <b>Доступные команды:</b>\n"
-                "/start - Главное меню\n"
-                "/help - Эта справка\n"
-                "/ping - Проверка работы бота\n"
-                "/rates - Показать все курсы\n\n"
-                "Используйте кнопки для быстрого доступа!"
-            )
-            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]]
-            await query.edit_message_text(
-                text=help_text,
-                parse_mode='HTML',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        
-        elif data == "rates":
-            # Показать меню курсов валют
-            rates_text = (
-                "💱 <b>Курсы валют и криптовалют</b>\n\n"
-                "Выберите валюту или криптовалюту для просмотра курса:"
-            )
-            await query.edit_message_text(
-                text=rates_text,
-                parse_mode='HTML',
-                reply_markup=create_rates_keyboard()
-            )
-        
-        elif data == "rates_all":
-            # Показать все курсы - используем существующую команду
-            await rates_command(update, context)
-            return
-        
-        elif data.startswith("rate_"):
-            # Показать курс конкретной валюты
-            currency = data.replace("rate_", "")
-            await show_single_rate(query, currency)
-        
-        else:
-            await query.edit_message_text("❌ Неизвестная команда")
-    
-    except Exception as e:
-        logger.error(f"Ошибка в обработчике кнопок: {e}")
-        await query.edit_message_text("❌ Произошла ошибка при обработке запроса")
-
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка обычных сообщений"""
     message_text = update.message.text
@@ -683,9 +433,6 @@ def main() -> None:
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("ping", ping_command))
     application.add_handler(CommandHandler("rates", rates_command))
-
-    # Обработчик inline кнопок
-    application.add_handler(CallbackQueryHandler(handle_callback_query))
 
     # Обработчик всех текстовых сообщений (эхо)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
