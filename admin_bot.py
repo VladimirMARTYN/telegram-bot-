@@ -72,6 +72,10 @@ def create_rates_keyboard():
             InlineKeyboardButton("💎 Газпром", callback_data="rate_GAZP")
         ],
         [
+            InlineKeyboardButton("🏗️ ПИК", callback_data="rate_PIKS"),
+            InlineKeyboardButton("✈️ Самолёт", callback_data="rate_SMLT")
+        ],
+        [
             InlineKeyboardButton("📊 Все курсы", callback_data="rates_all"),
             InlineKeyboardButton("🔙 Назад", callback_data="main_menu")
         ]
@@ -89,7 +93,9 @@ async def get_moex_stocks():
         'YDEX': {'name': 'Яндекс', 'emoji': '🔴'},
         'VKCO': {'name': 'ВК', 'emoji': '🔵'},
         'T': {'name': 'Т-Технологии', 'emoji': '🟡'},
-        'GAZP': {'name': 'Газпром', 'emoji': '💎'}
+        'GAZP': {'name': 'Газпром', 'emoji': '💎'},
+        'PIKS': {'name': 'ПИК', 'emoji': '🏗️'},
+        'SMLT': {'name': 'Самолёт', 'emoji': '✈️'}
     }
     
     try:
@@ -331,9 +337,20 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         
         # 3. Получаем данные акций с MOEX
         moex_stocks = await get_moex_stocks()
-        stock_strings = {}
+        
+        # Разделяем акции на основные и застройщиков
+        main_stocks = {}
+        real_estate_stocks = {}
         
         for ticker, data in moex_stocks.items():
+            if ticker in ['PIKS', 'SMLT']:
+                real_estate_stocks[ticker] = data
+            else:
+                main_stocks[ticker] = data
+        
+        # Форматируем строки для основных акций
+        main_stock_strings = {}
+        for ticker, data in main_stocks.items():
             price = data.get('price')
             change_pct = data.get('change_pct')
             
@@ -351,26 +368,64 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                         trend = "➡️"
                         change_str = "0.00%"
                     
-                    stock_strings[ticker] = f"{price_str} ({trend} {change_str})"
+                    main_stock_strings[ticker] = f"{price_str} ({trend} {change_str})"
                 else:
-                    stock_strings[ticker] = price_str
+                    main_stock_strings[ticker] = price_str
             else:
-                stock_strings[ticker] = "❌ Н/Д"
+                main_stock_strings[ticker] = "❌ Н/Д"
         
-        # Формируем строки для акций с эмоджи
-        stocks_info = []
-        for ticker, data in moex_stocks.items():
+        # Форматируем строки для акций застройщиков
+        real_estate_stock_strings = {}
+        for ticker, data in real_estate_stocks.items():
+            price = data.get('price')
+            change_pct = data.get('change_pct')
+            
+            if price is not None:
+                price_str = f"{price:.2f} ₽"
+                
+                if change_pct is not None:
+                    if change_pct > 0:
+                        trend = "📈"
+                        change_str = f"+{change_pct:.2f}%"
+                    elif change_pct < 0:
+                        trend = "📉"
+                        change_str = f"{change_pct:.2f}%"
+                    else:
+                        trend = "➡️"
+                        change_str = "0.00%"
+                    
+                    real_estate_stock_strings[ticker] = f"{price_str} ({trend} {change_str})"
+                else:
+                    real_estate_stock_strings[ticker] = price_str
+            else:
+                real_estate_stock_strings[ticker] = "❌ Н/Д"
+        
+        # Формируем строки для основных акций с эмоджи
+        main_stocks_info = []
+        for ticker, data in main_stocks.items():
             emoji = data.get('emoji', '📊')
             name = data.get('name', ticker)
-            price_info = stock_strings.get(ticker, '❌ Н/Д')
-            stocks_info.append(f"{emoji} {name}: {price_info}")
+            price_info = main_stock_strings.get(ticker, '❌ Н/Д')
+            main_stocks_info.append(f"{emoji} {name}: {price_info}")
         
-        stocks_section = "\n".join(stocks_info) if stocks_info else "❌ Данные недоступны"
+        main_stocks_section = "\n".join(main_stocks_info) if main_stocks_info else "❌ Данные недоступны"
+        
+        # Формируем строки для акций застройщиков с эмоджи
+        real_estate_info = []
+        for ticker, data in real_estate_stocks.items():
+            emoji = data.get('emoji', '🏗️')
+            name = data.get('name', ticker)
+            price_info = real_estate_stock_strings.get(ticker, '❌ Н/Д')
+            real_estate_info.append(f"{emoji} {name}: {price_info}")
+        
+        real_estate_section = "\n".join(real_estate_info) if real_estate_info else "❌ Данные недоступны"
         
         # Формируем итоговое сообщение
         current_time = get_moscow_time().strftime("%d.%m.%Y %H:%M")
 
         message = f"""📊 <b>КУРСЫ ВАЛЮТ, КРИПТОВАЛЮТ И АКЦИЙ</b>
+
+🏛️ <b>Ключевая ставка ЦБ РФ:</b> 20,00%
 
 💱 <b>Основные валюты ЦБ РФ:</b>
 🇺🇸 USD: {usd_str}
@@ -386,10 +441,17 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 💎 TON: {ton_str}
 
 📈 <b>Российские акции (MOEX):</b>
-{stocks_section}
+{main_stocks_section}
+
+🏠 <b>Недвижимость:</b>
+{real_estate_section}
+
+💳 <b>Ипотечные ставки:</b>
+📊 Минимальная: от 5,75% (Абсолют Банк)
+📊 Максимальная: до 22,10% (Сбербанк)
 
 ⏰ <b>Время:</b> {current_time}
-📡 <b>Источники:</b> ЦБ РФ, CoinGecko, MOEX"""
+📡 <b>Источники:</b> ЦБ РФ, CoinGecko, MOEX, Банки РФ"""
 
         await update.message.reply_html(message)
         
@@ -403,7 +465,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def show_single_rate(query, currency: str):
     """Показать курс одной валюты или акции"""
     try:
-        if currency in ['SBER', 'YDEX', 'VKCO', 'T', 'GAZP']:
+        if currency in ['SBER', 'YDEX', 'VKCO', 'T', 'GAZP', 'PIKS', 'SMLT']:
             # Российская акция
             moex_stocks = await get_moex_stocks()
             
