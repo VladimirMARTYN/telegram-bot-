@@ -432,15 +432,15 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         message += "📈 **РОССИЙСКИЕ АКЦИИ (MOEX):**\n"
         stocks_data = await get_moex_stocks()
         stock_names = {
-            'SBER': 'Сбер', 'YNDX': 'Яндекс', 'VKCO': 'ВК', 
-            'TCSG': 'T-Технологии', 'GAZP': 'Газпром', 'GMKN': 'Норникель',
+            'SBER': 'Сбер', 'YDEX': 'Яндекс', 'VKCO': 'ВК', 
+            'T': 'T-Технологии', 'GAZP': 'Газпром', 'GMKN': 'Норникель',
             'ROSN': 'Роснефть', 'LKOH': 'ЛУКОЙЛ', 'MTSS': 'МТС', 'MFON': 'Мегафон'
         }
         stock_items = list(stock_names.keys())
         for i, ticker in enumerate(stock_items):
-            if ticker in stocks_data:
+            if ticker in stocks_data and stocks_data[ticker].get('price'):
                 name = stock_names[ticker]
-                price = stocks_data[ticker]
+                price = stocks_data[ticker]['price']
                 prefix = "├" if i < len(stock_items) - 1 else "└"
                 message += f"{prefix} {name}: **{price:.2f} ₽**\n"
         message += "\n"
@@ -450,9 +450,9 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         real_estate_tickers = ['PIKK', 'SMLT']
         real_estate_names = {'PIKK': 'ПИК', 'SMLT': 'Самолёт'}
         for i, ticker in enumerate(real_estate_tickers):
-            if ticker in stocks_data:
+            if ticker in stocks_data and stocks_data[ticker].get('price'):
                 name = real_estate_names[ticker]
-                price = stocks_data[ticker]
+                price = stocks_data[ticker]['price']
                 prefix = "├" if i < len(real_estate_tickers) - 1 else "└"
                 message += f"{prefix} {name}: **{price:.2f} ₽**\n"
         message += "\n"
