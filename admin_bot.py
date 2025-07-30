@@ -669,11 +669,17 @@ async def get_commodities_data():
     
     try:
         # 1. Драгоценные металлы через MetalpriceAPI.com (бесплатно 100 запросов/месяц)
+        logger.info(f"🥇 Запрашиваю металлы с MetalpriceAPI, ключ: {METALPRICEAPI_KEY[:10]}...")
         metals_response = requests.get(f"https://api.metalpriceapi.com/v1/latest?access_key={METALPRICEAPI_KEY}&base=USD&symbols=XAU,XAG", timeout=10)
+        logger.info(f"📊 MetalpriceAPI статус: {metals_response.status_code}")
+        
         if metals_response.status_code == 200:
             metals_data = metals_response.json()
+            logger.info(f"📊 MetalpriceAPI ответ: {metals_data}")
+            
             if 'rates' in metals_data:
                 rates = metals_data['rates']
+                logger.info(f"📊 Доступные металлы: {list(rates.keys())}")
                 
                 # Золото (XAU) - цена за унцию
                 if 'USDXAU' in rates:
@@ -683,6 +689,9 @@ async def get_commodities_data():
                         'price': gold_price,
                         'currency': 'USD'
                     }
+                    logger.info(f"✅ Золото получено: ${gold_price:.2f}")
+                else:
+                    logger.warning("❌ USDXAU не найден в ответе MetalpriceAPI")
                 
                 # Серебро (XAG) - цена за унцию  
                 if 'USDXAG' in rates:
@@ -692,24 +701,42 @@ async def get_commodities_data():
                         'price': silver_price,
                         'currency': 'USD'
                     }
+                    logger.info(f"✅ Серебро получено: ${silver_price:.2f}")
+                else:
+                    logger.warning("❌ USDXAG не найден в ответе MetalpriceAPI")
+            else:
+                logger.warning("❌ 'rates' не найдены в ответе MetalpriceAPI")
+        else:
+            logger.error(f"❌ MetalpriceAPI ошибка {metals_response.status_code}: {metals_response.text}")
         
         # 2. Нефть Brent через API Ninjas (бесплатно)
+        logger.info(f"🛢️ Запрашиваю нефть с API Ninjas, ключ: {API_NINJAS_KEY[:10]}...")
         brent_response = requests.get(
             "https://api.api-ninjas.com/v1/commodityprice?name=brent_crude_oil",
             headers={'X-Api-Key': API_NINJAS_KEY},
             timeout=10
         )
+        logger.info(f"📊 API Ninjas статус: {brent_response.status_code}")
+        
         if brent_response.status_code == 200:
             brent_data = brent_response.json()
+            logger.info(f"📊 API Ninjas ответ: {brent_data}")
+            
             if 'price' in brent_data:
                 commodities_data['brent'] = {
                     'name': 'Нефть Brent',
                     'price': brent_data['price'],
                     'currency': 'USD'
                 }
+                logger.info(f"✅ Нефть Brent получена: ${brent_data['price']:.2f}")
+            else:
+                logger.warning("❌ 'price' не найден в ответе API Ninjas")
+        else:
+            logger.error(f"❌ API Ninjas ошибка {brent_response.status_code}: {brent_response.text}")
         
         # Fallback: если API недоступны, пробуем альтернативный источник для золота
         if 'gold' not in commodities_data:
+            logger.info("🔄 Пробуем fallback Gold-API...")
             try:
                 gold_api_response = requests.get("https://api.gold-api.com/price/XAU", timeout=10)
                 if gold_api_response.status_code == 200:
@@ -720,12 +747,14 @@ async def get_commodities_data():
                             'price': gold_api_data['price'],
                             'currency': 'USD'
                         }
-            except:
-                pass
+                        logger.info(f"✅ Золото из Gold-API: ${gold_api_data['price']:.2f}")
+            except Exception as fallback_e:
+                logger.error(f"❌ Gold-API fallback ошибка: {fallback_e}")
                     
     except Exception as e:
-        logger.error(f"Ошибка получения данных товаров: {e}")
+        logger.error(f"❌ Общая ошибка получения данных товаров: {e}")
     
+    logger.info(f"📊 Итого товаров получено: {len(commodities_data)} - {list(commodities_data.keys())}")
     return commodities_data
 
 async def get_indices_data():
@@ -734,42 +763,84 @@ async def get_indices_data():
     
     try:
         # 1. Российские индексы через MOEX (работает стабильно)
+        logger.info("📊 Запрашиваю российские индексы с MOEX...")
         async with aiohttp.ClientSession() as session:
             # IMOEX
             imoex_url = "https://iss.moex.com/iss/engines/stock/markets/index/securities/IMOEX.json"
+            logger.info(f"📈 Запрашиваю IMOEX: {imoex_url}")
             async with session.get(imoex_url) as resp:
+                logger.info(f"📊 IMOEX статус: {resp.status}")
                 if resp.status == 200:
                     data = await resp.json()
+                    logger.info(f"📊 IMOEX структура данных: {list(data.keys()) if isinstance(data, dict) else 'не dict'}")
+                    
                     if 'marketdata' in data and 'data' in data['marketdata'] and len(data['marketdata']['data']) > 0:
+                        logger.info(f"📊 IMOEX marketdata найден, строк: {len(data['marketdata']['data'])}")
+                        logger.info(f"📊 IMOEX колонки: {data['marketdata']['columns']}")
+                        logger.info(f"📊 IMOEX первая строка: {data['marketdata']['data'][0]}")
+                        
                         row_data = dict(zip(data['marketdata']['columns'], data['marketdata']['data'][0]))
+                        logger.info(f"📊 IMOEX распарсенные данные: {row_data}")
+                        
                         if 'LAST' in row_data and row_data['LAST']:
                             indices_data['imoex'] = {
                                 'name': 'IMOEX',
                                 'price': row_data['LAST'],
                                 'change_pct': row_data.get('LASTTOPREVPRICE', 0)
                             }
+                            logger.info(f"✅ IMOEX получен: {row_data['LAST']}")
+                        else:
+                            logger.warning(f"❌ IMOEX: нет LAST или LAST пустой: {row_data.get('LAST')}")
+                    else:
+                        logger.warning("❌ IMOEX: нет marketdata или данных")
+                else:
+                    response_text = await resp.text()
+                    logger.error(f"❌ IMOEX ошибка {resp.status}: {response_text[:200]}...")
             
             # RTS
             rts_url = "https://iss.moex.com/iss/engines/stock/markets/index/securities/RTSI.json"
+            logger.info(f"📈 Запрашиваю RTS: {rts_url}")
             async with session.get(rts_url) as resp:
+                logger.info(f"📊 RTS статус: {resp.status}")
                 if resp.status == 200:
                     data = await resp.json()
+                    logger.info(f"📊 RTS структура данных: {list(data.keys()) if isinstance(data, dict) else 'не dict'}")
+                    
                     if 'marketdata' in data and 'data' in data['marketdata'] and len(data['marketdata']['data']) > 0:
+                        logger.info(f"📊 RTS marketdata найден, строк: {len(data['marketdata']['data'])}")
+                        logger.info(f"📊 RTS колонки: {data['marketdata']['columns']}")
+                        logger.info(f"📊 RTS первая строка: {data['marketdata']['data'][0]}")
+                        
                         row_data = dict(zip(data['marketdata']['columns'], data['marketdata']['data'][0]))
+                        logger.info(f"📊 RTS распарсенные данные: {row_data}")
+                        
                         if 'LAST' in row_data and row_data['LAST']:
                             indices_data['rts'] = {
                                 'name': 'RTS',
                                 'price': row_data['LAST'],
                                 'change_pct': row_data.get('LASTTOPREVPRICE', 0)
                             }
+                            logger.info(f"✅ RTS получен: {row_data['LAST']}")
+                        else:
+                            logger.warning(f"❌ RTS: нет LAST или LAST пустой: {row_data.get('LAST')}")
+                    else:
+                        logger.warning("❌ RTS: нет marketdata или данных")
+                else:
+                    response_text = await resp.text() 
+                    logger.error(f"❌ RTS ошибка {resp.status}: {response_text[:200]}...")
         
         # 2. S&P 500 через Financial Modeling Prep (бесплатно)
+        logger.info(f"📈 Запрашиваю S&P 500 с FMP, ключ: {FMP_API_KEY[:10]}...")
         sp500_response = requests.get(
             f"https://financialmodelingprep.com/api/v3/quote/%5EGSPC?apikey={FMP_API_KEY}",
             timeout=10
         )
+        logger.info(f"📊 FMP статус: {sp500_response.status_code}")
+        
         if sp500_response.status_code == 200:
             sp500_data = sp500_response.json()
+            logger.info(f"📊 FMP ответ: {sp500_data}")
+            
             if isinstance(sp500_data, list) and len(sp500_data) > 0:
                 sp500_info = sp500_data[0]
                 if 'price' in sp500_info:
@@ -778,16 +849,28 @@ async def get_indices_data():
                         'price': sp500_info['price'],
                         'change_pct': sp500_info.get('changesPercentage', 0)
                     }
+                    logger.info(f"✅ S&P 500 получен: {sp500_info['price']}")
+                else:
+                    logger.warning("❌ S&P 500: нет 'price' в ответе FMP")
+            else:
+                logger.warning("❌ S&P 500: ответ FMP не список или пустой")
+        else:
+            logger.error(f"❌ FMP ошибка {sp500_response.status_code}: {sp500_response.text}")
         
         # Fallback: попробуем Alpha Vantage для S&P 500 если FMP не работает
         if 'sp500' not in indices_data:
+            logger.info(f"🔄 Пробуем fallback Alpha Vantage для S&P 500, ключ: {ALPHA_VANTAGE_KEY[:10]}...")
             try:
                 alpha_response = requests.get(
                     f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=SPY&apikey={ALPHA_VANTAGE_KEY}",
                     timeout=10
                 )
+                logger.info(f"📊 Alpha Vantage статус: {alpha_response.status_code}")
+                
                 if alpha_response.status_code == 200:
                     alpha_data = alpha_response.json()
+                    logger.info(f"📊 Alpha Vantage ответ: {alpha_data}")
+                    
                     if 'Global Quote' in alpha_data:
                         quote = alpha_data['Global Quote']
                         if '05. price' in quote:
@@ -798,12 +881,20 @@ async def get_indices_data():
                                 'price': price,
                                 'change_pct': change_pct
                             }
-            except:
-                pass
+                            logger.info(f"✅ S&P 500 из Alpha Vantage: {price}")
+                        else:
+                            logger.warning("❌ Alpha Vantage: нет '05. price'")
+                    else:
+                        logger.warning("❌ Alpha Vantage: нет 'Global Quote'")
+                else:
+                    logger.error(f"❌ Alpha Vantage ошибка {alpha_response.status_code}: {alpha_response.text}")
+            except Exception as fallback_e:
+                logger.error(f"❌ Alpha Vantage fallback ошибка: {fallback_e}")
                     
     except Exception as e:
-        logger.error(f"Ошибка получения данных индексов: {e}")
+        logger.error(f"❌ Общая ошибка получения данных индексов: {e}")
     
+    logger.info(f"📊 Итого индексов получено: {len(indices_data)} - {list(indices_data.keys())}")
     return indices_data
 
 # Функция get_crypto_extended() удалена - заменена на прямые запросы к CoinGecko
