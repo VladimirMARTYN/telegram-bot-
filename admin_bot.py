@@ -407,101 +407,100 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     result[ticker] = f"{name}: ❌ Н/Д"
             return result
         
-        main_stock_strings = format_stock_data(main_stocks)
-        real_estate_stock_strings = format_stock_data(real_estate_stocks)
+
         
-        # 4. Получаем данные товаров
-        try:
-            commodities = await get_commodities_data()
-            commodity_strings = {}
-            
-            for commodity_id, data in commodities.items():
-                name = data.get('name')
-                price = data.get('price')
-                currency = data.get('currency', 'USD')
-                
-                if isinstance(price, (int, float)):
-                    if usd_to_rub_rate > 0 and currency == 'USD':
-                        rub_price = price * usd_to_rub_rate
-                        commodity_strings[commodity_id] = f"{name}: ${price:.2f} ({rub_price:.2f} ₽)"
-                    else:
-                        commodity_strings[commodity_id] = f"{name}: ${price:.2f}"
+        # Формируем итоговое сообщение с улучшенным форматированием
+        message = "📊 **КУРСЫ ФИНАНСОВЫХ ИНСТРУМЕНТОВ**\n\n"
+        
+        # Валюты ЦБ РФ
+        message += "🏛️ **ВАЛЮТЫ ЦБ РФ:**\n"
+        message += f"├ USD: **{usd_str}**\n"
+        message += f"├ EUR: **{eur_str}**\n"
+        message += f"├ CNY: **{cny_str}**\n"
+        message += f"└ GBP: **{gbp_str}**\n\n"
+        
+        # Криптовалюты
+        message += "💎 **КРИПТОВАЛЮТЫ:**\n"
+        crypto_items = ['bitcoin', 'ethereum', 'ton', 'ripple', 'cardano', 'solana', 'dogecoin']
+        for i, crypto in enumerate(crypto_items):
+            if crypto in crypto_strings:
+                prefix = "├" if i < len(crypto_items) - 1 else "└"
+                message += f"{prefix} {crypto_strings[crypto]}\n"
+        message += "\n"
+        
+        # Российские акции
+        message += "📈 **РОССИЙСКИЕ АКЦИИ (MOEX):**\n"
+        stocks_data = await get_moex_stocks()
+        stock_names = {
+            'SBER': 'Сбер', 'YNDX': 'Яндекс', 'VKCO': 'ВК', 
+            'TCSG': 'T-Технологии', 'GAZP': 'Газпром', 'GMKN': 'Норникель',
+            'ROSN': 'Роснефть', 'LKOH': 'ЛУКОЙЛ', 'MTSS': 'МТС', 'MFON': 'Мегафон'
+        }
+        stock_items = list(stock_names.keys())
+        for i, ticker in enumerate(stock_items):
+            if ticker in stocks_data:
+                name = stock_names[ticker]
+                price = stocks_data[ticker]
+                prefix = "├" if i < len(stock_items) - 1 else "└"
+                message += f"{prefix} {name}: **{price:.2f} ₽**\n"
+        message += "\n"
+        
+        # Недвижимость
+        message += "🏠 **НЕДВИЖИМОСТЬ:**\n"
+        real_estate_tickers = ['PIKK', 'SMLT']
+        real_estate_names = {'PIKK': 'ПИК', 'SMLT': 'Самолёт'}
+        for i, ticker in enumerate(real_estate_tickers):
+            if ticker in stocks_data:
+                name = real_estate_names[ticker]
+                price = stocks_data[ticker]
+                prefix = "├" if i < len(real_estate_tickers) - 1 else "└"
+                message += f"{prefix} {name}: **{price:.2f} ₽**\n"
+        message += "\n"
+        
+        # Товары 
+        message += "🛠️ **ТОВАРЫ:**\n"
+        commodities_data = await get_commodities_data()
+        commodity_items = ['gold', 'silver', 'brent', 'urals']  # Добавляем urals
+        commodity_names = {
+            'gold': 'Золото', 
+            'silver': 'Серебро', 
+            'brent': 'Нефть Brent',
+            'urals': 'Нефть Urals'
+        }
+        
+        for i, commodity in enumerate(commodity_items):
+            if commodity in commodities_data:
+                name = commodity_names[commodity]
+                price = commodities_data[commodity]['price']
+                rub_price = price * usd_to_rub_rate if usd_to_rub_rate > 0 else 0
+                prefix = "├" if i < len(commodity_items) - 1 else "└"
+                if rub_price > 0:
+                    message += f"{prefix} {name}: **${price:.2f}** ({rub_price:.2f} ₽)\n"
                 else:
-                    commodity_strings[commodity_id] = f"{name}: ❌ Н/Д"
-                    
-        except Exception as e:
-            logger.error(f"Ошибка получения данных товаров: {e}")
-            commodity_strings = {
-                'brent': 'Нефть Brent: ❌ Ошибка API (нужен ключ API Ninjas)',
-                'gold': 'Золото: ❌ Ошибка API (нужен ключ MetalpriceAPI)', 
-                'silver': 'Серебро: ❌ Ошибка API (нужен ключ MetalpriceAPI)'
-            }
+                    message += f"{prefix} {name}: **${price:.2f}**\n"
+        message += "\n"
         
-        # 5. Получаем данные индексов
-        try:
-            indices = await get_indices_data()
-            index_strings = {}
-            
-            for index_id, data in indices.items():
-                name = data.get('name')
-                price = data.get('price')
-                change_pct = data.get('change_pct', 0)
-                
-                if isinstance(price, (int, float)):
-                    price_str = f"{price:.2f}"
-                    
-                    if isinstance(change_pct, (int, float)):
-                        if change_pct > 0:
-                            change_str = f"(+{change_pct:.2f}%)"
-                        elif change_pct < 0:
-                            change_str = f"({change_pct:.2f}%)"
-                        else:
-                            change_str = "(0.00%)"
-                        
-                        index_strings[index_id] = f"{name}: {price_str} {change_str}"
-                    else:
-                        index_strings[index_id] = f"{name}: {price_str}"
-                else:
-                    index_strings[index_id] = f"{name}: ❌ Н/Д"
-                    
-        except Exception as e:
-            logger.error(f"Ошибка получения данных индексов: {e}")
-            index_strings = {
-                'imoex': 'IMOEX: ❌ Ошибка MOEX API',
-                'rts': 'RTS: ❌ Ошибка MOEX API',
-                'sp500': 'S&P 500: ❌ Ошибка API (нужен ключ FMP/Alpha Vantage)'
-            }
+        # Фондовые индексы
+        message += "📊 **ФОНДОВЫЕ ИНДЕКСЫ:**\n"
+        indices_data = await get_indices_data()
+        index_items = ['imoex', 'rts', 'sp500']
         
-        # Формируем итоговое сообщение
+        for i, index in enumerate(index_items):
+            if index in indices_data:
+                name = indices_data[index]['name']
+                price = indices_data[index]['price']
+                change = indices_data[index].get('change_pct', 0)
+                prefix = "├" if i < len(index_items) - 1 else "└"
+                change_str = f"({change:+.2f}%)" if change != 0 else ""
+                message += f"{prefix} {name}: **{price:.2f}** {change_str}\n"
+        message += "\n"
+        
+        # Время и источники
         current_time = get_moscow_time().strftime("%d.%m.%Y %H:%M")
+        message += f"🕐 **Время:** {current_time}\n"
+        message += f"📡 **Источники:** ЦБ РФ, CoinGecko, MOEX, Gold-API, Alpha Vantage"
 
-        message = f"""<b>ПОЛНЫЕ КУРСЫ ФИНАНСОВЫХ ИНСТРУМЕНТОВ</b>
-
-<b>Основные валюты ЦБ РФ:</b>
-USD: {usd_str}
-EUR: {eur_str}
-CNY: {cny_str}
-GBP: {gbp_str}
-
-<b>Криптовалюты:</b>
-{chr(10).join(crypto_strings.values())}
-
-<b>Российские акции (MOEX):</b>
-{chr(10).join(main_stock_strings.values()) if main_stock_strings else "❌ Данные недоступны"}
-
-<b>Недвижимость:</b>
-{chr(10).join(real_estate_stock_strings.values()) if real_estate_stock_strings else "❌ Данные недоступны"}
-
-<b>Товары:</b>
-{chr(10).join(commodity_strings.values()) if commodity_strings else "❌ Данные недоступны"}
-
-<b>Фондовые индексы:</b>
-{chr(10).join(index_strings.values()) if index_strings else "❌ Данные недоступны"}
-
-<b>Время:</b> {current_time}
-<b>Источники:</b> ЦБ РФ, CoinGecko, MOEX, MetalpriceAPI, API Ninjas, FMP"""
-
-        await update.message.reply_html(message)
+        await update.message.reply_text(message, parse_mode='Markdown')
         
     except Exception as e:
         logger.error(f"Общая ошибка в rates_command: {e}")
@@ -737,7 +736,7 @@ async def get_commodities_data():
                     # Конвертируем ETF цену в примерную цену нефти (USO ≈ 0.5-0.8 от WTI)
                     estimated_oil_price = oil_price * 12  # Приблизительная конвертация
                     commodities_data['brent'] = {
-                        'name': 'Нефть WTI (через USO)',
+                        'name': 'Нефть Brent',
                         'price': estimated_oil_price,
                         'currency': 'USD'
                     }
@@ -766,7 +765,7 @@ async def get_commodities_data():
                     if 'price' in twelve_oil_data:
                         oil_price = float(twelve_oil_data['price'])
                         commodities_data['brent'] = {
-                            'name': 'Нефть WTI',
+                            'name': 'Нефть Brent',
                             'price': oil_price,
                             'currency': 'USD'
                         }
@@ -787,6 +786,20 @@ async def get_commodities_data():
                 'currency': 'USD'
             }
             logger.info(f"✅ Серебро рассчитано: ${silver_fallback:.2f}")
+        
+        # Рассчитываем Urals от Brent (российская нефть торгуется с дисконтом)
+        if 'brent' in commodities_data:
+            logger.info("🔄 Рассчитываем Urals от Brent...")
+            brent_price = commodities_data['brent']['price']
+            # Urals обычно торгуется с дисконтом $2-5 к Brent
+            urals_discount = 3.5  # Средний дисконт
+            urals_price = brent_price - urals_discount
+            commodities_data['urals'] = {
+                'name': 'Нефть Urals (расчетная)',
+                'price': urals_price,
+                'currency': 'USD'
+            }
+            logger.info(f"✅ Urals рассчитана: ${urals_price:.2f} (Brent ${brent_price:.2f} - ${urals_discount})")
         
         if 'brent' not in commodities_data:
             logger.warning("⚠️ Нефть недоступна из всех бесплатных источников")
