@@ -271,7 +271,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # 2. Курсы криптовалют CoinGecko
         try:
             crypto_response = requests.get(
-                "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,the-open-network&vs_currencies=usd",
+                "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,the-open-network,ripple&vs_currencies=usd",
                 timeout=10
             )
             crypto_response.raise_for_status()
@@ -281,6 +281,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             bitcoin_price = crypto_data.get('bitcoin', {}).get('usd', 'Н/Д')
             ethereum_price = crypto_data.get('ethereum', {}).get('usd', 'Н/Д')
             ton_price = crypto_data.get('the-open-network', {}).get('usd', 'Н/Д')
+            ripple_price = crypto_data.get('ripple', {}).get('usd', 'Н/Д')
             
             # Форматируем криптовалютные цены (доллары + рубли)
             if isinstance(bitcoin_price, (int, float)) and usd_to_rub_rate > 0:
@@ -307,9 +308,17 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             else:
                 ton_str = str(ton_price)
                 
+            if isinstance(ripple_price, (int, float)) and usd_to_rub_rate > 0:
+                xrp_rub = ripple_price * usd_to_rub_rate
+                xrp_str = f"${ripple_price:.3f} ({xrp_rub:.2f} ₽)"
+            elif isinstance(ripple_price, (int, float)):
+                xrp_str = f"${ripple_price:.3f}"
+            else:
+                xrp_str = str(ripple_price)
+                
         except Exception as e:
             logger.error(f"Ошибка получения курсов криптовалют: {e}")
-            btc_str = eth_str = ton_str = "❌ Ошибка API"
+            btc_str = eth_str = ton_str = xrp_str = "❌ Ошибка API"
         
         # 3. Получаем данные акций с MOEX
         moex_stocks = await get_moex_stocks()
@@ -405,6 +414,7 @@ GBP: {gbp_str}
 Bitcoin: {btc_str}
 Ethereum: {eth_str}
 TON: {ton_str}
+XRP: {xrp_str}
 
 <b>Российские акции (MOEX):</b>
 {main_stocks_section}
