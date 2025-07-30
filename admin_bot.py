@@ -272,37 +272,89 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             usd_str = eur_str = cny_str = gbp_str = "❌ Ошибка API"
             usd_to_rub_rate = 80  # Fallback значение для конвертации
         
-        # 2. Расширенные курсы криптовалют
+        # 2. Расширенные курсы криптовалют CoinGecko
         try:
-            crypto_data = await get_crypto_extended()
+            crypto_response = requests.get(
+                "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,the-open-network,ripple,cardano,solana,dogecoin&vs_currencies=usd",
+                timeout=10
+            )
+            crypto_response.raise_for_status()
+            crypto_data = crypto_response.json()
             
-            # Форматируем криптовалютные цены
+            # Получаем цены криптовалют
+            bitcoin_price = crypto_data.get('bitcoin', {}).get('usd', 'Н/Д')
+            ethereum_price = crypto_data.get('ethereum', {}).get('usd', 'Н/Д')
+            ton_price = crypto_data.get('the-open-network', {}).get('usd', 'Н/Д')
+            ripple_price = crypto_data.get('ripple', {}).get('usd', 'Н/Д')
+            cardano_price = crypto_data.get('cardano', {}).get('usd', 'Н/Д')
+            solana_price = crypto_data.get('solana', {}).get('usd', 'Н/Д')
+            dogecoin_price = crypto_data.get('dogecoin', {}).get('usd', 'Н/Д')
+            
+            # Форматируем криптовалютные цены (доллары + рубли)
             crypto_strings = {}
-            crypto_names = {
-                'bitcoin': 'Bitcoin',
-                'ethereum': 'Ethereum', 
-                'ton': 'TON',
-                'ripple': 'XRP',
-                'cardano': 'Cardano',
-                'solana': 'Solana',
-                'dogecoin': 'Dogecoin'
-            }
             
-            for crypto_id, price in crypto_data.items():
-                name = crypto_names.get(crypto_id, crypto_id.upper())
-                if isinstance(price, (int, float)) and usd_to_rub_rate > 0:
-                    rub_price = price * usd_to_rub_rate
-                    if price >= 1:
-                        crypto_strings[crypto_id] = f"{name}: ${price:,.0f} ({rub_price:,.0f} ₽)"
-                    else:
-                        crypto_strings[crypto_id] = f"{name}: ${price:.3f} ({rub_price:.2f} ₽)"
-                elif isinstance(price, (int, float)):
-                    if price >= 1:
-                        crypto_strings[crypto_id] = f"{name}: ${price:,.0f}"
-                    else:
-                        crypto_strings[crypto_id] = f"{name}: ${price:.3f}"
-                else:
-                    crypto_strings[crypto_id] = f"{name}: ❌ Н/Д"
+            # Bitcoin
+            if isinstance(bitcoin_price, (int, float)) and usd_to_rub_rate > 0:
+                btc_rub = bitcoin_price * usd_to_rub_rate
+                crypto_strings['bitcoin'] = f"Bitcoin: ${bitcoin_price:,.0f} ({btc_rub:,.0f} ₽)"
+            elif isinstance(bitcoin_price, (int, float)):
+                crypto_strings['bitcoin'] = f"Bitcoin: ${bitcoin_price:,.0f}"
+            else:
+                crypto_strings['bitcoin'] = "Bitcoin: ❌ Н/Д"
+                
+            # Ethereum
+            if isinstance(ethereum_price, (int, float)) and usd_to_rub_rate > 0:
+                eth_rub = ethereum_price * usd_to_rub_rate
+                crypto_strings['ethereum'] = f"Ethereum: ${ethereum_price:,.0f} ({eth_rub:,.0f} ₽)"
+            elif isinstance(ethereum_price, (int, float)):
+                crypto_strings['ethereum'] = f"Ethereum: ${ethereum_price:,.0f}"
+            else:
+                crypto_strings['ethereum'] = "Ethereum: ❌ Н/Д"
+                
+            # TON
+            if isinstance(ton_price, (int, float)) and usd_to_rub_rate > 0:
+                ton_rub = ton_price * usd_to_rub_rate
+                crypto_strings['ton'] = f"TON: ${ton_price:.2f} ({ton_rub:.2f} ₽)"
+            elif isinstance(ton_price, (int, float)):
+                crypto_strings['ton'] = f"TON: ${ton_price:.2f}"
+            else:
+                crypto_strings['ton'] = "TON: ❌ Н/Д"
+                
+            # XRP
+            if isinstance(ripple_price, (int, float)) and usd_to_rub_rate > 0:
+                xrp_rub = ripple_price * usd_to_rub_rate
+                crypto_strings['ripple'] = f"XRP: ${ripple_price:.3f} ({xrp_rub:.2f} ₽)"
+            elif isinstance(ripple_price, (int, float)):
+                crypto_strings['ripple'] = f"XRP: ${ripple_price:.3f}"
+            else:
+                crypto_strings['ripple'] = "XRP: ❌ Н/Д"
+                
+            # Cardano
+            if isinstance(cardano_price, (int, float)) and usd_to_rub_rate > 0:
+                ada_rub = cardano_price * usd_to_rub_rate
+                crypto_strings['cardano'] = f"Cardano: ${cardano_price:.3f} ({ada_rub:.2f} ₽)"
+            elif isinstance(cardano_price, (int, float)):
+                crypto_strings['cardano'] = f"Cardano: ${cardano_price:.3f}"
+            else:
+                crypto_strings['cardano'] = "Cardano: ❌ Н/Д"
+                
+            # Solana
+            if isinstance(solana_price, (int, float)) and usd_to_rub_rate > 0:
+                sol_rub = solana_price * usd_to_rub_rate
+                crypto_strings['solana'] = f"Solana: ${solana_price:.2f} ({sol_rub:.2f} ₽)"
+            elif isinstance(solana_price, (int, float)):
+                crypto_strings['solana'] = f"Solana: ${solana_price:.2f}"
+            else:
+                crypto_strings['solana'] = "Solana: ❌ Н/Д"
+                
+            # Dogecoin
+            if isinstance(dogecoin_price, (int, float)) and usd_to_rub_rate > 0:
+                doge_rub = dogecoin_price * usd_to_rub_rate
+                crypto_strings['dogecoin'] = f"Dogecoin: ${dogecoin_price:.3f} ({doge_rub:.2f} ₽)"
+            elif isinstance(dogecoin_price, (int, float)):
+                crypto_strings['dogecoin'] = f"Dogecoin: ${dogecoin_price:.3f}"
+            else:
+                crypto_strings['dogecoin'] = "Dogecoin: ❌ Н/Д"
                 
         except Exception as e:
             logger.error(f"Ошибка получения курсов криптовалют: {e}")
@@ -754,48 +806,7 @@ async def get_indices_data():
     
     return indices_data
 
-async def get_crypto_extended(backup_api=False):
-    """Получить расширенный список криптовалют с backup API"""
-    crypto_data = {}
-    
-    if not backup_api:
-        # Основной API - CoinGecko
-        try:
-            crypto_response = requests.get(
-                "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,the-open-network,ripple,cardano,solana,dogecoin&vs_currencies=usd",
-                timeout=10
-            )
-            crypto_response.raise_for_status()
-            data = crypto_response.json()
-            
-            crypto_data = {
-                'bitcoin': data.get('bitcoin', {}).get('usd'),
-                'ethereum': data.get('ethereum', {}).get('usd'),
-                'ton': data.get('the-open-network', {}).get('usd'),
-                'ripple': data.get('ripple', {}).get('usd'),
-                'cardano': data.get('cardano', {}).get('usd'),
-                'solana': data.get('solana', {}).get('usd'),
-                'dogecoin': data.get('dogecoin', {}).get('usd')
-            }
-            
-        except Exception as e:
-            logger.error(f"Ошибка CoinGecko API: {e}")
-            return await get_crypto_extended(backup_api=True)
-    else:
-        # Backup API - CoinMarketCap (потребует API ключ)
-        # Пока возвращаем fallback значения
-        logger.warning("Используем fallback значения для криптовалют")
-        crypto_data = {
-            'bitcoin': None,
-            'ethereum': None,
-            'ton': None,
-            'ripple': None,
-            'cardano': None,
-            'solana': None,
-            'dogecoin': None
-        }
-    
-    return crypto_data
+# Функция get_crypto_extended() удалена - заменена на прямые запросы к CoinGecko
 
 # Система уведомлений
 NOTIFICATION_DATA_FILE = 'notifications.json'
@@ -858,16 +869,21 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
             })
         
         # Криптовалюты
-        crypto_data = await get_crypto_extended()
-        current_prices.update({
-            'BTC': crypto_data.get('bitcoin'),
-            'ETH': crypto_data.get('ethereum'),
-            'TON': crypto_data.get('ton'),
-            'XRP': crypto_data.get('ripple'),
-            'ADA': crypto_data.get('cardano'),
-            'SOL': crypto_data.get('solana'),
-            'DOGE': crypto_data.get('dogecoin')
-        })
+        crypto_response = requests.get(
+            "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,the-open-network,ripple,cardano,solana,dogecoin&vs_currencies=usd",
+            timeout=10
+        )
+        if crypto_response.status_code == 200:
+            crypto_data = crypto_response.json()
+            current_prices.update({
+                'BTC': crypto_data.get('bitcoin', {}).get('usd'),
+                'ETH': crypto_data.get('ethereum', {}).get('usd'),
+                'TON': crypto_data.get('the-open-network', {}).get('usd'),
+                'XRP': crypto_data.get('ripple', {}).get('usd'),
+                'ADA': crypto_data.get('cardano', {}).get('usd'),
+                'SOL': crypto_data.get('solana', {}).get('usd'),
+                'DOGE': crypto_data.get('dogecoin', {}).get('usd')
+            })
         
         # Акции
         moex_data = await get_moex_stocks()
