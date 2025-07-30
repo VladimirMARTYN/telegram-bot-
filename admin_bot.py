@@ -664,118 +664,133 @@ async def view_alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # Функции для получения дополнительных данных
 async def get_commodities_data():
-    """Получить данные по товарам: нефть Brent, золото, серебро"""
+    """Получить данные по товарам из ПОЛНОСТЬЮ БЕСПЛАТНЫХ источников"""
     commodities_data = {}
     
     try:
-        # 1. Драгоценные металлы через MetalpriceAPI.com (бесплатно 100 запросов/месяц)
-        logger.info(f"🥇 Запрашиваю металлы с MetalpriceAPI, ключ: {METALPRICEAPI_KEY[:10]}...")
-        metals_response = requests.get(f"https://api.metalpriceapi.com/v1/latest?access_key={METALPRICEAPI_KEY}&base=USD&symbols=XAU,XAG", timeout=10)
-        logger.info(f"📊 MetalpriceAPI статус: {metals_response.status_code}")
+        # 🥇 Gold-API.com - полностью бесплатный для золота и серебра, без ключей!
+        logger.info("🥇 Запрашиваю металлы с Gold-API.com (100% бесплатно)...")
         
-        if metals_response.status_code == 200:
-            metals_data = metals_response.json()
-            logger.info(f"📊 MetalpriceAPI ответ: {metals_data}")
+        # Золото
+        try:
+            gold_response = requests.get("https://api.gold-api.com/price/XAU", timeout=10)
+            logger.info(f"📊 Gold-API золото статус: {gold_response.status_code}")
             
-            if 'rates' in metals_data:
-                rates = metals_data['rates']
-                logger.info(f"📊 Доступные металлы: {list(rates.keys())}")
+            if gold_response.status_code == 200:
+                gold_data = gold_response.json()
+                logger.info(f"📊 Gold-API золото ответ: {gold_data}")
                 
-                # Золото (XAU) - цена за унцию
-                if 'USDXAU' in rates:
-                    gold_price = 1 / rates['USDXAU']  # Конвертируем из USD/XAU в XAU/USD
+                if 'price' in gold_data:
                     commodities_data['gold'] = {
                         'name': 'Золото',
-                        'price': gold_price,
+                        'price': gold_data['price'],
                         'currency': 'USD'
                     }
-                    logger.info(f"✅ Золото получено: ${gold_price:.2f}")
+                    logger.info(f"✅ Золото получено: ${gold_data['price']:.2f}")
                 else:
-                    logger.warning("❌ USDXAU не найден в ответе MetalpriceAPI")
+                    logger.warning("❌ Gold-API: нет 'price' в ответе золота")
+            else:
+                logger.error(f"❌ Gold-API золото ошибка {gold_response.status_code}: {gold_response.text}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка запроса золота: {e}")
+        
+        # Серебро
+        try:
+            silver_response = requests.get("https://api.gold-api.com/price/XAG", timeout=10)
+            logger.info(f"📊 Gold-API серебро статус: {silver_response.status_code}")
+            
+            if silver_response.status_code == 200:
+                silver_data = silver_response.json()
+                logger.info(f"📊 Gold-API серебро ответ: {silver_data}")
                 
-                # Серебро (XAG) - цена за унцию  
-                if 'USDXAG' in rates:
-                    silver_price = 1 / rates['USDXAG']  # Конвертируем из USD/XAG в XAG/USD
+                if 'price' in silver_data:
                     commodities_data['silver'] = {
                         'name': 'Серебро',
-                        'price': silver_price,
+                        'price': silver_data['price'],
                         'currency': 'USD'
                     }
-                    logger.info(f"✅ Серебро получено: ${silver_price:.2f}")
+                    logger.info(f"✅ Серебро получено: ${silver_data['price']:.2f}")
                 else:
-                    logger.warning("❌ USDXAG не найден в ответе MetalpriceAPI")
+                    logger.warning("❌ Gold-API: нет 'price' в ответе серебра")
             else:
-                logger.warning("❌ 'rates' не найдены в ответе MetalpriceAPI")
-        else:
-            logger.error(f"❌ MetalpriceAPI ошибка {metals_response.status_code}: {metals_response.text}")
+                logger.error(f"❌ Gold-API серебро ошибка {silver_response.status_code}: {silver_response.text}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка запроса серебра: {e}")
         
-        # 2. Нефть Brent через API Ninjas (бесплатно)
-        logger.info(f"🛢️ Запрашиваю нефть с API Ninjas, ключ: {API_NINJAS_KEY[:10]}...")
-        brent_response = requests.get(
-            "https://api.api-ninjas.com/v1/commodityprice?name=brent_crude_oil",
-            headers={'X-Api-Key': API_NINJAS_KEY},
-            timeout=10
-        )
-        logger.info(f"📊 API Ninjas статус: {brent_response.status_code}")
-        
-        if brent_response.status_code == 200:
-            brent_data = brent_response.json()
-            logger.info(f"📊 API Ninjas ответ: {brent_data}")
+        # 🛢️ Alpha Vantage для нефти WTI (бесплатно, уже есть ключ)
+        logger.info(f"🛢️ Запрашиваю нефть с Alpha Vantage, ключ: {ALPHA_VANTAGE_KEY[:10]}...")
+        try:
+            oil_response = requests.get(
+                f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=USO&apikey={ALPHA_VANTAGE_KEY}",
+                timeout=10
+            )
+            logger.info(f"📊 Alpha Vantage нефть статус: {oil_response.status_code}")
             
-            if 'price' in brent_data:
-                commodities_data['brent'] = {
-                    'name': 'Нефть Brent',
-                    'price': brent_data['price'],
-                    'currency': 'USD'
-                }
-                logger.info(f"✅ Нефть Brent получена: ${brent_data['price']:.2f}")
+            if oil_response.status_code == 200:
+                oil_data = oil_response.json()
+                logger.info(f"📊 Alpha Vantage нефть ответ: {oil_data}")
+                
+                # Alpha Vantage возвращает данные в "Global Quote"
+                if 'Global Quote' in oil_data and '05. price' in oil_data['Global Quote']:
+                    oil_price = float(oil_data['Global Quote']['05. price'])
+                    # USO ETF примерно отражает цену нефти, но не прямо
+                    # Конвертируем ETF цену в примерную цену нефти (USO ≈ 0.5-0.8 от WTI)
+                    estimated_oil_price = oil_price * 12  # Приблизительная конвертация
+                    commodities_data['brent'] = {
+                        'name': 'Нефть WTI (через USO)',
+                        'price': estimated_oil_price,
+                        'currency': 'USD'
+                    }
+                    logger.info(f"✅ Нефть WTI получена: ${estimated_oil_price:.2f}")
+                else:
+                    logger.warning(f"❌ Alpha Vantage: неожиданная структура ответа: {oil_data}")
             else:
-                logger.warning("❌ 'price' не найден в ответе API Ninjas")
-        else:
-            logger.error(f"❌ API Ninjas ошибка {brent_response.status_code}: {brent_response.text}")
+                logger.error(f"❌ Alpha Vantage нефть ошибка {oil_response.status_code}: {oil_response.text}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка запроса нефти: {e}")
         
-        # Fallback: если золото не получено, добавляем примерное значение
-        if 'gold' not in commodities_data:
-            logger.info("🔄 Добавляем fallback для золота...")
-            commodities_data['gold'] = {
-                'name': 'Золото',
-                'price': 2650.0,  # Примерная цена золота
-                'currency': 'USD'
-            }
-            logger.info("✅ Золото (статичная цена): $2650.00")
-        
-        # Fallback: если серебро не получено из MetalpriceAPI, добавляем примерное значение
-        if 'silver' not in commodities_data:
-            logger.info("🔄 Добавляем fallback для серебра...")
-            # Серебро обычно стоит около 1/80 от цены золота
-            if 'gold' in commodities_data:
-                gold_price = commodities_data['gold']['price']
-                silver_fallback = gold_price / 80  # Примерное соотношение золото/серебро
-                commodities_data['silver'] = {
-                    'name': 'Серебро',
-                    'price': silver_fallback,
-                    'currency': 'USD'
-                }
-                logger.info(f"✅ Серебро (fallback): ${silver_fallback:.2f}")
-            else:
-                # Если даже золота нет, используем примерную цену
-                commodities_data['silver'] = {
-                    'name': 'Серебро',
-                    'price': 32.0,  # Примерная цена серебра
-                    'currency': 'USD'
-                }
-                logger.info("✅ Серебро (статичная цена): $32.00")
-        
-        # Fallback: если нефть не получена из API Ninjas, добавляем примерное значение  
+        # Backup: Twelve Data для нефти (бесплатный план)  
         if 'brent' not in commodities_data:
-            logger.info("🔄 Добавляем fallback для нефти...")
-            commodities_data['brent'] = {
-                'name': 'Нефть Brent',
-                'price': 82.0,  # Примерная цена нефти Brent
+            logger.info("🔄 Пробуем Twelve Data для нефти...")
+            try:
+                twelve_oil_response = requests.get(
+                    "https://api.twelvedata.com/price?symbol=CL&apikey=demo",
+                    timeout=10
+                )
+                logger.info(f"📊 Twelve Data нефть статус: {twelve_oil_response.status_code}")
+                
+                if twelve_oil_response.status_code == 200:
+                    twelve_oil_data = twelve_oil_response.json()
+                    logger.info(f"📊 Twelve Data нефть ответ: {twelve_oil_data}")
+                    
+                    if 'price' in twelve_oil_data:
+                        oil_price = float(twelve_oil_data['price'])
+                        commodities_data['brent'] = {
+                            'name': 'Нефть WTI',
+                            'price': oil_price,
+                            'currency': 'USD'
+                        }
+                        logger.info(f"✅ Нефть из Twelve Data: ${oil_price:.2f}")
+                else:
+                    logger.error(f"❌ Twelve Data нефть ошибка {twelve_oil_response.status_code}: {twelve_oil_response.text}")
+            except Exception as e:
+                logger.error(f"❌ Ошибка Twelve Data нефть: {e}")
+        
+        # Fallback только для расчетных значений (не статичных!)
+        if 'silver' not in commodities_data and 'gold' in commodities_data:
+            logger.info("🔄 Серебро недоступно, рассчитываем от золота...")
+            gold_price = commodities_data['gold']['price']
+            silver_fallback = gold_price / 80  # Историческое соотношение
+            commodities_data['silver'] = {
+                'name': 'Серебро (расчетное)',
+                'price': silver_fallback,
                 'currency': 'USD'
             }
-            logger.info("✅ Нефть Brent (статичная цена): $82.00")
-                    
+            logger.info(f"✅ Серебро рассчитано: ${silver_fallback:.2f}")
+        
+        if 'brent' not in commodities_data:
+            logger.warning("⚠️ Нефть недоступна из всех бесплатных источников")
+    
     except Exception as e:
         logger.error(f"❌ Общая ошибка получения данных товаров: {e}")
     
@@ -916,15 +931,9 @@ async def get_indices_data():
             except Exception as fallback_e:
                 logger.error(f"❌ Alpha Vantage fallback ошибка: {fallback_e}")
                     
-        # Fallback: если S&P 500 не получен, добавляем примерное значение
+        # Fallback: если S&P 500 не получен, логируем предупреждение (Alpha Vantage должен работать)
         if 'sp500' not in indices_data:
-            logger.info("🔄 Добавляем fallback для S&P 500...")
-            indices_data['sp500'] = {
-                'name': 'S&P 500 (примерное)',
-                'price': 6350.0,  # Примерное значение около текущего уровня
-                'change_pct': 0.0
-            }
-            logger.info("✅ S&P 500 (статичная цена): 6350.0")
+            logger.warning("⚠️ S&P 500 недоступен даже из Alpha Vantage - проверьте ключ API")
                     
     except Exception as e:
         logger.error(f"❌ Общая ошибка получения данных индексов: {e}")
@@ -1116,7 +1125,7 @@ def main() -> None:
     
     # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
-    
+
     # Получаем JobQueue
     job_queue = application.job_queue
 
@@ -1134,7 +1143,7 @@ def main() -> None:
 
     # Обработчик всех текстовых сообщений (эхо)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
-    
+
     # Настройка периодических задач
     if job_queue:
         # Проверка изменений цен каждые 30 минут
