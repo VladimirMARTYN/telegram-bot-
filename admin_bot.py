@@ -28,6 +28,7 @@ METALPRICEAPI_KEY = os.getenv('METALPRICEAPI_KEY', 'demo')  # https://metalprice
 API_NINJAS_KEY = os.getenv('API_NINJAS_KEY', 'demo')        # https://api.api-ninjas.com/
 FMP_API_KEY = os.getenv('FMP_API_KEY', 'demo')              # https://financialmodelingprep.com/
 ALPHA_VANTAGE_KEY = os.getenv('ALPHA_VANTAGE_KEY', 'demo')  # https://www.alphavantage.co/
+EIA_API_KEY = os.getenv('EIA_API_KEY', 'demo')
 
 if not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN не найден в переменных окружения!")
@@ -36,10 +37,18 @@ if not BOT_TOKEN:
 if ADMIN_USER_ID == 0:
     logger.warning("⚠️ ADMIN_USER_ID не установлен!")
 
+# Функция для получения московского времени
 def get_moscow_time():
-    """Получить текущее московское время"""
+    """Возвращает текущее время в московском часовом поясе"""
     moscow_tz = pytz.timezone('Europe/Moscow')
     return datetime.now(moscow_tz)
+
+# Функция для форматирования чисел с разделителями тысяч
+def format_price(price, decimal_places=2):
+    """Форматирует цену с разделителями тысяч и нужным количеством знаков после запятой"""
+    if isinstance(price, (int, float)):
+        return f"{price:,.{decimal_places}f}".replace(',', ' ')
+    return str(price)
 
 # Создание inline клавиатур
 # УДАЛЕНО: inline клавиатуры больше не используются
@@ -262,10 +271,10 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             usd_to_rub_rate = usd_rate if isinstance(usd_rate, (int, float)) else 0
             
             # Форматируем валютные курсы
-            usd_str = f"{usd_rate:.2f} ₽" if isinstance(usd_rate, (int, float)) else str(usd_rate)
-            eur_str = f"{eur_rate:.2f} ₽" if isinstance(eur_rate, (int, float)) else str(eur_rate)
-            cny_str = f"{cny_rate:.2f} ₽" if isinstance(cny_rate, (int, float)) else str(cny_rate)
-            gbp_str = f"{gbp_rate:.2f} ₽" if isinstance(gbp_rate, (int, float)) else str(gbp_rate)
+            usd_str = f"{format_price(usd_rate)} ₽" if isinstance(usd_rate, (int, float)) else str(usd_rate)
+            eur_str = f"{format_price(eur_rate)} ₽" if isinstance(eur_rate, (int, float)) else str(eur_rate)
+            cny_str = f"{format_price(cny_rate)} ₽" if isinstance(cny_rate, (int, float)) else str(cny_rate)
+            gbp_str = f"{format_price(gbp_rate)} ₽" if isinstance(gbp_rate, (int, float)) else str(gbp_rate)
                 
         except Exception as e:
             logger.error(f"Ошибка получения курсов ЦБ РФ: {e}")
@@ -296,63 +305,63 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             # Bitcoin
             if isinstance(bitcoin_price, (int, float)) and usd_to_rub_rate > 0:
                 btc_rub = bitcoin_price * usd_to_rub_rate
-                crypto_strings['bitcoin'] = f"Bitcoin: ${bitcoin_price:,.0f} ({btc_rub:,.0f} ₽)"
+                crypto_strings['bitcoin'] = f"Bitcoin: ${format_price(bitcoin_price, 0)} ({format_price(btc_rub, 0)} ₽)"
             elif isinstance(bitcoin_price, (int, float)):
-                crypto_strings['bitcoin'] = f"Bitcoin: ${bitcoin_price:,.0f}"
+                crypto_strings['bitcoin'] = f"Bitcoin: ${format_price(bitcoin_price, 0)}"
             else:
                 crypto_strings['bitcoin'] = "Bitcoin: ❌ Н/Д"
                 
             # Ethereum
             if isinstance(ethereum_price, (int, float)) and usd_to_rub_rate > 0:
                 eth_rub = ethereum_price * usd_to_rub_rate
-                crypto_strings['ethereum'] = f"Ethereum: ${ethereum_price:,.0f} ({eth_rub:,.0f} ₽)"
+                crypto_strings['ethereum'] = f"Ethereum: ${format_price(ethereum_price, 0)} ({format_price(eth_rub, 0)} ₽)"
             elif isinstance(ethereum_price, (int, float)):
-                crypto_strings['ethereum'] = f"Ethereum: ${ethereum_price:,.0f}"
+                crypto_strings['ethereum'] = f"Ethereum: ${format_price(ethereum_price, 0)}"
             else:
                 crypto_strings['ethereum'] = "Ethereum: ❌ Н/Д"
                 
             # TON
             if isinstance(ton_price, (int, float)) and usd_to_rub_rate > 0:
                 ton_rub = ton_price * usd_to_rub_rate
-                crypto_strings['ton'] = f"TON: ${ton_price:.2f} ({ton_rub:.2f} ₽)"
+                crypto_strings['ton'] = f"TON: ${format_price(ton_price)} ({format_price(ton_rub)} ₽)"
             elif isinstance(ton_price, (int, float)):
-                crypto_strings['ton'] = f"TON: ${ton_price:.2f}"
+                crypto_strings['ton'] = f"TON: ${format_price(ton_price)}"
             else:
                 crypto_strings['ton'] = "TON: ❌ Н/Д"
                 
             # XRP
             if isinstance(ripple_price, (int, float)) and usd_to_rub_rate > 0:
                 xrp_rub = ripple_price * usd_to_rub_rate
-                crypto_strings['ripple'] = f"XRP: ${ripple_price:.3f} ({xrp_rub:.2f} ₽)"
+                crypto_strings['ripple'] = f"XRP: ${format_price(ripple_price, 3)} ({format_price(xrp_rub)} ₽)"
             elif isinstance(ripple_price, (int, float)):
-                crypto_strings['ripple'] = f"XRP: ${ripple_price:.3f}"
+                crypto_strings['ripple'] = f"XRP: ${format_price(ripple_price, 3)}"
             else:
                 crypto_strings['ripple'] = "XRP: ❌ Н/Д"
                 
             # Cardano
             if isinstance(cardano_price, (int, float)) and usd_to_rub_rate > 0:
                 ada_rub = cardano_price * usd_to_rub_rate
-                crypto_strings['cardano'] = f"Cardano: ${cardano_price:.3f} ({ada_rub:.2f} ₽)"
+                crypto_strings['cardano'] = f"Cardano: ${format_price(cardano_price, 3)} ({format_price(ada_rub)} ₽)"
             elif isinstance(cardano_price, (int, float)):
-                crypto_strings['cardano'] = f"Cardano: ${cardano_price:.3f}"
+                crypto_strings['cardano'] = f"Cardano: ${format_price(cardano_price, 3)}"
             else:
                 crypto_strings['cardano'] = "Cardano: ❌ Н/Д"
                 
             # Solana
             if isinstance(solana_price, (int, float)) and usd_to_rub_rate > 0:
                 sol_rub = solana_price * usd_to_rub_rate
-                crypto_strings['solana'] = f"Solana: ${solana_price:.2f} ({sol_rub:.2f} ₽)"
+                crypto_strings['solana'] = f"Solana: ${format_price(solana_price)} ({format_price(sol_rub)} ₽)"
             elif isinstance(solana_price, (int, float)):
-                crypto_strings['solana'] = f"Solana: ${solana_price:.2f}"
+                crypto_strings['solana'] = f"Solana: ${format_price(solana_price)}"
             else:
                 crypto_strings['solana'] = "Solana: ❌ Н/Д"
                 
             # Dogecoin
             if isinstance(dogecoin_price, (int, float)) and usd_to_rub_rate > 0:
                 doge_rub = dogecoin_price * usd_to_rub_rate
-                crypto_strings['dogecoin'] = f"Dogecoin: ${dogecoin_price:.3f} ({doge_rub:.2f} ₽)"
+                crypto_strings['dogecoin'] = f"Dogecoin: ${format_price(dogecoin_price, 3)} ({format_price(doge_rub)} ₽)"
             elif isinstance(dogecoin_price, (int, float)):
-                crypto_strings['dogecoin'] = f"Dogecoin: ${dogecoin_price:.3f}"
+                crypto_strings['dogecoin'] = f"Dogecoin: ${format_price(dogecoin_price, 3)}"
             else:
                 crypto_strings['dogecoin'] = "Dogecoin: ❌ Н/Д"
                 
@@ -442,7 +451,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 name = stock_names[ticker]
                 price = stocks_data[ticker]['price']
                 prefix = "├" if i < len(stock_items) - 1 else "└"
-                message += f"{prefix} {name}: **{price:.2f} ₽**\n"
+                message += f"{prefix} {name}: **{format_price(price)} ₽**\n"
         message += "\n"
         
         # Недвижимость
@@ -454,7 +463,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 name = real_estate_names[ticker]
                 price = stocks_data[ticker]['price']
                 prefix = "├" if i < len(real_estate_tickers) - 1 else "└"
-                message += f"{prefix} {name}: **{price:.2f} ₽**\n"
+                message += f"{prefix} {name}: **{format_price(price)} ₽**\n"
         message += "\n"
         
         # Товары 
@@ -475,9 +484,9 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 rub_price = price * usd_to_rub_rate if usd_to_rub_rate > 0 else 0
                 prefix = "├" if i < len(commodity_items) - 1 else "└"
                 if rub_price > 0:
-                    message += f"{prefix} {name}: **${price:.2f}** ({rub_price:.2f} ₽)\n"
+                    message += f"{prefix} {name}: **${format_price(price)}** ({format_price(rub_price)} ₽)\n"
                 else:
-                    message += f"{prefix} {name}: **${price:.2f}**\n"
+                    message += f"{prefix} {name}: **${format_price(price)}**\n"
         message += "\n"
         
         # Фондовые индексы
@@ -492,7 +501,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 change = indices_data[index].get('change_pct', 0)
                 prefix = "├" if i < len(index_items) - 1 else "└"
                 change_str = f"({change:+.2f}%)" if change != 0 else ""
-                message += f"{prefix} {name}: **{price:.2f}** {change_str}\n"
+                message += f"{prefix} {name}: **{format_price(price)}** {change_str}\n"
         message += "\n"
         
         # Время и источники
@@ -716,64 +725,65 @@ async def get_commodities_data():
         except Exception as e:
             logger.error(f"❌ Ошибка запроса серебра: {e}")
         
-        # 🛢️ Alpha Vantage для нефти WTI (бесплатно, уже есть ключ)
-        logger.info(f"🛢️ Запрашиваю нефть с Alpha Vantage, ключ: {ALPHA_VANTAGE_KEY[:10]}...")
+        # 🛢️ EIA API для точной нефти Brent (официальный API правительства США, бесплатно!)
+        logger.info(f"🛢️ Запрашиваю нефть Brent из EIA API, ключ: {EIA_API_KEY[:10]}...")
         try:
-            oil_response = requests.get(
-                f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=USO&apikey={ALPHA_VANTAGE_KEY}",
+            # Получаем последнюю цену Brent Europe из EIA
+            brent_response = requests.get(
+                f"https://api.eia.gov/v2/petroleum/pri/spt/data/?api_key={EIA_API_KEY}&facets[product][]=EPCBRENT&data[0]=value&sort[0][column]=period&sort[0][direction]=desc&length=1",
                 timeout=10
             )
-            logger.info(f"📊 Alpha Vantage нефть статус: {oil_response.status_code}")
+            logger.info(f"📊 EIA Brent статус: {brent_response.status_code}")
             
-            if oil_response.status_code == 200:
-                oil_data = oil_response.json()
-                logger.info(f"📊 Alpha Vantage нефть ответ: {oil_data}")
+            if brent_response.status_code == 200:
+                brent_data = brent_response.json()
+                logger.info(f"📊 EIA Brent ответ: {brent_data}")
                 
-                # Alpha Vantage возвращает данные в "Global Quote"
-                if 'Global Quote' in oil_data and '05. price' in oil_data['Global Quote']:
-                    oil_price = float(oil_data['Global Quote']['05. price'])
-                    # USO ETF примерно отражает цену нефти, но не прямо
-                    # Конвертируем ETF цену в примерную цену нефти (USO ≈ 0.5-0.8 от WTI)
-                    estimated_oil_price = oil_price * 12  # Приблизительная конвертация
+                # EIA возвращает данные в "response.data"
+                if 'response' in brent_data and 'data' in brent_data['response'] and len(brent_data['response']['data']) > 0:
+                    brent_price = float(brent_data['response']['data'][0]['value'])
                     commodities_data['brent'] = {
                         'name': 'Нефть Brent',
-                        'price': estimated_oil_price,
+                        'price': brent_price,
                         'currency': 'USD'
                     }
-                    logger.info(f"✅ Нефть WTI получена: ${estimated_oil_price:.2f}")
+                    logger.info(f"✅ Нефть Brent получена: ${brent_price:.2f}")
                 else:
-                    logger.warning(f"❌ Alpha Vantage: неожиданная структура ответа: {oil_data}")
+                    logger.warning(f"❌ EIA: нет данных в ответе: {brent_data}")
             else:
-                logger.error(f"❌ Alpha Vantage нефть ошибка {oil_response.status_code}: {oil_response.text}")
+                logger.error(f"❌ EIA Brent ошибка {brent_response.status_code}: {brent_response.text}")
         except Exception as e:
-            logger.error(f"❌ Ошибка запроса нефти: {e}")
+            logger.error(f"❌ Ошибка запроса Brent из EIA: {e}")
         
-        # Backup: Twelve Data для нефти (бесплатный план)  
+        # Fallback: Alpha Vantage для нефти WTI через USO ETF (если EIA не сработал)
         if 'brent' not in commodities_data:
-            logger.info("🔄 Пробуем Twelve Data для нефти...")
+            logger.info("🔄 EIA не сработал, пробуем Alpha Vantage USO ETF...")
             try:
-                twelve_oil_response = requests.get(
-                    "https://api.twelvedata.com/price?symbol=CL&apikey=demo",
+                oil_response = requests.get(
+                    f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=USO&apikey={ALPHA_VANTAGE_KEY}",
                     timeout=10
                 )
-                logger.info(f"📊 Twelve Data нефть статус: {twelve_oil_response.status_code}")
+                logger.info(f"📊 Alpha Vantage USO статус: {oil_response.status_code}")
                 
-                if twelve_oil_response.status_code == 200:
-                    twelve_oil_data = twelve_oil_response.json()
-                    logger.info(f"📊 Twelve Data нефть ответ: {twelve_oil_data}")
+                if oil_response.status_code == 200:
+                    oil_data = oil_response.json()
+                    logger.info(f"📊 Alpha Vantage USO ответ: {oil_data}")
                     
-                    if 'price' in twelve_oil_data:
-                        oil_price = float(twelve_oil_data['price'])
+                    if 'Global Quote' in oil_data and '05. price' in oil_data['Global Quote']:
+                        oil_price = float(oil_data['Global Quote']['05. price'])
+                        estimated_oil_price = oil_price * 12  # Приблизительная конвертация USO ETF
                         commodities_data['brent'] = {
-                            'name': 'Нефть Brent',
-                            'price': oil_price,
+                            'name': 'Нефть Brent (приблиз.)',
+                            'price': estimated_oil_price,
                             'currency': 'USD'
                         }
-                        logger.info(f"✅ Нефть из Twelve Data: ${oil_price:.2f}")
+                        logger.info(f"✅ Нефть Brent (USO fallback): ${estimated_oil_price:.2f}")
+                    else:
+                        logger.warning(f"❌ Alpha Vantage USO: неожиданная структура: {oil_data}")
                 else:
-                    logger.error(f"❌ Twelve Data нефть ошибка {twelve_oil_response.status_code}: {twelve_oil_response.text}")
+                    logger.error(f"❌ Alpha Vantage USO ошибка {oil_response.status_code}: {oil_response.text}")
             except Exception as e:
-                logger.error(f"❌ Ошибка Twelve Data нефть: {e}")
+                logger.error(f"❌ Ошибка Alpha Vantage USO: {e}")
         
         # Fallback только для расчетных значений (не статичных!)
         if 'silver' not in commodities_data and 'gold' in commodities_data:
