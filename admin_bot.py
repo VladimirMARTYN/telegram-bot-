@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '0'))
 
+# API ключи для внешних сервисов (для продакшена нужны настоящие ключи)
+METALPRICEAPI_KEY = os.getenv('METALPRICEAPI_KEY', 'demo')  # https://metalpriceapi.com/
+API_NINJAS_KEY = os.getenv('API_NINJAS_KEY', 'demo')        # https://api.api-ninjas.com/
+FMP_API_KEY = os.getenv('FMP_API_KEY', 'demo')              # https://financialmodelingprep.com/
+ALPHA_VANTAGE_KEY = os.getenv('ALPHA_VANTAGE_KEY', 'demo')  # https://www.alphavantage.co/
+
 if not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN не найден в переменных окружения!")
     exit(1)
@@ -223,7 +229,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• ЦБ РФ - курсы валют\n"
         "• CoinGecko - криптовалюты\n" 
         "• MOEX - российские акции и индексы\n"
-        "• Yahoo Finance - товары и индексы"
+        "• MetalpriceAPI - драгоценные металлы\n"
+        "• API Ninjas - нефть и товары\n"
+        "• Financial Modeling Prep - международные индексы"
     )
     
     await update.message.reply_html(help_text)
@@ -372,9 +380,9 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception as e:
             logger.error(f"Ошибка получения данных товаров: {e}")
             commodity_strings = {
-                'brent': 'Нефть Brent: ❌ Ошибка API',
-                'gold': 'Золото: ❌ Ошибка API', 
-                'silver': 'Серебро: ❌ Ошибка API'
+                'brent': 'Нефть Brent: ❌ Ошибка API (нужен ключ API Ninjas)',
+                'gold': 'Золото: ❌ Ошибка API (нужен ключ MetalpriceAPI)', 
+                'silver': 'Серебро: ❌ Ошибка API (нужен ключ MetalpriceAPI)'
             }
         
         # 5. Получаем данные индексов
@@ -407,9 +415,9 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception as e:
             logger.error(f"Ошибка получения данных индексов: {e}")
             index_strings = {
-                'imoex': 'IMOEX: ❌ Ошибка API',
-                'rts': 'RTS: ❌ Ошибка API',
-                'sp500': 'S&P 500: ❌ Ошибка API'
+                'imoex': 'IMOEX: ❌ Ошибка MOEX API',
+                'rts': 'RTS: ❌ Ошибка MOEX API',
+                'sp500': 'S&P 500: ❌ Ошибка API (нужен ключ FMP/Alpha Vantage)'
             }
         
         # Формируем итоговое сообщение
@@ -439,7 +447,7 @@ GBP: {gbp_str}
 {chr(10).join(index_strings.values()) if index_strings else "❌ Данные недоступны"}
 
 <b>Время:</b> {current_time}
-<b>Источники:</b> ЦБ РФ, CoinGecko, MOEX, Yahoo Finance"""
+<b>Источники:</b> ЦБ РФ, CoinGecko, MOEX, MetalpriceAPI, API Ninjas, FMP"""
 
         await update.message.reply_html(message)
         
@@ -608,47 +616,60 @@ async def get_commodities_data():
     commodities_data = {}
     
     try:
-        # Используем Yahoo Finance API для товаров
-        import requests
-        
-        # Нефть Brent
-        brent_response = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/BZ=F", timeout=10)
-        if brent_response.status_code == 200:
-            brent_data = brent_response.json()
-            if 'chart' in brent_data and 'result' in brent_data['chart'] and len(brent_data['chart']['result']) > 0:
-                result = brent_data['chart']['result'][0]
-                if 'meta' in result and 'regularMarketPrice' in result['meta']:
-                    commodities_data['brent'] = {
-                        'name': 'Нефть Brent',
-                        'price': result['meta']['regularMarketPrice'],
-                        'currency': 'USD'
-                    }
-        
-        # Золото
-        gold_response = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/GC=F", timeout=10)
-        if gold_response.status_code == 200:
-            gold_data = gold_response.json()
-            if 'chart' in gold_data and 'result' in gold_data['chart'] and len(gold_data['chart']['result']) > 0:
-                result = gold_data['chart']['result'][0]
-                if 'meta' in result and 'regularMarketPrice' in result['meta']:
+        # 1. Драгоценные металлы через MetalpriceAPI.com (бесплатно 100 запросов/месяц)
+        metals_response = requests.get(f"https://api.metalpriceapi.com/v1/latest?access_key={METALPRICEAPI_KEY}&base=USD&symbols=XAU,XAG", timeout=10)
+        if metals_response.status_code == 200:
+            metals_data = metals_response.json()
+            if 'rates' in metals_data:
+                rates = metals_data['rates']
+                
+                # Золото (XAU) - цена за унцию
+                if 'USDXAU' in rates:
+                    gold_price = 1 / rates['USDXAU']  # Конвертируем из USD/XAU в XAU/USD
                     commodities_data['gold'] = {
                         'name': 'Золото',
-                        'price': result['meta']['regularMarketPrice'],
+                        'price': gold_price,
+                        'currency': 'USD'
+                    }
+                
+                # Серебро (XAG) - цена за унцию  
+                if 'USDXAG' in rates:
+                    silver_price = 1 / rates['USDXAG']  # Конвертируем из USD/XAG в XAG/USD
+                    commodities_data['silver'] = {
+                        'name': 'Серебро',
+                        'price': silver_price,
                         'currency': 'USD'
                     }
         
-        # Серебро
-        silver_response = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/SI=F", timeout=10)
-        if silver_response.status_code == 200:
-            silver_data = silver_response.json()
-            if 'chart' in silver_data and 'result' in silver_data['chart'] and len(silver_data['chart']['result']) > 0:
-                result = silver_data['chart']['result'][0]
-                if 'meta' in result and 'regularMarketPrice' in result['meta']:
-                    commodities_data['silver'] = {
-                        'name': 'Серебро',
-                        'price': result['meta']['regularMarketPrice'],
-                        'currency': 'USD'
-                    }
+        # 2. Нефть Brent через API Ninjas (бесплатно)
+        brent_response = requests.get(
+            "https://api.api-ninjas.com/v1/commodityprice?name=brent_crude_oil",
+            headers={'X-Api-Key': API_NINJAS_KEY},
+            timeout=10
+        )
+        if brent_response.status_code == 200:
+            brent_data = brent_response.json()
+            if 'price' in brent_data:
+                commodities_data['brent'] = {
+                    'name': 'Нефть Brent',
+                    'price': brent_data['price'],
+                    'currency': 'USD'
+                }
+        
+        # Fallback: если API недоступны, пробуем альтернативный источник для золота
+        if 'gold' not in commodities_data:
+            try:
+                gold_api_response = requests.get("https://api.gold-api.com/price/XAU", timeout=10)
+                if gold_api_response.status_code == 200:
+                    gold_api_data = gold_api_response.json()
+                    if 'price' in gold_api_data:
+                        commodities_data['gold'] = {
+                            'name': 'Золото',
+                            'price': gold_api_data['price'],
+                            'currency': 'USD'
+                        }
+            except:
+                pass
                     
     except Exception as e:
         logger.error(f"Ошибка получения данных товаров: {e}")
@@ -660,7 +681,7 @@ async def get_indices_data():
     indices_data = {}
     
     try:
-        # MOEX индексы
+        # 1. Российские индексы через MOEX (работает стабильно)
         async with aiohttp.ClientSession() as session:
             # IMOEX
             imoex_url = "https://iss.moex.com/iss/engines/stock/markets/index/securities/IMOEX.json"
@@ -690,18 +711,43 @@ async def get_indices_data():
                                 'change_pct': row_data.get('LASTTOPREVPRICE', 0)
                             }
         
-        # S&P 500 через Yahoo Finance
-        sp500_response = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC", timeout=10)
+        # 2. S&P 500 через Financial Modeling Prep (бесплатно)
+        sp500_response = requests.get(
+            f"https://financialmodelingprep.com/api/v3/quote/%5EGSPC?apikey={FMP_API_KEY}",
+            timeout=10
+        )
         if sp500_response.status_code == 200:
             sp500_data = sp500_response.json()
-            if 'chart' in sp500_data and 'result' in sp500_data['chart'] and len(sp500_data['chart']['result']) > 0:
-                result = sp500_data['chart']['result'][0]
-                if 'meta' in result and 'regularMarketPrice' in result['meta']:
+            if isinstance(sp500_data, list) and len(sp500_data) > 0:
+                sp500_info = sp500_data[0]
+                if 'price' in sp500_info:
                     indices_data['sp500'] = {
                         'name': 'S&P 500',
-                        'price': result['meta']['regularMarketPrice'],
-                        'change_pct': result['meta'].get('regularMarketChangePercent', 0)
+                        'price': sp500_info['price'],
+                        'change_pct': sp500_info.get('changesPercentage', 0)
                     }
+        
+        # Fallback: попробуем Alpha Vantage для S&P 500 если FMP не работает
+        if 'sp500' not in indices_data:
+            try:
+                alpha_response = requests.get(
+                    f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=SPY&apikey={ALPHA_VANTAGE_KEY}",
+                    timeout=10
+                )
+                if alpha_response.status_code == 200:
+                    alpha_data = alpha_response.json()
+                    if 'Global Quote' in alpha_data:
+                        quote = alpha_data['Global Quote']
+                        if '05. price' in quote:
+                            price = float(quote['05. price'])
+                            change_pct = float(quote['10. change percent'].replace('%', ''))
+                            indices_data['sp500'] = {
+                                'name': 'S&P 500 (SPY)',
+                                'price': price,
+                                'change_pct': change_pct
+                            }
+            except:
+                pass
                     
     except Exception as e:
         logger.error(f"Ошибка получения данных индексов: {e}")
