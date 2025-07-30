@@ -119,31 +119,7 @@ async def get_moex_stocks():
     
     return stocks_data
 
-# Функция для получения ключевой ставки ЦБ РФ
-async def get_key_rate():
-    """Получить актуальную ключевую ставку ЦБ РФ с индикатором актуальности"""
-    try:
-        # Попытка получить ключевую ставку из данных ЦБ РФ
-        import requests
-        
-        # Проверяем, есть ли ключевая ставка в основном JSON
-        cbr_response = requests.get("https://www.cbr-xml-daily.ru/daily_json.js", timeout=10)
-        if cbr_response.status_code == 200:
-            cbr_data = cbr_response.json()
-            
-            # Проверяем, есть ли поле с ключевой ставкой
-            if 'KeyRate' in cbr_data:
-                return f"✅ {cbr_data['KeyRate']:.2f}%"
-            elif 'key_rate' in cbr_data:
-                return f"✅ {cbr_data['key_rate']:.2f}%"
-        
-        # Если API недоступно, возвращаем последнее известное значение
-        return "❌ 20,00% (последнее известное значение на 09.06.2025)"
-        
-    except Exception as e:
-        logger.error(f"Ошибка получения ключевой ставки: {e}")
-        # В случае ошибки возвращаем последнее известное значение
-        return "❌ 20,00% (последнее известное значение на 09.06.2025)"
+# Функция для получения ключевой ставки ЦБ РФ убрана - API не работает стабильно
 
 # Время запуска бота
 bot_start_time = get_moscow_time()
@@ -401,8 +377,6 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         current_time = get_moscow_time().strftime("%d.%m.%Y %H:%M")
 
         message = f"""<b>КУРСЫ ВАЛЮТ, КРИПТОВАЛЮТ И АКЦИЙ</b>
-
-<b>Ключевая ставка ЦБ РФ:</b> {await get_key_rate()}
 
 <b>Основные валюты ЦБ РФ:</b>
 USD: {usd_str}
