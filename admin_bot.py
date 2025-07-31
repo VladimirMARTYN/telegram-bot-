@@ -32,6 +32,9 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '0'))
 
+# Глобальная переменная для системы задач
+GLOBAL_JOB_QUEUE = None
+
 # API ключи для внешних сервисов (для продакшена нужны настоящие ключи)
 METALPRICEAPI_KEY = os.getenv('METALPRICEAPI_KEY', 'demo')  # https://metalpriceapi.com/
 API_NINJAS_KEY = os.getenv('API_NINJAS_KEY', 'demo')        # https://api.api-ninjas.com/
@@ -1382,7 +1385,7 @@ async def set_daily_time_command(update: Update, context: ContextTypes.DEFAULT_T
         save_bot_settings(settings)
         
         # Пытаемся перезапустить задачу автоматически
-        job_queue = context.job_queue
+        job_queue = get_job_queue(context)
         restart_success = False
         
         if job_queue:
@@ -1526,8 +1529,8 @@ async def restart_daily_job_command(update: Update, context: ContextTypes.DEFAUL
     try:
         await update.message.reply_html("🔄 <b>Перезапускаю задачу ежедневной сводки...</b>")
         
-        # Получаем job_queue из контекста
-        job_queue = context.job_queue
+        # Получаем job_queue из контекста или глобальной переменной
+        job_queue = get_job_queue(context)
         if not job_queue:
             await update.message.reply_html("❌ Система задач недоступна")
             return
@@ -1750,8 +1753,27 @@ class AlternativeJobQueue:
         """Эмуляция получения задач по имени (для совместимости)"""
         return []  # Всегда возвращаем пустой список
 
+def get_job_queue(context=None):
+    """Получить доступную систему задач"""
+    global GLOBAL_JOB_QUEUE
+    
+    # Сначала пробуем получить из контекста
+    if context and hasattr(context, 'job_queue') and context.job_queue:
+        logger.debug("🔧 Используется job_queue из контекста")
+        return context.job_queue
+    
+    # Если не получилось, используем глобальную
+    if GLOBAL_JOB_QUEUE:
+        logger.debug("🔧 Используется глобальная система задач")
+        return GLOBAL_JOB_QUEUE
+    
+    logger.error("❌ Система задач недоступна")
+    return None
+
 def main() -> None:
     """Запуск бота - продвинутая версия с уведомлениями"""
+    global GLOBAL_JOB_QUEUE
+    
     logger.info("🚀 Запуск продвинутого финансового бота...")
     
     # Загружаем данные пользователей при старте
@@ -1810,13 +1832,17 @@ def main() -> None:
                 logger.error("❌ Все способы создания JobQueue не сработали")
                 logger.info("🔄 Переходим на альтернативную систему задач...")
                 job_queue = AlternativeJobQueue(application)
+                GLOBAL_JOB_QUEUE = job_queue
                 
         except Exception as e:
             logger.error(f"❌ Критическая ошибка при создании JobQueue: {e}")
             logger.info("🔄 Используем альтернативную систему задач как fallback...")
             job_queue = AlternativeJobQueue(application)
+            GLOBAL_JOB_QUEUE = job_queue
     else:
         logger.info("✅ JobQueue инициализирован успешно")
+        # Сохраняем успешную JobQueue в глобальную переменную
+        GLOBAL_JOB_QUEUE = job_queue
 
     # JobQueue уже получен выше в диагностике
 
