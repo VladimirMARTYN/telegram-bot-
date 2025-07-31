@@ -11,7 +11,7 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 
 if not BOT_TOKEN:
-    raise ValueError("Необходимо установить BOT_TOKEN в переменных окружения или в файле .env")
+    raise ValueError("Необходимо установить BOT_TOKEN в переменных окружения или в файле .env") 
 
 if not OPENAI_API_KEY:
     print("⚠️ ВНИМАНИЕ: OPENAI_API_KEY не установлен. ChatGPT функции будут недоступны.") 

@@ -280,7 +280,7 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Получить полные курсы валют, криптовалют, акций, товаров и индексов"""
     try:
-        await update.message.reply_text("📊 Получаю полные курсы финансовых инструментов...")
+        await update.message.reply_text("📊 Получаю информацию")
         
         # 1. Курсы валют ЦБ РФ
         try:
@@ -446,17 +446,17 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         
         # Формируем итоговое сообщение с улучшенным форматированием
-        message = "📊 **КУРСЫ ФИНАНСОВЫХ ИНСТРУМЕНТОВ**\n\n"
+        message = "📊 **На сегодня курсы такие:**\n\n"
         
         # Валюты ЦБ РФ
-        message += "🏛️ **ВАЛЮТЫ ЦБ РФ:**\n"
+        message += "🏛️ **ВАЛЮТЫ (по курсу ЦБ РФ):**\n"
         message += f"├ USD: **{usd_str}**\n"
         message += f"├ EUR: **{eur_str}**\n"
         message += f"├ CNY: **{cny_str}**\n"
         message += f"└ GBP: **{gbp_str}**\n\n"
         
         # Криптовалюты
-        message += "💎 **КРИПТОВАЛЮТЫ:**\n"
+        message += "💎 **КРИПТА:**\n"
         crypto_items = ['bitcoin', 'ethereum', 'ton', 'ripple', 'cardano', 'solana', 'dogecoin']
         for i, crypto in enumerate(crypto_items):
             if crypto in crypto_strings:
@@ -494,7 +494,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         message += "\n"
         
         # Товары 
-        message += "🛠️ **ТОВАРЫ:**\n"
+        message += "🛠️ **ЗОЛОТО, НЕФТЬ:**\n"
         commodities_data = await get_commodities_data()
         commodity_items = ['gold', 'silver', 'brent', 'urals']  # Добавляем urals
         commodity_names = {
