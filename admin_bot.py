@@ -11,6 +11,15 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import json
 import aiohttp
 import requests
+import threading
+
+# Безопасный импорт schedule (может отсутствовать)
+try:
+    import schedule
+    SCHEDULE_AVAILABLE = True
+except ImportError:
+    logger.warning("⚠️ Модуль 'schedule' не установлен. Альтернативная система задач будет использовать только Timer")
+    SCHEDULE_AVAILABLE = False
 
 # Настройка логирования
 logging.basicConfig(
@@ -1520,8 +1529,10 @@ async def restart_daily_job_command(update: Update, context: ContextTypes.DEFAUL
         # Получаем job_queue из контекста
         job_queue = context.job_queue
         if not job_queue:
-            await update.message.reply_html("❌ JobQueue недоступен")
+            await update.message.reply_html("❌ Система задач недоступна")
             return
+        
+        logger.info(f"🔧 Используется система задач: {type(job_queue).__name__}")
         
         # Удаляем существующую задачу
         current_jobs = job_queue.get_jobs_by_name("daily_summary")
@@ -1573,6 +1584,172 @@ async def restart_daily_job_command(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_html(f"❌ <b>Ошибка перезапуска задачи:</b>\n{e}")
         logger.error(f"Ошибка restart_daily_job: {e}")
 
+# Альтернативная реализация задач если JobQueue не работает
+class AlternativeJobQueue:
+    """Простая альтернативная реализация задач через threading"""
+    
+    def __init__(self, application):
+        self.application = application
+        self.jobs = []
+        self.running = False
+        logger.info("🔄 Создана альтернативная система задач")
+    
+    def run_daily(self, callback, time, name):
+        """Запустить ежедневную задачу"""
+        import time as time_module
+        
+        time_str = time.strftime('%H:%M')
+        logger.info(f"📅 Настраиваю альтернативную ежедневную задачу '{name}' на {time_str}")
+        
+        if SCHEDULE_AVAILABLE:
+            # Используем schedule для ежедневных задач
+            schedule.every().day.at(time_str).do(self._run_job, callback, name)
+            
+            # Запускаем поток для выполнения задач
+            if not self.running:
+                self.running = True
+                thread = threading.Thread(target=self._schedule_runner, daemon=True)
+                thread.start()
+                logger.info("✅ Альтернативный планировщик задач запущен (schedule)")
+        else:
+            # Используем простой Timer для ежедневных задач
+            self._setup_timer_daily(callback, time, name)
+            logger.info("✅ Альтернативный планировщик задач запущен (timer)")
+    
+    def run_repeating(self, callback, interval, first, name):
+        """Запустить повторяющуюся задачу"""
+        logger.info(f"⏰ Настраиваю альтернативную повторяющуюся задачу '{name}' каждые {interval}с")
+        
+        def run_job():
+            import asyncio
+            try:
+                # Создаем контекст для задачи
+                context = type('obj', (object,), {
+                    'bot': self.application.bot,
+                    'job_queue': self
+                })
+                
+                # Запускаем асинхронную функцию
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(callback(context))
+                loop.close()
+            except Exception as e:
+                logger.error(f"❌ Ошибка выполнения альтернативной задачи {name}: {e}")
+        
+        # Первый запуск
+        timer = threading.Timer(first, run_job)
+        timer.daemon = True
+        timer.start()
+        
+        # Повторяющиеся запуски
+        def repeat_job():
+            run_job()
+            if self.running:
+                timer = threading.Timer(interval, repeat_job)
+                timer.daemon = True
+                timer.start()
+        
+        # Запускаем повторяющиеся задачи после первого запуска
+        repeat_timer = threading.Timer(first + interval, repeat_job)
+        repeat_timer.daemon = True
+        repeat_timer.start()
+    
+    def _run_job(self, callback, name):
+        """Выполнить задачу"""
+        import asyncio
+        try:
+            logger.info(f"▶️ Выполняю альтернативную задачу: {name}")
+            
+            # Создаем контекст для задачи
+            context = type('obj', (object,), {
+                'bot': self.application.bot,
+                'job_queue': self
+            })
+            
+            # Запускаем асинхронную функцию
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(callback(context))
+            loop.close()
+            
+            logger.info(f"✅ Альтернативная задача {name} выполнена")
+        except Exception as e:
+            logger.error(f"❌ Ошибка выполнения альтернативной задачи {name}: {e}")
+    
+    def _setup_timer_daily(self, callback, target_time, name):
+        """Настроить ежедневную задачу через Timer (без schedule)"""
+        from datetime import datetime, timedelta
+        import time as time_module
+        
+        def calculate_next_run():
+            """Вычислить время до следующего запуска"""
+            now = datetime.now()
+            
+            # Парсим целевое время
+            hour = target_time.hour
+            minute = target_time.minute
+            
+            # Создаем время сегодня
+            today_target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            
+            # Если время уже прошло сегодня, планируем на завтра
+            if now >= today_target:
+                next_run = today_target + timedelta(days=1)
+            else:
+                next_run = today_target
+            
+            # Вычисляем секунды до запуска
+            time_diff = next_run - now
+            return time_diff.total_seconds(), next_run
+        
+        def run_and_reschedule():
+            """Выполнить задачу и запланировать следующую"""
+            try:
+                self._run_job(callback, name)
+            except Exception as e:
+                logger.error(f"❌ Ошибка выполнения timer задачи {name}: {e}")
+            
+            # Планируем следующий запуск
+            if self.running:
+                seconds_until, next_run = calculate_next_run()
+                logger.info(f"⏰ Следующий запуск задачи {name}: {next_run.strftime('%H:%M %d.%m.%Y')} (через {int(seconds_until/3600)}ч {int((seconds_until%3600)/60)}мин)")
+                
+                timer = threading.Timer(seconds_until, run_and_reschedule)
+                timer.daemon = True
+                timer.start()
+        
+        # Запускаем первую задачу
+        seconds_until, next_run = calculate_next_run()
+        logger.info(f"⏰ Первый запуск задачи {name}: {next_run.strftime('%H:%M %d.%m.%Y')} (через {int(seconds_until/3600)}ч {int((seconds_until%3600)/60)}мин)")
+        
+        timer = threading.Timer(seconds_until, run_and_reschedule)
+        timer.daemon = True
+        timer.start()
+        
+        self.running = True
+    
+    def _schedule_runner(self):
+        """Запускает планировщик задач в отдельном потоке (только если schedule доступен)"""
+        if not SCHEDULE_AVAILABLE:
+            logger.error("❌ Попытка запустить schedule_runner без модуля schedule")
+            return
+            
+        import time as time_module
+        
+        logger.info("🔄 Альтернативный планировщик задач запущен")
+        while self.running:
+            try:
+                schedule.run_pending()
+                time_module.sleep(60)  # Проверяем каждую минуту
+            except Exception as e:
+                logger.error(f"❌ Ошибка в планировщике задач: {e}")
+                time_module.sleep(60)
+    
+    def get_jobs_by_name(self, name):
+        """Эмуляция получения задач по имени (для совместимости)"""
+        return []  # Всегда возвращаем пустой список
+
 def main() -> None:
     """Запуск бота - продвинутая версия с уведомлениями"""
     logger.info("🚀 Запуск продвинутого финансового бота...")
@@ -1580,11 +1757,68 @@ def main() -> None:
     # Загружаем данные пользователей при старте
     load_user_data()
     
-    # Создаем приложение
+    # Создаем приложение с явно включенным JobQueue
     application = Application.builder().token(BOT_TOKEN).build()
-
-    # Получаем JobQueue
+    
+    # Проверяем доступность JobQueue и выводим детальную диагностику
     job_queue = application.job_queue
+    logger.info(f"🔍 Диагностика JobQueue:")
+    logger.info(f"   application.job_queue: {job_queue}")
+    logger.info(f"   type: {type(job_queue)}")
+    logger.info(f"   bool(job_queue): {bool(job_queue)}")
+    
+    if job_queue is None:
+        logger.error("❌ JobQueue is None! Попробуем создать принудительно...")
+        try:
+            # Пробуем разные способы импорта JobQueue
+            job_queue_created = False
+            
+            # Способ 1: прямой импорт
+            try:
+                from telegram.ext import JobQueue as TelegramJobQueue
+                job_queue = TelegramJobQueue()
+                application._job_queue = job_queue
+                job_queue_created = True
+                logger.info("✅ JobQueue создан (способ 1: прямой импорт)")
+            except Exception as e1:
+                logger.warning(f"⚠️ Способ 1 не сработал: {e1}")
+            
+            # Способ 2: через приватный модуль
+            if not job_queue_created:
+                try:
+                    from telegram.ext._jobqueue import JobQueue as PrivateJobQueue
+                    job_queue = PrivateJobQueue()
+                    application._job_queue = job_queue
+                    job_queue_created = True
+                    logger.info("✅ JobQueue создан (способ 2: приватный модуль)")
+                except Exception as e2:
+                    logger.warning(f"⚠️ Способ 2 не сработал: {e2}")
+            
+            # Способ 3: через Application.builder()
+            if not job_queue_created:
+                try:
+                    new_app = Application.builder().token(BOT_TOKEN).job_queue(None).build()
+                    job_queue = new_app.job_queue
+                    if job_queue:
+                        application._job_queue = job_queue
+                        job_queue_created = True
+                        logger.info("✅ JobQueue создан (способ 3: через builder)")
+                except Exception as e3:
+                    logger.warning(f"⚠️ Способ 3 не сработал: {e3}")
+            
+            if not job_queue_created:
+                logger.error("❌ Все способы создания JobQueue не сработали")
+                logger.info("🔄 Переходим на альтернативную систему задач...")
+                job_queue = AlternativeJobQueue(application)
+                
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка при создании JobQueue: {e}")
+            logger.info("🔄 Используем альтернативную систему задач как fallback...")
+            job_queue = AlternativeJobQueue(application)
+    else:
+        logger.info("✅ JobQueue инициализирован успешно")
+
+    # JobQueue уже получен выше в диагностике
 
     # Основные команды
     application.add_handler(CommandHandler("start", start))
@@ -1608,6 +1842,7 @@ def main() -> None:
 
     # Настройка периодических задач
     if job_queue:
+        logger.info(f"🔧 Используется система задач: {type(job_queue).__name__}")
         # Проверка изменений цен каждые 30 минут
         job_queue.run_repeating(
             check_price_changes,
@@ -1664,7 +1899,8 @@ def main() -> None:
             )
             logger.info("✅ Ежедневная сводка в 09:00 МСК настроена (fallback)")
     else:
-        logger.warning("⚠️ JobQueue недоступен - уведомления отключены")
+        logger.warning("⚠️ Система задач недоступна - уведомления отключены")
+        logger.error("🚨 Критическая ошибка: job_queue не может быть None на этом этапе!")
 
     # Запуск бота
     logger.info("✅ Продвинутый финансовый бот запущен и готов к работе")
