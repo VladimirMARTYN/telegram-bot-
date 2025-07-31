@@ -1588,25 +1588,54 @@ async def restart_daily_job_command(update: Update, context: ContextTypes.DEFAUL
         logger.error(f"Ошибка restart_daily_job: {e}")
 
 # Альтернативная реализация задач если JobQueue не работает
+class AlternativeJob:
+    """Эмуляция Job для совместимости"""
+    
+    def __init__(self, name, callback, job_queue):
+        self.name = name
+        self.callback = callback
+        self.job_queue = job_queue
+        self.removed = False
+        logger.debug(f"🔧 Создана альтернативная задача: {name}")
+    
+    def schedule_removal(self):
+        """Помечает задачу для удаления"""
+        self.removed = True
+        logger.info(f"🗑️ Альтернативная задача {self.name} помечена для удаления")
+
 class AlternativeJobQueue:
     """Простая альтернативная реализация задач через threading"""
     
     def __init__(self, application):
         self.application = application
-        self.jobs = []
+        self.jobs = {}  # Словарь для хранения задач по именам
         self.running = False
+        self.active_timers = {}  # Активные таймеры
         logger.info("🔄 Создана альтернативная система задач")
     
     def run_daily(self, callback, time, name):
         """Запустить ежедневную задачу"""
         import time as time_module
         
+        # Удаляем существующую задачу с таким именем
+        if name in self.jobs:
+            old_job = self.jobs[name]
+            old_job.schedule_removal()
+            self._stop_timer(name)
+        
+        # Создаем новую задачу
+        job = AlternativeJob(name, callback, self)
+        self.jobs[name] = job
+        
         time_str = time.strftime('%H:%M')
         logger.info(f"📅 Настраиваю альтернативную ежедневную задачу '{name}' на {time_str}")
         
         if SCHEDULE_AVAILABLE:
+            # Удаляем предыдущие schedule задачи
+            schedule.clear(name)
+            
             # Используем schedule для ежедневных задач
-            schedule.every().day.at(time_str).do(self._run_job, callback, name)
+            schedule.every().day.at(time_str).do(self._run_job, callback, name).tag(name)
             
             # Запускаем поток для выполнения задач
             if not self.running:
@@ -1623,20 +1652,32 @@ class AlternativeJobQueue:
         """Запустить повторяющуюся задачу"""
         logger.info(f"⏰ Настраиваю альтернативную повторяющуюся задачу '{name}' каждые {interval}с")
         
+        # Удаляем существующую задачу с таким именем
+        if name in self.jobs:
+            old_job = self.jobs[name]
+            old_job.schedule_removal()
+            self._stop_timer(name)
+        
+        # Создаем новую задачу
+        job = AlternativeJob(name, callback, self)
+        self.jobs[name] = job
+        
         def run_job():
             import asyncio
             try:
-                # Создаем контекст для задачи
-                context = type('obj', (object,), {
-                    'bot': self.application.bot,
-                    'job_queue': self
-                })
-                
-                # Запускаем асинхронную функцию
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(callback(context))
-                loop.close()
+                # Проверяем, не была ли задача удалена
+                if name in self.jobs and not self.jobs[name].removed:
+                    # Создаем контекст для задачи
+                    context = type('obj', (object,), {
+                        'bot': self.application.bot,
+                        'job_queue': self
+                    })
+                    
+                    # Запускаем асинхронную функцию
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(callback(context))
+                    loop.close()
             except Exception as e:
                 logger.error(f"❌ Ошибка выполнения альтернативной задачи {name}: {e}")
         
@@ -1644,24 +1685,33 @@ class AlternativeJobQueue:
         timer = threading.Timer(first, run_job)
         timer.daemon = True
         timer.start()
+        self.active_timers[name + "_first"] = timer
         
         # Повторяющиеся запуски
         def repeat_job():
-            run_job()
-            if self.running:
-                timer = threading.Timer(interval, repeat_job)
-                timer.daemon = True
-                timer.start()
+            if name in self.jobs and not self.jobs[name].removed:
+                run_job()
+                if self.running and name in self.jobs and not self.jobs[name].removed:
+                    timer = threading.Timer(interval, repeat_job)
+                    timer.daemon = True
+                    timer.start()
+                    self.active_timers[name + "_repeat"] = timer
         
         # Запускаем повторяющиеся задачи после первого запуска
         repeat_timer = threading.Timer(first + interval, repeat_job)
         repeat_timer.daemon = True
         repeat_timer.start()
+        self.active_timers[name + "_repeat_start"] = repeat_timer
     
     def _run_job(self, callback, name):
         """Выполнить задачу"""
         import asyncio
         try:
+            # Проверяем, не была ли задача удалена
+            if name in self.jobs and self.jobs[name].removed:
+                logger.info(f"⏭️ Пропускаю выполнение удаленной задачи: {name}")
+                return
+                
             logger.info(f"▶️ Выполняю альтернативную задачу: {name}")
             
             # Создаем контекст для задачи
@@ -1709,18 +1759,21 @@ class AlternativeJobQueue:
         def run_and_reschedule():
             """Выполнить задачу и запланировать следующую"""
             try:
-                self._run_job(callback, name)
+                # Проверяем, не была ли задача удалена
+                if name in self.jobs and not self.jobs[name].removed:
+                    self._run_job(callback, name)
             except Exception as e:
                 logger.error(f"❌ Ошибка выполнения timer задачи {name}: {e}")
             
             # Планируем следующий запуск
-            if self.running:
+            if self.running and name in self.jobs and not self.jobs[name].removed:
                 seconds_until, next_run = calculate_next_run()
                 logger.info(f"⏰ Следующий запуск задачи {name}: {next_run.strftime('%H:%M %d.%m.%Y')} (через {int(seconds_until/3600)}ч {int((seconds_until%3600)/60)}мин)")
                 
                 timer = threading.Timer(seconds_until, run_and_reschedule)
                 timer.daemon = True
                 timer.start()
+                self.active_timers[name + "_daily"] = timer
         
         # Запускаем первую задачу
         seconds_until, next_run = calculate_next_run()
@@ -1729,6 +1782,7 @@ class AlternativeJobQueue:
         timer = threading.Timer(seconds_until, run_and_reschedule)
         timer.daemon = True
         timer.start()
+        self.active_timers[name + "_daily"] = timer
         
         self.running = True
     
@@ -1750,8 +1804,26 @@ class AlternativeJobQueue:
                 time_module.sleep(60)
     
     def get_jobs_by_name(self, name):
-        """Эмуляция получения задач по имени (для совместимости)"""
-        return []  # Всегда возвращаем пустой список
+        """Получить задачи по имени"""
+        if name in self.jobs and not self.jobs[name].removed:
+            return [self.jobs[name]]
+        return []
+
+    def _stop_timer(self, name):
+        """Остановить активные таймеры для задачи"""
+        timers_to_remove = []
+        for timer_name, timer in self.active_timers.items():
+            if timer_name.startswith(name):
+                try:
+                    timer.cancel()
+                    logger.debug(f"🛑 Остановлен таймер: {timer_name}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка остановки таймера {timer_name}: {e}")
+                timers_to_remove.append(timer_name)
+        
+        # Удаляем остановленные таймеры из словаря
+        for timer_name in timers_to_remove:
+            del self.active_timers[timer_name]
 
 def get_job_queue(context=None):
     """Получить доступную систему задач"""
