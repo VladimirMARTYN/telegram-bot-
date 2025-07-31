@@ -241,7 +241,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         help_text += (
             "🔧 <b>Админские команды:</b>\n"
             "/test_daily - Тестовая ежедневная сводка\n"
-            "/check_subscribers - Статус подписчиков\n\n"
+            "/check_subscribers - Статус подписчиков\n"
+            "/set_daily_time HH:MM - Настроить время сводки\n"
+            "/get_daily_settings - Посмотреть настройки\n"
+            "/restart_daily_job - Перезапустить задачу сводки\n\n"
         )
     
     help_text += (
@@ -1058,9 +1061,10 @@ async def get_indices_data():
 
 # Функция get_crypto_extended() удалена - заменена на прямые запросы к CoinGecko
 
-# Система уведомлений
+# Файлы данных
 NOTIFICATION_DATA_FILE = 'notifications.json'
 PRICE_HISTORY_FILE = 'price_history.json'
+SETTINGS_FILE = 'bot_settings.json'
 
 def load_notification_data():
     """Загрузить данные уведомлений"""
@@ -1099,6 +1103,52 @@ def save_price_history(data):
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"Ошибка сохранения истории: {e}")
+
+def load_bot_settings():
+    """Загрузить настройки бота"""
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        # Настройки по умолчанию
+        return {
+            'daily_summary_time': '09:00',  # Время в формате HH:MM
+            'timezone': 'Europe/Moscow'
+        }
+    except Exception as e:
+        logger.error(f"Ошибка загрузки настроек: {e}")
+        return {
+            'daily_summary_time': '09:00',
+            'timezone': 'Europe/Moscow'
+        }
+
+def save_bot_settings(settings):
+    """Сохранить настройки бота"""
+    try:
+        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+        logger.info(f"✅ Настройки сохранены: {settings}")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения настроек: {e}")
+
+def validate_time_format(time_str):
+    """Проверить корректность формата времени HH:MM"""
+    try:
+        parts = time_str.split(':')
+        if len(parts) != 2:
+            return False
+        
+        hour = int(parts[0])
+        minute = int(parts[1])
+        
+        if not (0 <= hour <= 23):
+            return False
+        if not (0 <= minute <= 59):
+            return False
+            
+        return True
+    except (ValueError, AttributeError):
+        return False
 
 # Функции проверки изменений и отправки уведомлений
 async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
@@ -1277,6 +1327,252 @@ async def daily_summary_job(context: ContextTypes.DEFAULT_TYPE):
         import traceback
         logger.error(f"📋 Трассировка: {traceback.format_exc()}")
 
+async def set_daily_time_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Настроить время ежедневной сводки (только для админа)"""
+    user_id = update.effective_user.id
+    
+    # Проверяем права администратора
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("🚫 Команда доступна только администратору")
+        return
+    
+    # Проверяем аргументы
+    if not context.args:
+        await update.message.reply_html(
+            "⏰ <b>Настройка времени ежедневной сводки</b>\n\n"
+            "<b>Использование:</b>\n"
+            "/set_daily_time HH:MM\n\n"
+            "<b>Примеры:</b>\n"
+            "• /set_daily_time 09:00 - сводка в 9:00 МСК\n"
+            "• /set_daily_time 21:30 - сводка в 21:30 МСК\n"
+            "• /set_daily_time 06:15 - сводка в 6:15 МСК\n\n"
+            "💡 Время указывается в московском часовом поясе"
+        )
+        return
+    
+    time_str = context.args[0]
+    
+    # Валидация формата времени
+    if not validate_time_format(time_str):
+        await update.message.reply_html(
+            "❌ <b>Неверный формат времени!</b>\n\n"
+            "Используйте формат <b>HH:MM</b> (24-часовой формат)\n"
+            "Например: 09:00, 15:30, 21:45\n\n"
+            "Часы: от 00 до 23\n"
+            "Минуты: от 00 до 59"
+        )
+        return
+    
+    try:
+        # Загружаем текущие настройки
+        settings = load_bot_settings()
+        old_time = settings.get('daily_summary_time', '09:00')
+        
+        # Обновляем время
+        settings['daily_summary_time'] = time_str
+        save_bot_settings(settings)
+        
+        # Пытаемся перезапустить задачу автоматически
+        job_queue = context.job_queue
+        restart_success = False
+        
+        if job_queue:
+            try:
+                # Удаляем существующую задачу
+                current_jobs = job_queue.get_jobs_by_name("daily_summary")
+                if current_jobs:
+                    for job in current_jobs:
+                        job.schedule_removal()
+                
+                # Парсим новое время
+                hour, minute = map(int, time_str.split(':'))
+                moscow_tz = pytz.timezone('Europe/Moscow')
+                daily_time = time(hour=hour, minute=minute, tzinfo=moscow_tz)
+                
+                # Создаем новую задачу
+                job_queue.run_daily(
+                    daily_summary_job,
+                    time=daily_time,
+                    name="daily_summary"
+                )
+                
+                restart_success = True
+                logger.info(f"🔄 Задача ежедневной сводки автоматически перезапущена на {time_str}")
+                
+            except Exception as restart_error:
+                logger.error(f"❌ Ошибка автоматического перезапуска: {restart_error}")
+        
+        if restart_success:
+            # Вычисляем время до следующего запуска
+            from datetime import datetime
+            moscow_tz = pytz.timezone('Europe/Moscow')
+            current_moscow_time = datetime.now(moscow_tz)
+            hour, minute = map(int, time_str.split(':'))
+            next_run = current_moscow_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if current_moscow_time.hour > hour or (current_moscow_time.hour == hour and current_moscow_time.minute >= minute):
+                next_run = next_run.replace(day=next_run.day + 1)
+            
+            time_until = next_run - current_moscow_time
+            hours_until = int(time_until.total_seconds() // 3600)
+            minutes_until = int((time_until.total_seconds() % 3600) // 60)
+            
+            await update.message.reply_html(
+                f"✅ <b>Время ежедневной сводки обновлено!</b>\n\n"
+                f"🕐 <b>Было:</b> {old_time} МСК\n"
+                f"🕐 <b>Стало:</b> {time_str} МСК\n\n"
+                f"🔄 <b>Задача автоматически перезапущена!</b>\n"
+                f"⏰ <b>До следующей сводки:</b> {hours_until}ч {minutes_until}мин\n"
+                f"📊 <b>Следующая сводка:</b> {next_run.strftime('%H:%M %d.%m.%Y')}\n\n"
+                f"🎉 Изменения вступили в силу немедленно!"
+            )
+        else:
+            await update.message.reply_html(
+                f"✅ <b>Время ежедневной сводки обновлено!</b>\n\n"
+                f"🕐 <b>Было:</b> {old_time} МСК\n"
+                f"🕐 <b>Стало:</b> {time_str} МСК\n\n"
+                f"⚠️ <b>Внимание:</b> Не удалось автоматически перезапустить задачу.\n"
+                f"🔄 Используйте /restart_daily_job или перезапустите бота на Railway."
+            )
+        
+        logger.info(f"⏰ Админ {user_id} изменил время ежедневной сводки: {old_time} → {time_str}")
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка при сохранении настроек: {e}")
+        logger.error(f"Ошибка set_daily_time: {e}")
+
+async def get_daily_settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показать текущие настройки ежедневной сводки (только для админа)"""
+    user_id = update.effective_user.id
+    
+    # Проверяем права администратора
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("🚫 Команда доступна только администратору")
+        return
+    
+    try:
+        settings = load_bot_settings()
+        notifications = load_notification_data()
+        
+        # Подсчитываем подписчиков
+        total_users = len(notifications)
+        active_subscribers = 0
+        daily_summary_subscribers = 0
+        
+        for uid, data in notifications.items():
+            if data.get('subscribed', False):
+                active_subscribers += 1
+            if data.get('daily_summary', True) and data.get('subscribed', False):
+                daily_summary_subscribers += 1
+        
+        # Получаем текущее московское время
+        moscow_tz = pytz.timezone(settings.get('timezone', 'Europe/Moscow'))
+        current_time = datetime.now(moscow_tz)
+        
+        # Вычисляем время до следующей сводки
+        daily_time_str = settings.get('daily_summary_time', '09:00')
+        hour, minute = map(int, daily_time_str.split(':'))
+        
+        next_run = current_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if current_time.hour > hour or (current_time.hour == hour and current_time.minute >= minute):
+            # Если время уже прошло сегодня, планируем на завтра
+            next_run = next_run.replace(day=next_run.day + 1)
+        
+        time_until = next_run - current_time
+        hours_until = int(time_until.total_seconds() // 3600)
+        minutes_until = int((time_until.total_seconds() % 3600) // 60)
+        
+        message = (
+            f"⚙️ <b>НАСТРОЙКИ ЕЖЕДНЕВНОЙ СВОДКИ</b>\n\n"
+            f"🕐 <b>Время отправки:</b> {daily_time_str} МСК\n"
+            f"🌍 <b>Часовой пояс:</b> {settings.get('timezone', 'Europe/Moscow')}\n"
+            f"📅 <b>Текущее время:</b> {current_time.strftime('%H:%M:%S %d.%m.%Y')}\n\n"
+            f"⏰ <b>До следующей сводки:</b> {hours_until}ч {minutes_until}мин\n"
+            f"📊 <b>Следующая сводка:</b> {next_run.strftime('%H:%M %d.%m.%Y')}\n\n"
+            f"👥 <b>СТАТИСТИКА ПОДПИСЧИКОВ:</b>\n"
+            f"├ Всего пользователей: {total_users}\n"
+            f"├ Активных подписчиков: {active_subscribers}\n"
+            f"└ Подписано на сводку: {daily_summary_subscribers}\n\n"
+            f"🔧 <b>Команды:</b>\n"
+            f"• /set_daily_time HH:MM - изменить время\n"
+            f"• /restart_daily_job - перезапустить задачу\n"
+            f"• /test_daily - тестовый запуск\n"
+            f"• /check_subscribers - детали подписчиков"
+        )
+        
+        await update.message.reply_html(message)
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка получения настроек: {e}")
+        logger.error(f"Ошибка get_daily_settings: {e}")
+
+async def restart_daily_job_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Перезапустить задачу ежедневной сводки с новыми настройками (только для админа)"""
+    user_id = update.effective_user.id
+    
+    # Проверяем права администратора
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("🚫 Команда доступна только администратору")
+        return
+    
+    try:
+        await update.message.reply_html("🔄 <b>Перезапускаю задачу ежедневной сводки...</b>")
+        
+        # Получаем job_queue из контекста
+        job_queue = context.job_queue
+        if not job_queue:
+            await update.message.reply_html("❌ JobQueue недоступен")
+            return
+        
+        # Удаляем существующую задачу
+        current_jobs = job_queue.get_jobs_by_name("daily_summary")
+        if current_jobs:
+            for job in current_jobs:
+                job.schedule_removal()
+            logger.info(f"🗑️ Удалено {len(current_jobs)} существующих задач ежедневной сводки")
+        
+        # Загружаем новые настройки
+        settings = load_bot_settings()
+        daily_time_str = settings.get('daily_summary_time', '09:00')
+        timezone_str = settings.get('timezone', 'Europe/Moscow')
+        
+        # Парсим время из настроек
+        hour, minute = map(int, daily_time_str.split(':'))
+        moscow_tz = pytz.timezone(timezone_str)
+        daily_time = time(hour=hour, minute=minute, tzinfo=moscow_tz)
+        
+        # Создаем новую задачу
+        job_queue.run_daily(
+            daily_summary_job,
+            time=daily_time,
+            name="daily_summary"
+        )
+        
+        # Вычисляем время до следующего запуска
+        from datetime import datetime
+        current_moscow_time = datetime.now(moscow_tz)
+        next_run = current_moscow_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if current_moscow_time.hour > hour or (current_moscow_time.hour == hour and current_moscow_time.minute >= minute):
+            next_run = next_run.replace(day=next_run.day + 1)
+        
+        time_until = next_run - current_moscow_time
+        hours_until = int(time_until.total_seconds() // 3600)
+        minutes_until = int((time_until.total_seconds() % 3600) // 60)
+        
+        await update.message.reply_html(
+            f"✅ <b>Задача ежедневной сводки перезапущена!</b>\n\n"
+            f"🕐 <b>Новое время:</b> {daily_time_str} МСК\n"
+            f"📅 <b>Текущее время:</b> {current_moscow_time.strftime('%H:%M:%S')}\n"
+            f"⏰ <b>До следующей сводки:</b> {hours_until}ч {minutes_until}мин\n"
+            f"📊 <b>Следующая сводка:</b> {next_run.strftime('%H:%M %d.%m.%Y')}\n\n"
+            f"🎉 Изменения вступили в силу немедленно!"
+        )
+        
+        logger.info(f"🔄 Админ {user_id} перезапустил задачу ежедневной сводки на {daily_time_str}")
+        
+    except Exception as e:
+        await update.message.reply_html(f"❌ <b>Ошибка перезапуска задачи:</b>\n{e}")
+        logger.error(f"Ошибка restart_daily_job: {e}")
+
 def main() -> None:
     """Запуск бота - продвинутая версия с уведомлениями"""
     logger.info("🚀 Запуск продвинутого финансового бота...")
@@ -1303,6 +1599,9 @@ def main() -> None:
     application.add_handler(CommandHandler("view_alerts", view_alerts_command))
     application.add_handler(CommandHandler("test_daily", test_daily_command))
     application.add_handler(CommandHandler("check_subscribers", check_subscribers_command))
+    application.add_handler(CommandHandler("set_daily_time", set_daily_time_command))
+    application.add_handler(CommandHandler("get_daily_settings", get_daily_settings_command))
+    application.add_handler(CommandHandler("restart_daily_job", restart_daily_job_command))
 
     # Обработчик всех текстовых сообщений (эхо)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
@@ -1318,29 +1617,52 @@ def main() -> None:
         )
         logger.info("⏰ Настроена проверка изменений цен каждые 30 минут")
         
-        # Ежедневная сводка в 9:00 МСК
-        moscow_tz = pytz.timezone('Europe/Moscow')
-        daily_time = time(hour=9, minute=0, tzinfo=moscow_tz)
+        # Ежедневная сводка - время из настроек
+        settings = load_bot_settings()
+        daily_time_str = settings.get('daily_summary_time', '09:00')
+        timezone_str = settings.get('timezone', 'Europe/Moscow')
         
-        # Получаем текущее московское время для отладки
-        from datetime import datetime
-        current_moscow_time = datetime.now(moscow_tz)
-        logger.info(f"🕐 Текущее московское время: {current_moscow_time.strftime('%H:%M:%S %d.%m.%Y')}")
-        logger.info(f"📅 Настраиваю ежедневную сводку на: {daily_time.strftime('%H:%M')} МСК")
-        
-        job_queue.run_daily(
-            daily_summary_job,
-            time=daily_time,
-            name="daily_summary"
-        )
-        logger.info("✅ Ежедневная сводка в 9:00 МСК настроена успешно")
-        
-        # Показываем сколько времени до следующего запуска
-        next_run = current_moscow_time.replace(hour=9, minute=0, second=0, microsecond=0)
-        if current_moscow_time.hour >= 9:
-            next_run = next_run.replace(day=next_run.day + 1)
-        time_until = next_run - current_moscow_time
-        logger.info(f"⏰ До следующей ежедневной сводки: {time_until}")
+        try:
+            # Парсим время из настроек
+            hour, minute = map(int, daily_time_str.split(':'))
+            moscow_tz = pytz.timezone(timezone_str)
+            daily_time = time(hour=hour, minute=minute, tzinfo=moscow_tz)
+            
+            # Получаем текущее московское время для отладки
+            from datetime import datetime
+            current_moscow_time = datetime.now(moscow_tz)
+            logger.info(f"🕐 Текущее московское время: {current_moscow_time.strftime('%H:%M:%S %d.%m.%Y')}")
+            logger.info(f"📅 Настраиваю ежедневную сводку на: {daily_time_str} МСК (из настроек)")
+            
+            job_queue.run_daily(
+                daily_summary_job,
+                time=daily_time,
+                name="daily_summary"
+            )
+            logger.info(f"✅ Ежедневная сводка в {daily_time_str} МСК настроена успешно")
+            
+            # Показываем сколько времени до следующего запуска
+            next_run = current_moscow_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if current_moscow_time.hour > hour or (current_moscow_time.hour == hour and current_moscow_time.minute >= minute):
+                next_run = next_run.replace(day=next_run.day + 1)
+            time_until = next_run - current_moscow_time
+            hours_until = int(time_until.total_seconds() // 3600)
+            minutes_until = int((time_until.total_seconds() % 3600) // 60)
+            logger.info(f"⏰ До следующей ежедневной сводки: {hours_until}ч {minutes_until}мин")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка настройки времени ежедневной сводки: {e}")
+            logger.info("🔄 Использую время по умолчанию: 09:00 МСК")
+            
+            # Fallback на время по умолчанию
+            moscow_tz = pytz.timezone('Europe/Moscow')
+            daily_time = time(hour=9, minute=0, tzinfo=moscow_tz)
+            job_queue.run_daily(
+                daily_summary_job,
+                time=daily_time,
+                name="daily_summary"
+            )
+            logger.info("✅ Ежедневная сводка в 09:00 МСК настроена (fallback)")
     else:
         logger.warning("⚠️ JobQueue недоступен - уведомления отключены")
 
