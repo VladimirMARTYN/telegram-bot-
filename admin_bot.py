@@ -219,11 +219,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "🤖 <b>Справка по продвинутому финансовому боту</b>\n\n"
         "💱 <b>Основные функции:</b>\n"
         "• Курсы валют, криптовалют и акций\n"
-        "• Товары (нефть, золото, серебро)\n"
+        "• Товары (нефть Brent/Urals, золото, серебро)\n"
         "• Фондовые индексы\n"
         "• Уведомления о резких изменениях\n"
         "• Пороговые алерты\n"
-        "• Ежедневная сводка\n\n"
+        "• Ежедневная сводка в 9:00 МСК\n\n"
         "📋 <b>Команды:</b>\n"
         "/start - Главное меню\n"
         "/help - Эта справка\n"
@@ -234,13 +234,25 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/unsubscribe - Отписаться\n"
         "/set_alert - Пороговые алерты\n"
         "/view_alerts - Посмотреть настройки\n\n"
+    )
+    
+    # Добавляем админские команды только для администратора
+    if update.effective_user.id == ADMIN_USER_ID:
+        help_text += (
+            "🔧 <b>Админские команды:</b>\n"
+            "/test_daily - Тестовая ежедневная сводка\n"
+            "/check_subscribers - Статус подписчиков\n\n"
+        )
+    
+    help_text += (
         "🔄 <b>Источники данных:</b>\n"
         "• ЦБ РФ - курсы валют\n"
         "• CoinGecko - криптовалюты\n" 
         "• MOEX - российские акции и индексы\n"
-        "• MetalpriceAPI - драгоценные металлы\n"
-        "• API Ninjas - нефть и товары\n"
-        "• Financial Modeling Prep - международные индексы"
+        "• Gold-API.com - драгоценные металлы\n"
+        "• EIA API - точные цены нефти\n"
+        "• Alpha Vantage - фондовые индексы\n\n"
+        "💡 <b>Совет:</b> Выполните /subscribe чтобы получать ежедневную сводку в 9:00 МСК!"
     )
     
     await update.message.reply_html(help_text)
@@ -669,6 +681,86 @@ async def view_alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
     
     await update.message.reply_html(message)
+
+async def test_daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Тестовая команда для проверки ежедневной сводки (только для админа)"""
+    user_id = update.effective_user.id
+    
+    # Проверяем права администратора
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("🚫 Команда доступна только администратору")
+        return
+    
+    await update.message.reply_text("🧪 Запускаю тестовую ежедневную сводку...")
+    
+    try:
+        # Вызываем функцию ежедневной сводки вручную
+        await daily_summary_job(context)
+        await update.message.reply_text("✅ Тестовая ежедневная сводка завершена! Проверьте логи.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка при выполнении тестовой сводки: {e}")
+        logger.error(f"Ошибка тестовой ежедневной сводки: {e}")
+
+async def check_subscribers_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Проверить статус подписчиков (только для админа)"""
+    user_id = update.effective_user.id
+    
+    # Проверяем права администратора
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("🚫 Команда доступна только администратору")
+        return
+    
+    try:
+        notifications = load_notification_data()
+        
+        if not notifications:
+            await update.message.reply_html(
+                "📋 **СТАТУС ПОДПИСОК**\n\n"
+                "❌ Нет подписчиков\n\n"
+                "💡 Чтобы подписаться на ежедневную сводку, используйте /subscribe"
+            )
+            return
+        
+        message = "📋 **СТАТУС ПОДПИСОК**\n\n"
+        
+        total_users = len(notifications)
+        active_subscribers = 0
+        daily_summary_subscribers = 0
+        
+        for uid, data in notifications.items():
+            if data.get('subscribed', False):
+                active_subscribers += 1
+            if data.get('daily_summary', True) and data.get('subscribed', False):
+                daily_summary_subscribers += 1
+        
+        message += f"👥 **Всего пользователей:** {total_users}\n"
+        message += f"🔔 **Активных подписчиков:** {active_subscribers}\n"
+        message += f"🌅 **Подписано на ежедневную сводку:** {daily_summary_subscribers}\n\n"
+        
+        if daily_summary_subscribers > 0:
+            message += "👤 **Детали подписчиков:**\n"
+            for uid, data in notifications.items():
+                if data.get('subscribed', False) and data.get('daily_summary', True):
+                    alerts_count = len(data.get('alerts', {}))
+                    threshold = data.get('threshold', 2.0)
+                    message += f"├ ID: {uid}\n"
+                    message += f"├ Порог: {threshold}%\n"
+                    message += f"└ Алертов: {alerts_count}\n\n"
+        
+        # Проверяем наличие файла
+        import os
+        file_exists = os.path.exists(NOTIFICATION_DATA_FILE)
+        message += f"💾 **Файл данных:** {'✅ Существует' if file_exists else '❌ Отсутствует'}\n"
+        
+        if file_exists:
+            file_size = os.path.getsize(NOTIFICATION_DATA_FILE)
+            message += f"📏 **Размер файла:** {file_size} байт"
+        
+        await update.message.reply_html(message)
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка проверки подписчиков: {e}")
+        logger.error(f"Ошибка check_subscribers: {e}")
 
 # Функции для получения дополнительных данных
 async def get_commodities_data():
@@ -1113,8 +1205,33 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
 
 async def daily_summary_job(context: ContextTypes.DEFAULT_TYPE):
     """Отправить ежедневную сводку в 9:00 МСК"""
+    logger.info("🌅 Запуск ежедневной сводки...")
+    
     try:
         notifications = load_notification_data()
+        logger.info(f"📋 Загружено уведомлений: {len(notifications)}")
+        
+        if not notifications:
+            logger.warning("⚠️ Нет подписчиков для ежедневной сводки")
+            return
+        
+        # Подсчитываем активных подписчиков
+        active_subscribers = 0
+        for user_id, user_notifications in notifications.items():
+            if not user_notifications.get('subscribed', False):
+                continue
+            if not user_notifications.get('daily_summary', True):
+                continue
+            active_subscribers += 1
+        
+        logger.info(f"📊 Активных подписчиков на ежедневную сводку: {active_subscribers}")
+        
+        if active_subscribers == 0:
+            logger.warning("⚠️ Нет активных подписчиков на ежедневную сводку")
+            return
+            
+        # Получаем актуальные курсы для сводки
+        logger.info("📡 Получаю данные для ежедневной сводки...")
         
         for user_id, user_notifications in notifications.items():
             if not user_notifications.get('subscribed', False):
@@ -1123,21 +1240,42 @@ async def daily_summary_job(context: ContextTypes.DEFAULT_TYPE):
                 continue
             
             try:
-                # Отправляем полный rates
+                logger.info(f"📤 Отправляю сводку пользователю {user_id}")
+                
+                # Отправляем заголовок
                 await context.bot.send_message(
                     chat_id=int(user_id),
-                    text="🌅 <b>ЕЖЕДНЕВНАЯ СВОДКА</b>\n\nПолучаю актуальные курсы...",
-                    parse_mode='HTML'
+                    text="🌅 **ЕЖЕДНЕВНАЯ СВОДКА**\n\n📊 Получаю актуальные курсы финансовых инструментов...",
+                    parse_mode='Markdown'
                 )
                 
-                # Здесь можно вызвать полную функцию rates_command
-                # Пока отправим краткую версию
+                # Создаем fake Update для вызова rates_command
+                # Поскольку rates_command нужен Update объект, создаем минимальный
+                class FakeUpdate:
+                    def __init__(self, user_id):
+                        self.effective_user = type('obj', (object,), {'id': user_id})
+                        self.message = type('obj', (object,), {
+                            'reply_text': lambda text, parse_mode=None: context.bot.send_message(
+                                chat_id=user_id, text=text, parse_mode=parse_mode
+                            )
+                        })
+                
+                fake_update = FakeUpdate(int(user_id))
+                
+                # Вызываем rates_command для получения полной сводки
+                await rates_command(fake_update, context)
+                
+                logger.info(f"✅ Сводка отправлена пользователю {user_id}")
                 
             except Exception as e:
-                logger.error(f"Ошибка отправки ежедневной сводки пользователю {user_id}: {e}")
-                
+                logger.error(f"❌ Ошибка отправки ежедневной сводки пользователю {user_id}: {e}")
+        
+        logger.info(f"🎉 Ежедневная сводка завершена. Отправлено {active_subscribers} пользователям")
+        
     except Exception as e:
-        logger.error(f"Ошибка ежедневной сводки: {e}")
+        logger.error(f"❌ Критическая ошибка ежедневной сводки: {e}")
+        import traceback
+        logger.error(f"📋 Трассировка: {traceback.format_exc()}")
 
 def main() -> None:
     """Запуск бота - продвинутая версия с уведомлениями"""
@@ -1163,6 +1301,8 @@ def main() -> None:
     application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
     application.add_handler(CommandHandler("set_alert", set_alert_command))
     application.add_handler(CommandHandler("view_alerts", view_alerts_command))
+    application.add_handler(CommandHandler("test_daily", test_daily_command))
+    application.add_handler(CommandHandler("check_subscribers", check_subscribers_command))
 
     # Обработчик всех текстовых сообщений (эхо)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
@@ -1182,12 +1322,25 @@ def main() -> None:
         moscow_tz = pytz.timezone('Europe/Moscow')
         daily_time = time(hour=9, minute=0, tzinfo=moscow_tz)
         
+        # Получаем текущее московское время для отладки
+        from datetime import datetime
+        current_moscow_time = datetime.now(moscow_tz)
+        logger.info(f"🕐 Текущее московское время: {current_moscow_time.strftime('%H:%M:%S %d.%m.%Y')}")
+        logger.info(f"📅 Настраиваю ежедневную сводку на: {daily_time.strftime('%H:%M')} МСК")
+        
         job_queue.run_daily(
             daily_summary_job,
             time=daily_time,
             name="daily_summary"
         )
-        logger.info("📅 Настроена ежедневная сводка в 9:00 МСК")
+        logger.info("✅ Ежедневная сводка в 9:00 МСК настроена успешно")
+        
+        # Показываем сколько времени до следующего запуска
+        next_run = current_moscow_time.replace(hour=9, minute=0, second=0, microsecond=0)
+        if current_moscow_time.hour >= 9:
+            next_run = next_run.replace(day=next_run.day + 1)
+        time_until = next_run - current_moscow_time
+        logger.info(f"⏰ До следующей ежедневной сводки: {time_until}")
     else:
         logger.warning("⚠️ JobQueue недоступен - уведомления отключены")
 
