@@ -2460,7 +2460,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         # Заголовок
         current_time = get_moscow_time().strftime("%d.%m.%Y %H:%M")
-        title = Paragraph(f"📊 ФИНАНСОВЫЙ ОТЧЕТ<br/>от {current_time}", title_style)
+        title = Paragraph(f"<b>ФИНАНСОВЫЙ ОТЧЕТ</b><br/>от {current_time}", title_style)
         story.append(title)
         story.append(Spacer(1, 20))
         
@@ -2497,11 +2497,11 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Создаем таблицы данных
         
         # Валюты
-        currencies_heading = Paragraph("🏛️ КУРСЫ ВАЛЮТ", heading_style)
+        currencies_heading = Paragraph("<b>КУРСЫ ВАЛЮТ</b>", heading_style)
         story.append(currencies_heading)
         
         currency_data = [
-            ['Валюта', 'Курс (₽)', 'Изменение'],
+            ['Валюта', 'Курс (₽)', 'Источник'],
             ['USD', f"{format_price(usd_rate)}", 'ЦБ РФ'],
             ['EUR', f"{format_price(eur_rate)}", 'ЦБ РФ'],
             ['CNY', f"{format_price(cny_rate)}", 'ЦБ РФ'],
@@ -2523,7 +2523,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         story.append(Spacer(1, 20))
         
         # Криптовалюты
-        crypto_heading = Paragraph("💎 КРИПТОВАЛЮТЫ", heading_style)
+        crypto_heading = Paragraph("<b>КРИПТОВАЛЮТЫ</b>", heading_style)
         story.append(crypto_heading)
         
         crypto_names = {
@@ -2561,7 +2561,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         # Индексы
         if indices_data:
-            indices_heading = Paragraph("📊 ФОНДОВЫЕ ИНДЕКСЫ", heading_style)
+            indices_heading = Paragraph("<b>ФОНДОВЫЕ ИНДЕКСЫ</b>", heading_style)
             story.append(indices_heading)
             
             indices_data_table = [['Индекс', 'Значение', 'Изменение']]
@@ -2587,7 +2587,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             story.append(Spacer(1, 20))
         
         # Источники данных
-        sources_heading = Paragraph("📡 ИСТОЧНИКИ ДАННЫХ", heading_style)
+        sources_heading = Paragraph("<b>ИСТОЧНИКИ ДАННЫХ</b>", heading_style)
         story.append(sources_heading)
         
         sources_text = """
