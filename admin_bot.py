@@ -70,6 +70,14 @@ async def get_moex_stocks():
     """Получить данные акций с Московской биржи"""
     stocks_data = {}
     
+    # Проверяем, является ли сегодня торговым днем
+    from datetime import datetime
+    moscow_tz = pytz.timezone('Europe/Moscow')
+    current_moscow = datetime.now(moscow_tz)
+    is_weekend = current_moscow.weekday() >= 5  # 5=суббота, 6=воскресенье
+    
+    logger.info(f"📅 Проверка торговых дней для акций: {'Выходной' if is_weekend else 'Торговый день'}")
+    
     # Список акций для мониторинга
     stocks = {
         # Основные российские акции
@@ -87,6 +95,21 @@ async def get_moex_stocks():
         'PIKK': {'name': 'ПИК', 'emoji': '🏗️'},
         'SMLT': {'name': 'Самолёт', 'emoji': '✈️'}
     }
+    
+    # Если выходной день, возвращаем пустые данные с пометкой
+    if is_weekend:
+        logger.info("📅 Выходной день - торги на MOEX закрыты")
+        for ticker, info in stocks.items():
+            stocks_data[ticker] = {
+                'name': info['name'],
+                'emoji': info['emoji'],
+                'price': None,
+                'change': 0,
+                'change_pct': 0,
+                'is_live': False,
+                'note': 'Торги закрыты'
+            }
+        return stocks_data
     
     try:
         async with aiohttp.ClientSession() as session:
@@ -473,24 +496,47 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             'ROSN': 'Роснефть', 'LKOH': 'ЛУКОЙЛ', 'MTSS': 'МТС', 'MFON': 'Мегафон'
         }
         stock_items = list(stock_names.keys())
-        for i, ticker in enumerate(stock_items):
-            if ticker in stocks_data and stocks_data[ticker].get('price'):
-                name = stock_names[ticker]
-                price = stocks_data[ticker]['price']
-                prefix = "├" if i < len(stock_items) - 1 else "└"
-                message += f"{prefix} {name}: **{format_price(price)} ₽**\n"
+        
+        # Проверяем, есть ли живые данные
+        has_live_data = any(
+            stocks_data.get(ticker, {}).get('price') is not None 
+            for ticker in stock_items
+        )
+        
+        if has_live_data:
+            for i, ticker in enumerate(stock_items):
+                if ticker in stocks_data and stocks_data[ticker].get('price'):
+                    name = stock_names[ticker]
+                    price = stocks_data[ticker]['price']
+                    is_live = stocks_data[ticker].get('is_live', True)
+                    status_icon = "🟢" if is_live else "🟡"
+                    prefix = "├" if i < len(stock_items) - 1 else "└"
+                    message += f"{prefix} {status_icon} {name}: **{format_price(price)} ₽**\n"
+        else:
+            message += "🔴 **Торги закрыты** (выходной день)\n"
         message += "\n"
         
         # Недвижимость
         message += "🏠 **НЕДВИЖИМОСТЬ:**\n"
         real_estate_tickers = ['PIKK', 'SMLT']
         real_estate_names = {'PIKK': 'ПИК', 'SMLT': 'Самолёт'}
-        for i, ticker in enumerate(real_estate_tickers):
-            if ticker in stocks_data and stocks_data[ticker].get('price'):
-                name = real_estate_names[ticker]
-                price = stocks_data[ticker]['price']
-                prefix = "├" if i < len(real_estate_tickers) - 1 else "└"
-                message += f"{prefix} {name}: **{format_price(price)} ₽**\n"
+        
+        has_real_estate_data = any(
+            stocks_data.get(ticker, {}).get('price') is not None 
+            for ticker in real_estate_tickers
+        )
+        
+        if has_real_estate_data:
+            for i, ticker in enumerate(real_estate_tickers):
+                if ticker in stocks_data and stocks_data[ticker].get('price'):
+                    name = real_estate_names[ticker]
+                    price = stocks_data[ticker]['price']
+                    is_live = stocks_data[ticker].get('is_live', True)
+                    status_icon = "🟢" if is_live else "🟡"
+                    prefix = "├" if i < len(real_estate_tickers) - 1 else "└"
+                    message += f"{prefix} {status_icon} {name}: **{format_price(price)} ₽**\n"
+        else:
+            message += "🔴 **Торги закрыты** (выходной день)\n"
         message += "\n"
         
         # Товары 
@@ -526,9 +572,18 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 name = indices_data[index]['name']
                 price = indices_data[index]['price']
                 change = indices_data[index].get('change_pct', 0)
+                is_live = indices_data[index].get('is_live', True)
+                note = indices_data[index].get('note', '')
+                
                 prefix = "├" if i < len(index_items) - 1 else "└"
-                change_str = f"({change:+.2f}%)" if change != 0 else ""
-                message += f"{prefix} {name}: **{format_price(price)}** {change_str}\n"
+                
+                if price is not None:
+                    change_str = f"({change:+.2f}%)" if change != 0 else ""
+                    status_icon = "🟢" if is_live else "🟡"
+                    note_str = f" ({note})" if note else ""
+                    message += f"{prefix} {status_icon} {name}: **{format_price(price)}** {change_str}{note_str}\n"
+                else:
+                    message += f"{prefix} 🔴 {name}: **Торги закрыты**\n"
         message += "\n"
         
         # Время и источники
@@ -941,78 +996,104 @@ async def get_commodities_data():
     return commodities_data
 
 async def get_indices_data():
-    """Получить данные по индексам: IMOEX, RTS, S&P 500"""
+    """Получить данные по индексам: IMOEX, RTS, S&P 500 с учетом торговых дней"""
     indices_data = {}
     
+    # Проверяем, является ли сегодня торговым днем
+    from datetime import datetime
+    moscow_tz = pytz.timezone('Europe/Moscow')
+    current_moscow = datetime.now(moscow_tz)
+    is_weekend = current_moscow.weekday() >= 5  # 5=суббота, 6=воскресенье
+    
+    logger.info(f"📅 Текущее время МСК: {current_moscow.strftime('%H:%M:%S %d.%m.%Y')}")
+    logger.info(f"📅 Выходной день: {'Да' if is_weekend else 'Нет'}")
+    
     try:
-        # 1. Российские индексы через MOEX (работает стабильно)
-        logger.info("📊 Запрашиваю российские индексы с MOEX...")
-        async with aiohttp.ClientSession() as session:
-            # IMOEX
-            imoex_url = "https://iss.moex.com/iss/engines/stock/markets/index/securities/IMOEX.json"
-            logger.info(f"📈 Запрашиваю IMOEX: {imoex_url}")
-            async with session.get(imoex_url) as resp:
-                logger.info(f"📊 IMOEX статус: {resp.status}")
-                if resp.status == 200:
-                    data = await resp.json()
-                    logger.info(f"📊 IMOEX структура данных: {list(data.keys()) if isinstance(data, dict) else 'не dict'}")
-                    
-                    if 'marketdata' in data and 'data' in data['marketdata'] and len(data['marketdata']['data']) > 0:
-                        logger.info(f"📊 IMOEX marketdata найден, строк: {len(data['marketdata']['data'])}")
-                        logger.info(f"📊 IMOEX колонки: {data['marketdata']['columns']}")
-                        logger.info(f"📊 IMOEX первая строка: {data['marketdata']['data'][0]}")
+        # 1. Российские индексы через MOEX (только в торговые дни)
+        if not is_weekend:
+            logger.info("📊 Запрашиваю российские индексы с MOEX (торговый день)...")
+            async with aiohttp.ClientSession() as session:
+                # IMOEX
+                imoex_url = "https://iss.moex.com/iss/engines/stock/markets/index/securities/IMOEX.json"
+                logger.info(f"📈 Запрашиваю IMOEX: {imoex_url}")
+                async with session.get(imoex_url) as resp:
+                    logger.info(f"📊 IMOEX статус: {resp.status}")
+                    if resp.status == 200:
+                        data = await resp.json()
                         
-                        row_data = dict(zip(data['marketdata']['columns'], data['marketdata']['data'][0]))
-                        logger.info(f"📊 IMOEX распарсенные данные: {row_data}")
-                        
-                        if 'LASTVALUE' in row_data and row_data['LASTVALUE']:
-                            indices_data['imoex'] = {
-                                'name': 'IMOEX',
-                                'price': row_data['LASTVALUE'],
-                                'change_pct': row_data.get('LASTCHANGEPRC', 0)
-                            }
-                            logger.info(f"✅ IMOEX получен: {row_data['LASTVALUE']}")
+                        if 'marketdata' in data and 'data' in data['marketdata'] and len(data['marketdata']['data']) > 0:
+                            row_data = dict(zip(data['marketdata']['columns'], data['marketdata']['data'][0]))
+                            
+                            if 'LASTVALUE' in row_data and row_data['LASTVALUE']:
+                                # Проверяем время последнего обновления
+                                update_time = row_data.get('UPDATETIME', '')
+                                logger.info(f"📊 IMOEX время обновления: {update_time}")
+                                
+                                indices_data['imoex'] = {
+                                    'name': 'IMOEX',
+                                    'price': row_data['LASTVALUE'],
+                                    'change_pct': row_data.get('LASTCHANGEPRC', 0),
+                                    'update_time': update_time,
+                                    'is_live': True
+                                }
+                                logger.info(f"✅ IMOEX получен: {row_data['LASTVALUE']}")
+                            else:
+                                logger.warning(f"❌ IMOEX: нет LASTVALUE или LASTVALUE пустой")
                         else:
-                            logger.warning(f"❌ IMOEX: нет LASTVALUE или LASTVALUE пустой: {row_data.get('LASTVALUE')}")
+                            logger.warning("❌ IMOEX: нет marketdata или данных")
                     else:
-                        logger.warning("❌ IMOEX: нет marketdata или данных")
-                else:
-                    response_text = await resp.text()
-                    logger.error(f"❌ IMOEX ошибка {resp.status}: {response_text[:200]}...")
-            
-            # RTS
-            rts_url = "https://iss.moex.com/iss/engines/stock/markets/index/securities/RTSI.json"
-            logger.info(f"📈 Запрашиваю RTS: {rts_url}")
-            async with session.get(rts_url) as resp:
-                logger.info(f"📊 RTS статус: {resp.status}")
-                if resp.status == 200:
-                    data = await resp.json()
-                    logger.info(f"📊 RTS структура данных: {list(data.keys()) if isinstance(data, dict) else 'не dict'}")
-                    
-                    if 'marketdata' in data and 'data' in data['marketdata'] and len(data['marketdata']['data']) > 0:
-                        logger.info(f"📊 RTS marketdata найден, строк: {len(data['marketdata']['data'])}")
-                        logger.info(f"📊 RTS колонки: {data['marketdata']['columns']}")
-                        logger.info(f"📊 RTS первая строка: {data['marketdata']['data'][0]}")
+                        response_text = await resp.text()
+                        logger.error(f"❌ IMOEX ошибка {resp.status}: {response_text[:200]}...")
+                
+                # RTS
+                rts_url = "https://iss.moex.com/iss/engines/stock/markets/index/securities/RTSI.json"
+                logger.info(f"📈 Запрашиваю RTS: {rts_url}")
+                async with session.get(rts_url) as resp:
+                    logger.info(f"📊 RTS статус: {resp.status}")
+                    if resp.status == 200:
+                        data = await resp.json()
                         
-                        row_data = dict(zip(data['marketdata']['columns'], data['marketdata']['data'][0]))
-                        logger.info(f"📊 RTS распарсенные данные: {row_data}")
-                        
-                        if 'LASTVALUE' in row_data and row_data['LASTVALUE']:
-                            indices_data['rts'] = {
-                                'name': 'RTS',
-                                'price': row_data['LASTVALUE'],
-                                'change_pct': row_data.get('LASTCHANGEPRC', 0)
-                            }
-                            logger.info(f"✅ RTS получен: {row_data['LASTVALUE']}")
+                        if 'marketdata' in data and 'data' in data['marketdata'] and len(data['marketdata']['data']) > 0:
+                            row_data = dict(zip(data['marketdata']['columns'], data['marketdata']['data'][0]))
+                            
+                            if 'LASTVALUE' in row_data and row_data['LASTVALUE']:
+                                update_time = row_data.get('UPDATETIME', '')
+                                logger.info(f"📊 RTS время обновления: {update_time}")
+                                
+                                indices_data['rts'] = {
+                                    'name': 'RTS',
+                                    'price': row_data['LASTVALUE'],
+                                    'change_pct': row_data.get('LASTCHANGEPRC', 0),
+                                    'update_time': update_time,
+                                    'is_live': True
+                                }
+                                logger.info(f"✅ RTS получен: {row_data['LASTVALUE']}")
+                            else:
+                                logger.warning(f"❌ RTS: нет LASTVALUE или LASTVALUE пустой")
                         else:
-                            logger.warning(f"❌ RTS: нет LASTVALUE или LASTVALUE пустой: {row_data.get('LASTVALUE')}")
+                            logger.warning("❌ RTS: нет marketdata или данных")
                     else:
-                        logger.warning("❌ RTS: нет marketdata или данных")
-                else:
-                    response_text = await resp.text() 
-                    logger.error(f"❌ RTS ошибка {resp.status}: {response_text[:200]}...")
+                        response_text = await resp.text() 
+                        logger.error(f"❌ RTS ошибка {resp.status}: {response_text[:200]}...")
+        else:
+            logger.info("📅 Выходной день - российские индексы недоступны (торги закрыты)")
+            # Можно добавить устаревшие данные из кэша или альтернативных источников
+            indices_data['imoex'] = {
+                'name': 'IMOEX',
+                'price': None,
+                'change_pct': 0,
+                'is_live': False,
+                'note': 'Торги закрыты'
+            }
+            indices_data['rts'] = {
+                'name': 'RTS', 
+                'price': None,
+                'change_pct': 0,
+                'is_live': False,
+                'note': 'Торги закрыты'
+            }
         
-        # 2. S&P 500 через Financial Modeling Prep (бесплатно)
+        # 2. S&P 500 через Financial Modeling Prep (работает 24/7)
         logger.info(f"📈 Запрашиваю S&P 500 с FMP, ключ: {FMP_API_KEY[:10]}...")
         sp500_response = requests.get(
             f"https://financialmodelingprep.com/api/v3/quote/%5EGSPC?apikey={FMP_API_KEY}",
@@ -1022,7 +1103,6 @@ async def get_indices_data():
         
         if sp500_response.status_code == 200:
             sp500_data = sp500_response.json()
-            logger.info(f"📊 FMP ответ: {sp500_data}")
             
             if isinstance(sp500_data, list) and len(sp500_data) > 0:
                 sp500_info = sp500_data[0]
@@ -1030,7 +1110,8 @@ async def get_indices_data():
                     indices_data['sp500'] = {
                         'name': 'S&P 500',
                         'price': sp500_info['price'],
-                        'change_pct': sp500_info.get('changesPercentage', 0)
+                        'change_pct': sp500_info.get('changesPercentage', 0),
+                        'is_live': True
                     }
                     logger.info(f"✅ S&P 500 получен: {sp500_info['price']}")
                 else:
@@ -1052,7 +1133,6 @@ async def get_indices_data():
                 
                 if alpha_response.status_code == 200:
                     alpha_data = alpha_response.json()
-                    logger.info(f"📊 Alpha Vantage ответ: {alpha_data}")
                     
                     if 'Global Quote' in alpha_data:
                         quote = alpha_data['Global Quote']
@@ -1062,7 +1142,8 @@ async def get_indices_data():
                             indices_data['sp500'] = {
                                 'name': 'S&P 500 (SPY)',
                                 'price': price,
-                                'change_pct': change_pct
+                                'change_pct': change_pct,
+                                'is_live': True
                             }
                             logger.info(f"✅ S&P 500 из Alpha Vantage: {price}")
                         else:
@@ -1074,7 +1155,7 @@ async def get_indices_data():
             except Exception as fallback_e:
                 logger.error(f"❌ Alpha Vantage fallback ошибка: {fallback_e}")
                     
-        # Fallback: если S&P 500 не получен, логируем предупреждение (Alpha Vantage должен работать)
+        # Fallback: если S&P 500 не получен, логируем предупреждение
         if 'sp500' not in indices_data:
             logger.warning("⚠️ S&P 500 недоступен даже из Alpha Vantage - проверьте ключ API")
                     
