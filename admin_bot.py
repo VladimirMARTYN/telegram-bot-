@@ -6,7 +6,7 @@ import os
 import asyncio
 from datetime import datetime, time
 import pytz
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, JobQueue
 import json
 import aiohttp
@@ -2275,6 +2275,9 @@ def main() -> None:
 
     # Обработчик всех текстовых сообщений (эхо)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+    
+    # Настройка команд для автодополнения
+    setup_bot_commands(application)
 
     # Настройка периодических задач
     if job_queue:
@@ -2561,58 +2564,62 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         doc = SimpleDocTemplate(buffer, pagesize=A4)
         story = []
         
-        # Создаем стили с базовыми шрифтами
+        # Создаем стили с поддержкой русского языка
         styles = getSampleStyleSheet()
         
         # Стиль для заголовка
         title_style = ParagraphStyle(
             'CustomTitle',
             parent=styles['Heading1'],
-            fontSize=20,
-            spaceAfter=25,
+            fontSize=18,
+            spaceAfter=20,
             alignment=1,  # Центр
             textColor=colors.darkblue,
-            fontName='Helvetica-Bold'
+            fontName='Helvetica-Bold',
+            encoding='utf-8'
         )
         
         # Стиль для подзаголовков
         heading_style = ParagraphStyle(
             'CustomHeading',
             parent=styles['Heading2'],
-            fontSize=14,
-            spaceAfter=12,
-            spaceBefore=20,
+            fontSize=12,
+            spaceAfter=10,
+            spaceBefore=15,
             textColor=colors.darkgreen,
-            fontName='Helvetica-Bold'
+            fontName='Helvetica-Bold',
+            encoding='utf-8'
         )
         
         # Стиль для обычного текста
         normal_style = ParagraphStyle(
             'CustomNormal',
             parent=styles['Normal'],
-            fontSize=10,
-            spaceAfter=6,
-            fontName='Helvetica'
+            fontSize=9,
+            spaceAfter=5,
+            fontName='Helvetica',
+            encoding='utf-8'
         )
         
         # Стиль для информации
         info_style = ParagraphStyle(
             'CustomInfo',
             parent=styles['Normal'],
-            fontSize=9,
+            fontSize=8,
             spaceAfter=3,
             textColor=colors.grey,
-            fontName='Helvetica'
+            fontName='Helvetica',
+            encoding='utf-8'
         )
         
         # Заголовок отчета
         current_time = get_moscow_time().strftime("%d.%m.%Y %H:%M")
-        title = Paragraph(f"<b>ФИНАНСОВЫЙ ОТЧЕТ</b><br/>от {current_time}", title_style)
+        title = Paragraph(f"<b>FINANCIAL REPORT</b><br/>from {current_time}", title_style)
         story.append(title)
         
         # Информация о боте
         bot_info = Paragraph(
-            "Финансовый бот - актуальные данные по валютам, криптовалютам, акциям и индексам", 
+            "Financial Bot - current data on currencies, cryptocurrencies, stocks and indices", 
             info_style
         )
         story.append(bot_info)
@@ -2674,30 +2681,30 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Создаем разделы отчета
         
         # 1. КУРСЫ ВАЛЮТ
-        currencies_heading = Paragraph("<b>КУРСЫ ВАЛЮТ</b>", heading_style)
+        currencies_heading = Paragraph("<b>CURRENCY RATES</b>", heading_style)
         story.append(currencies_heading)
         
         currency_data = [
-            ['Валюта', 'Курс (RUB)', 'Источник', 'Статус']
+            ['Currency', 'Rate (RUB)', 'Source', 'Status']
         ]
         
         # Добавляем валюты
         currencies = [
-            ('USD', usd_rate, 'ЦБ РФ'),
-            ('EUR', eur_rate, 'ЦБ РФ'),
-            ('CNY', cny_rate, 'ЦБ РФ'),
-            ('GBP', gbp_rate, 'ЦБ РФ')
+            ('USD', usd_rate, 'CBR'),
+            ('EUR', eur_rate, 'CBR'),
+            ('CNY', cny_rate, 'CBR'),
+            ('GBP', gbp_rate, 'CBR')
         ]
         
         for currency, rate, source in currencies:
             if rate and rate > 0:
-                status = "Актуально"
+                status = "Active"
                 if currency == 'USD' and forex_usd_rub:
                     diff = forex_usd_rub - rate
                     diff_pct = (diff / rate) * 100
                     status = f"FOREX: {forex_usd_rub:.2f}RUB ({diff:+.2f}, {diff_pct:+.2f}%)"
             else:
-                status = "Нет данных"
+                status = "No data"
             
             currency_data.append([currency, f"{format_price(rate)}", source, status])
         
@@ -2707,8 +2714,8 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 10),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('FONTSIZE', (0, 0), (-1, 0), 9),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
             ('BACKGROUND', (0, 1), (-1, -1), colors.lightblue),
             ('GRID', (0, 0), (-1, -1), 1, colors.black),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -2717,7 +2724,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         story.append(Spacer(1, 15))
         
         # 2. КРИПТОВАЛЮТЫ
-        crypto_heading = Paragraph("<b>КРИПТОВАЛЮТЫ</b>", heading_style)
+        crypto_heading = Paragraph("<b>CRYPTOCURRENCIES</b>", heading_style)
         story.append(crypto_heading)
         
         crypto_names = {
@@ -2731,7 +2738,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             'tether': 'Tether'
         }
         
-        crypto_data = [['Криптовалюта', 'Цена (USD)', 'Изменение 24ч', 'Статус']]
+        crypto_data = [['Cryptocurrency', 'Price (USD)', '24h Change', 'Status']]
         
         for crypto_id, crypto_name in crypto_names.items():
             if crypto_id in crypto_data:
@@ -2739,13 +2746,13 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 change = crypto_data[crypto_id].get('usd_24h_change', 0)
                 
                 if price and price > 0:
-                    change_str = f"{change:+.2f}%" if change is not None else "Н/Д"
+                    change_str = f"{change:+.2f}%" if change is not None else "N/A"
                     if change and change > 0:
-                        status = "Рост"
+                        status = "Up"
                     elif change and change < 0:
-                        status = "Падение"
+                        status = "Down"
                     else:
-                        status = "Без изменений"
+                        status = "No change"
                     
                     crypto_data.append([crypto_name, f"${format_price(price)}", change_str, status])
         
@@ -2756,25 +2763,25 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 10),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('FONTSIZE', (0, 0), (-1, 0), 9),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.lightgreen),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ]))
             story.append(crypto_table)
         else:
-            no_data = Paragraph("Данные по криптовалютам временно недоступны", normal_style)
+            no_data = Paragraph("Cryptocurrency data temporarily unavailable", normal_style)
             story.append(no_data)
         
         story.append(Spacer(1, 15))
         
         # 3. ФОНДОВЫЕ ИНДЕКСЫ
         if indices_data:
-            indices_heading = Paragraph("<b>ФОНДОВЫЕ ИНДЕКСЫ</b>", heading_style)
+            indices_heading = Paragraph("<b>STOCK INDICES</b>", heading_style)
             story.append(indices_heading)
             
-            indices_data_table = [['Индекс', 'Значение', 'Изменение', 'Статус']]
+            indices_data_table = [['Index', 'Value', 'Change', 'Status']]
             
             for index_id, index_info in indices_data.items():
                 name = index_info.get('name', index_id.upper())
@@ -2785,9 +2792,9 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 if price and price > 0:
                     change_str = f"{change:+.2f}%" if change != 0 else "0.00%"
                     if is_live:
-                        status = "Торги открыты"
+                        status = "Trading open"
                     else:
-                        status = "Торги закрыты"
+                        status = "Trading closed"
                     
                     indices_data_table.append([name, str(price), change_str, status])
             
@@ -2798,8 +2805,8 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                     ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                     ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, 0), 10),
-                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('FONTSIZE', (0, 0), (-1, 0), 9),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
                     ('BACKGROUND', (0, 1), (-1, -1), colors.lightcoral),
                     ('GRID', (0, 0), (-1, -1), 1, colors.black),
                     ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -2810,14 +2817,14 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         # 4. ДРАГОЦЕННЫЕ МЕТАЛЛЫ
         if commodities_data:
-            metals_heading = Paragraph("<b>ДРАГОЦЕННЫЕ МЕТАЛЛЫ</b>", heading_style)
+            metals_heading = Paragraph("<b>PRECIOUS METALS</b>", heading_style)
             story.append(metals_heading)
             
-            metals_data = [['Металл', 'Цена (USD)', 'Цена (RUB)', 'Статус']]
+            metals_data = [['Metal', 'Price (USD)', 'Price (RUB)', 'Status']]
             
             metals = {
-                'gold': ('Золото', 'XAU'),
-                'silver': ('Серебро', 'XAG')
+                'gold': ('Gold', 'XAU'),
+                'silver': ('Silver', 'XAG')
             }
             
             for metal_id, (metal_name, symbol) in metals.items():
@@ -2830,7 +2837,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             metal_name,
                             f"${format_price(price_usd)}",
                             f"{format_price(price_rub)} RUB",
-                            "Актуально"
+                            "Active"
                         ])
             
             if len(metals_data) > 1:
@@ -2840,8 +2847,8 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                     ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                     ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, 0), 10),
-                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('FONTSIZE', (0, 0), (-1, 0), 9),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
                     ('BACKGROUND', (0, 1), (-1, -1), colors.lightyellow),
                     ('GRID', (0, 0), (-1, -1), 1, colors.black),
                     ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -2851,17 +2858,17 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         story.append(Spacer(1, 20))
         
         # 5. ИСТОЧНИКИ ДАННЫХ
-        sources_heading = Paragraph("<b>ИСТОЧНИКИ ДАННЫХ</b>", heading_style)
+        sources_heading = Paragraph("<b>DATA SOURCES</b>", heading_style)
         story.append(sources_heading)
         
         sources_data = [
-            ['Источник', 'Данные', 'Статус'],
-            ['ЦБ РФ', 'Курсы валют', 'Активен'],
-            ['CoinGecko', 'Криптовалюты', 'Активен'],
-            ['MOEX', 'Российские индексы и акции', 'Активен'],
-            ['Gold-API', 'Драгоценные металлы', 'Активен'],
-            ['Alpha Vantage', 'Международные данные', 'Демо-ключ'],
-            ['FOREX', 'Межбанковские курсы', 'Активен']
+            ['Source', 'Data', 'Status'],
+            ['CBR', 'Currency rates', 'Active'],
+            ['CoinGecko', 'Cryptocurrencies', 'Active'],
+            ['MOEX', 'Russian indices and stocks', 'Active'],
+            ['Gold-API', 'Precious metals', 'Active'],
+            ['Alpha Vantage', 'International data', 'Demo key'],
+            ['FOREX', 'Interbank rates', 'Active']
         ]
         
         sources_table = Table(sources_data, colWidths=[2*inch, 3*inch, 1*inch])
@@ -2870,8 +2877,8 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 10),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('FONTSIZE', (0, 0), (-1, 0), 9),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
             ('BACKGROUND', (0, 1), (-1, -1), colors.lightgrey),
             ('GRID', (0, 0), (-1, -1), 1, colors.black),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -2882,9 +2889,9 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         # 6. ФУТЕР
         footer_text = f"""
-        <b>Отчет сгенерирован:</b> {current_time}<br/>
-        <b>Финансовый бот</b> - ваш помощник в мире финансов<br/>
-        <i>Данные обновляются в реальном времени</i>
+        <b>Report generated:</b> {current_time}<br/>
+        <b>Financial Bot</b> - your assistant in the world of finance<br/>
+        <i>Data updates in real time</i>
         """
         footer = Paragraph(footer_text, info_style)
         story.append(footer)
@@ -2898,14 +2905,39 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             chat_id=update.effective_chat.id,
             document=buffer,
             filename=f"financial_report_{current_time.replace(' ', '_').replace(':', '-')}.pdf",
-            caption="📊 Ваш красивый финансовый отчет готов! 🎨"
+            caption="📊 Your beautiful financial report is ready! 🎨"
         )
         
-        await update.message.reply_text("✅ Красивый PDF отчет успешно создан и отправлен!")
+        await update.message.reply_text("✅ Beautiful PDF report successfully created and sent!")
         
     except Exception as e:
         logger.error(f"Ошибка создания PDF: {e}")
         await update.message.reply_text(f"❌ Ошибка создания PDF: {str(e)}")
+
+def setup_bot_commands(application):
+    """Настройка команд бота для автодополнения в Telegram"""
+    from telegram import BotCommand
+    
+    # Список команд для обычных пользователей
+    commands = [
+        BotCommand("start", "Запустить бота"),
+        BotCommand("help", "Справка по командам"),
+        BotCommand("rates", "Курсы валют и индексы"),
+        BotCommand("ping", "Проверка работы бота"),
+        BotCommand("subscribe", "Подписаться на уведомления"),
+        BotCommand("unsubscribe", "Отписаться от уведомлений"),
+        BotCommand("set_alert", "Установить алерт"),
+        BotCommand("view_alerts", "Просмотр алертов"),
+        BotCommand("settings", "Меню настроек"),
+        BotCommand("export_pdf", "Экспорт в PDF")
+    ]
+    
+    try:
+        # Устанавливаем команды для бота
+        application.bot.set_my_commands(commands)
+        logger.info("✅ Команды бота настроены для автодополнения")
+    except Exception as e:
+        logger.error(f"❌ Ошибка настройки команд: {e}")
 
 async def command_suggestions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывать доступные команды при вводе '/'"""
