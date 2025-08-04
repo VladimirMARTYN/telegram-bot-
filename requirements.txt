@@ -8,4 +8,5 @@ aiohttp==3.9.1
 pillow==10.3.0
 qrcode==7.4.2
 pytz==2023.3
-schedule==1.2.2 
+schedule==1.2.2
+reportlab==4.4.3 

@@ -12,12 +12,26 @@ import json
 import aiohttp
 import requests
 import threading
-from reportlab.lib.pagesizes import letter, A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.lib import colors
-from reportlab.pdfgen import canvas
+
+# Безопасный импорт reportlab (может отсутствовать)
+try:
+    from reportlab.lib.pagesizes import letter, A4
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+    from reportlab.pdfgen import canvas
+    REPORTLAB_AVAILABLE = True
+except ImportError:
+    REPORTLAB_AVAILABLE = False
+    # Создаем заглушки для типов
+    letter = A4 = None
+    SimpleDocTemplate = Paragraph = Spacer = Table = TableStyle = None
+    getSampleStyleSheet = ParagraphStyle = None
+    inch = None
+    colors = None
+    canvas = None
+
 import io
 
 # Безопасный импорт schedule (может отсутствовать)
@@ -2406,6 +2420,16 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Проверяем права администратора
     if str(user_id) != os.getenv('ADMIN_USER_ID'):
         await update.message.reply_text("❌ Эта команда доступна только администратору.")
+        return
+    
+    # Проверяем доступность reportlab
+    if not REPORTLAB_AVAILABLE:
+        await update.message.reply_text(
+            "❌ Функция экспорта PDF недоступна.\n\n"
+            "Причина: библиотека reportlab не установлена.\n\n"
+            "Для установки выполните:\n"
+            "`pip install reportlab`"
+        )
         return
     
     await update.message.reply_text("📊 Создаю PDF отчет...")
