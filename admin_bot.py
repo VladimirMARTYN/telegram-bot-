@@ -334,7 +334,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # 2. Расширенные курсы криптовалют CoinGecko
         try:
             crypto_response = requests.get(
-                "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,the-open-network,ripple,cardano,solana,dogecoin&vs_currencies=usd",
+                "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,the-open-network,ripple,cardano,solana,dogecoin&vs_currencies=usd&include_24hr_change=true",
                 timeout=10
             )
             crypto_response.raise_for_status()
@@ -355,63 +355,91 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             # Bitcoin
             if isinstance(bitcoin_price, (int, float)) and usd_to_rub_rate > 0:
                 btc_rub = bitcoin_price * usd_to_rub_rate
-                crypto_strings['bitcoin'] = f"Bitcoin: ${format_price(bitcoin_price, 0)} ({format_price(btc_rub, 0)} ₽)"
+                btc_change = crypto_data.get('bitcoin', {}).get('usd_24h_change', 0)
+                change_str = f" ({btc_change:+.2f}% за 24ч)" if btc_change is not None and btc_change != 0 else ""
+                crypto_strings['bitcoin'] = f"Bitcoin: ${format_price(bitcoin_price, 0)} ({format_price(btc_rub, 0)} ₽){change_str}"
             elif isinstance(bitcoin_price, (int, float)):
-                crypto_strings['bitcoin'] = f"Bitcoin: ${format_price(bitcoin_price, 0)}"
+                btc_change = crypto_data.get('bitcoin', {}).get('usd_24h_change', 0)
+                change_str = f" ({btc_change:+.2f}% за 24ч)" if btc_change is not None and btc_change != 0 else ""
+                crypto_strings['bitcoin'] = f"Bitcoin: ${format_price(bitcoin_price, 0)}{change_str}"
             else:
                 crypto_strings['bitcoin'] = "Bitcoin: ❌ Н/Д"
                 
             # Ethereum
             if isinstance(ethereum_price, (int, float)) and usd_to_rub_rate > 0:
                 eth_rub = ethereum_price * usd_to_rub_rate
-                crypto_strings['ethereum'] = f"Ethereum: ${format_price(ethereum_price, 0)} ({format_price(eth_rub, 0)} ₽)"
+                eth_change = crypto_data.get('ethereum', {}).get('usd_24h_change', 0)
+                change_str = f" ({eth_change:+.2f}% за 24ч)" if eth_change is not None and eth_change != 0 else ""
+                crypto_strings['ethereum'] = f"Ethereum: ${format_price(ethereum_price, 0)} ({format_price(eth_rub, 0)} ₽){change_str}"
             elif isinstance(ethereum_price, (int, float)):
-                crypto_strings['ethereum'] = f"Ethereum: ${format_price(ethereum_price, 0)}"
+                eth_change = crypto_data.get('ethereum', {}).get('usd_24h_change', 0)
+                change_str = f" ({eth_change:+.2f}% за 24ч)" if eth_change is not None and eth_change != 0 else ""
+                crypto_strings['ethereum'] = f"Ethereum: ${format_price(ethereum_price, 0)}{change_str}"
             else:
                 crypto_strings['ethereum'] = "Ethereum: ❌ Н/Д"
                 
             # TON
             if isinstance(ton_price, (int, float)) and usd_to_rub_rate > 0:
                 ton_rub = ton_price * usd_to_rub_rate
-                crypto_strings['ton'] = f"TON: ${format_price(ton_price)} ({format_price(ton_rub)} ₽)"
+                ton_change = crypto_data.get('the-open-network', {}).get('usd_24h_change', 0)
+                change_str = f" ({ton_change:+.2f}% за 24ч)" if ton_change is not None and ton_change != 0 else ""
+                crypto_strings['ton'] = f"TON: ${format_price(ton_price)} ({format_price(ton_rub)} ₽){change_str}"
             elif isinstance(ton_price, (int, float)):
-                crypto_strings['ton'] = f"TON: ${format_price(ton_price)}"
+                ton_change = crypto_data.get('the-open-network', {}).get('usd_24h_change', 0)
+                change_str = f" ({ton_change:+.2f}% за 24ч)" if ton_change is not None and ton_change != 0 else ""
+                crypto_strings['ton'] = f"TON: ${format_price(ton_price)}{change_str}"
             else:
                 crypto_strings['ton'] = "TON: ❌ Н/Д"
                 
             # XRP
             if isinstance(ripple_price, (int, float)) and usd_to_rub_rate > 0:
                 xrp_rub = ripple_price * usd_to_rub_rate
-                crypto_strings['ripple'] = f"XRP: ${format_price(ripple_price, 3)} ({format_price(xrp_rub)} ₽)"
+                xrp_change = crypto_data.get('ripple', {}).get('usd_24h_change', 0)
+                change_str = f" ({xrp_change:+.2f}% за 24ч)" if xrp_change is not None and xrp_change != 0 else ""
+                crypto_strings['ripple'] = f"XRP: ${format_price(ripple_price, 3)} ({format_price(xrp_rub)} ₽){change_str}"
             elif isinstance(ripple_price, (int, float)):
-                crypto_strings['ripple'] = f"XRP: ${format_price(ripple_price, 3)}"
+                xrp_change = crypto_data.get('ripple', {}).get('usd_24h_change', 0)
+                change_str = f" ({xrp_change:+.2f}% за 24ч)" if xrp_change is not None and xrp_change != 0 else ""
+                crypto_strings['ripple'] = f"XRP: ${format_price(ripple_price, 3)}{change_str}"
             else:
                 crypto_strings['ripple'] = "XRP: ❌ Н/Д"
                 
             # Cardano
             if isinstance(cardano_price, (int, float)) and usd_to_rub_rate > 0:
                 ada_rub = cardano_price * usd_to_rub_rate
-                crypto_strings['cardano'] = f"Cardano: ${format_price(cardano_price, 3)} ({format_price(ada_rub)} ₽)"
+                ada_change = crypto_data.get('cardano', {}).get('usd_24h_change', 0)
+                change_str = f" ({ada_change:+.2f}% за 24ч)" if ada_change is not None and ada_change != 0 else ""
+                crypto_strings['cardano'] = f"Cardano: ${format_price(cardano_price, 3)} ({format_price(ada_rub)} ₽){change_str}"
             elif isinstance(cardano_price, (int, float)):
-                crypto_strings['cardano'] = f"Cardano: ${format_price(cardano_price, 3)}"
+                ada_change = crypto_data.get('cardano', {}).get('usd_24h_change', 0)
+                change_str = f" ({ada_change:+.2f}% за 24ч)" if ada_change is not None and ada_change != 0 else ""
+                crypto_strings['cardano'] = f"Cardano: ${format_price(cardano_price, 3)}{change_str}"
             else:
                 crypto_strings['cardano'] = "Cardano: ❌ Н/Д"
                 
             # Solana
             if isinstance(solana_price, (int, float)) and usd_to_rub_rate > 0:
                 sol_rub = solana_price * usd_to_rub_rate
-                crypto_strings['solana'] = f"Solana: ${format_price(solana_price)} ({format_price(sol_rub)} ₽)"
+                sol_change = crypto_data.get('solana', {}).get('usd_24h_change', 0)
+                change_str = f" ({sol_change:+.2f}% за 24ч)" if sol_change is not None and sol_change != 0 else ""
+                crypto_strings['solana'] = f"Solana: ${format_price(solana_price)} ({format_price(sol_rub)} ₽){change_str}"
             elif isinstance(solana_price, (int, float)):
-                crypto_strings['solana'] = f"Solana: ${format_price(solana_price)}"
+                sol_change = crypto_data.get('solana', {}).get('usd_24h_change', 0)
+                change_str = f" ({sol_change:+.2f}% за 24ч)" if sol_change is not None and sol_change != 0 else ""
+                crypto_strings['solana'] = f"Solana: ${format_price(solana_price)}{change_str}"
             else:
                 crypto_strings['solana'] = "Solana: ❌ Н/Д"
                 
             # Dogecoin
             if isinstance(dogecoin_price, (int, float)) and usd_to_rub_rate > 0:
                 doge_rub = dogecoin_price * usd_to_rub_rate
-                crypto_strings['dogecoin'] = f"Dogecoin: ${format_price(dogecoin_price, 3)} ({format_price(doge_rub)} ₽)"
+                doge_change = crypto_data.get('dogecoin', {}).get('usd_24h_change', 0)
+                change_str = f" ({doge_change:+.2f}% за 24ч)" if doge_change is not None and doge_change != 0 else ""
+                crypto_strings['dogecoin'] = f"Dogecoin: ${format_price(dogecoin_price, 3)} ({format_price(doge_rub)} ₽){change_str}"
             elif isinstance(dogecoin_price, (int, float)):
-                crypto_strings['dogecoin'] = f"Dogecoin: ${format_price(dogecoin_price, 3)}"
+                doge_change = crypto_data.get('dogecoin', {}).get('usd_24h_change', 0)
+                change_str = f" ({doge_change:+.2f}% за 24ч)" if doge_change is not None and doge_change != 0 else ""
+                crypto_strings['dogecoin'] = f"Dogecoin: ${format_price(dogecoin_price, 3)}{change_str}"
             else:
                 crypto_strings['dogecoin'] = "Dogecoin: ❌ Н/Д"
                 
@@ -508,10 +536,14 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 if ticker in stocks_data and stocks_data[ticker].get('price'):
                     name = stock_names[ticker]
                     price = stocks_data[ticker]['price']
+                    change_pct = stocks_data[ticker].get('change_pct', 0)
                     is_live = stocks_data[ticker].get('is_live', True)
                     status_icon = "🟢" if is_live else "🟡"
                     prefix = "├" if i < len(stock_items) - 1 else "└"
-                    message += f"{prefix} {status_icon} {name}: **{format_price(price)} ₽**\n"
+                    
+                    # Добавляем изменение с открытия для российских акций
+                    change_str = f" ({change_pct:+.2f}% с открытия)" if change_pct is not None and change_pct != 0 and is_live else ""
+                    message += f"{prefix} {status_icon} {name}: **{format_price(price)} ₽**{change_str}\n"
         else:
             message += "🔴 **Торги закрыты** (выходной день)\n"
         message += "\n"
@@ -531,10 +563,14 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 if ticker in stocks_data and stocks_data[ticker].get('price'):
                     name = real_estate_names[ticker]
                     price = stocks_data[ticker]['price']
+                    change_pct = stocks_data[ticker].get('change_pct', 0)
                     is_live = stocks_data[ticker].get('is_live', True)
                     status_icon = "🟢" if is_live else "🟡"
                     prefix = "├" if i < len(real_estate_tickers) - 1 else "└"
-                    message += f"{prefix} {status_icon} {name}: **{format_price(price)} ₽**\n"
+                    
+                    # Добавляем изменение с открытия для акций недвижимости
+                    change_str = f" ({change_pct:+.2f}% с открытия)" if change_pct is not None and change_pct != 0 and is_live else ""
+                    message += f"{prefix} {status_icon} {name}: **{format_price(price)} ₽**{change_str}\n"
         else:
             message += "🔴 **Торги закрыты** (выходной день)\n"
         message += "\n"
@@ -578,7 +614,15 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 prefix = "├" if i < len(index_items) - 1 else "└"
                 
                 if price is not None:
-                    change_str = f"({change:+.2f}%)" if change != 0 else ""
+                    # Определяем тип изменения для индекса
+                    if index in ['imoex', 'rts']:
+                        change_period = "с открытия" if is_live else "с закрытия"
+                    elif index == 'sp500':
+                        change_period = "с закрытия"
+                    else:
+                        change_period = ""
+                    
+                    change_str = f"({change:+.2f}% {change_period})" if change != 0 else ""
                     status_icon = "🟢" if is_live else "🟡"
                     note_str = f" ({note})" if note else ""
                     message += f"{prefix} {status_icon} {name}: **{format_price(price)}** {change_str}{note_str}\n"
@@ -595,6 +639,8 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         
     except Exception as e:
         logger.error(f"Общая ошибка в rates_command: {e}")
+        import traceback
+        logger.error(f"Трассировка ошибки: {traceback.format_exc()}")
         await update.message.reply_text(
             f"❌ Ошибка получения курсов: {str(e)}\n\n"
             f"🔄 Попробуйте позже или обратитесь к администратору."
@@ -1324,7 +1370,7 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
                 if abs(change_pct) >= threshold:
                     emoji = "📈" if change_pct > 0 else "📉"
                     notifications_to_send.append(
-                        f"{emoji} <b>{asset}</b>: {change_pct:+.2f}% "
+                        f"{emoji} <b>{asset}</b>: {change_pct:+.2f}% за 30 мин "
                         f"({previous_price:.2f} → {current_price:.2f})"
                     )
             
