@@ -2345,7 +2345,41 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     elif query.data == "settings_back":
         # Возвращаемся в главное меню настроек
-        await settings_command(update, context)
+        user_id = update.effective_user.id
+        
+        # Загружаем текущие настройки
+        settings = load_bot_settings()
+        notifications = load_notification_data()
+        user_notifications = notifications.get(str(user_id), {})
+        
+        # Создаем клавиатуру с настройками
+        keyboard = [
+            [InlineKeyboardButton("⏰ Время сводки", callback_data="settings_time")],
+            [InlineKeyboardButton("⭐ Избранные активы", callback_data="settings_favorites")],
+            [InlineKeyboardButton("🔔 Уведомления", callback_data="settings_notifications")],
+            [InlineKeyboardButton("📊 Персональные настройки", callback_data="settings_personal")],
+            [InlineKeyboardButton("📋 Текущие настройки", callback_data="settings_current")],
+            [InlineKeyboardButton("❌ Закрыть", callback_data="settings_close")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Формируем сообщение с текущими настройками
+        current_time = settings.get('daily_summary_time', '09:00')
+        timezone = settings.get('timezone', 'Europe/Moscow')
+        is_subscribed = user_notifications.get('subscribed', False)
+        threshold = user_notifications.get('threshold', 2.0)
+        
+        message = f"""
+⚙️ **МЕНЮ НАСТРОЕК**
+
+⏰ **Время ежедневной сводки:** {current_time} ({timezone})
+🔔 **Подписка на уведомления:** {'✅ Включена' if is_subscribed else '❌ Отключена'}
+📊 **Порог уведомлений:** {threshold}%
+
+Выберите раздел для настройки:
+"""
+        
+        await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
     
     elif query.data == "settings_time":
         message = """
@@ -2432,7 +2466,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
     
-    await update.message.reply_text("📊 Создаю PDF отчет...")
+    await update.message.reply_text("📊 Создаю красивый PDF отчет...")
     
     try:
         # Создаем PDF в памяти
@@ -2440,28 +2474,61 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         doc = SimpleDocTemplate(buffer, pagesize=A4)
         story = []
         
-        # Стили
+        # Создаем стили
         styles = getSampleStyleSheet()
+        
+        # Стиль для заголовка
         title_style = ParagraphStyle(
             'CustomTitle',
             parent=styles['Heading1'],
-            fontSize=16,
+            fontSize=24,
             spaceAfter=30,
-            alignment=1  # Центр
+            alignment=1,  # Центр
+            textColor=colors.darkblue,
+            fontName='Helvetica-Bold'
         )
+        
+        # Стиль для подзаголовков
         heading_style = ParagraphStyle(
             'CustomHeading',
             parent=styles['Heading2'],
-            fontSize=14,
-            spaceAfter=12,
-            spaceBefore=20
+            fontSize=16,
+            spaceAfter=15,
+            spaceBefore=25,
+            textColor=colors.darkgreen,
+            fontName='Helvetica-Bold'
         )
-        normal_style = styles['Normal']
         
-        # Заголовок
+        # Стиль для обычного текста
+        normal_style = ParagraphStyle(
+            'CustomNormal',
+            parent=styles['Normal'],
+            fontSize=10,
+            spaceAfter=6,
+            fontName='Helvetica'
+        )
+        
+        # Стиль для информации
+        info_style = ParagraphStyle(
+            'CustomInfo',
+            parent=styles['Normal'],
+            fontSize=9,
+            spaceAfter=3,
+            textColor=colors.grey,
+            fontName='Helvetica-Oblique'
+        )
+        
+        # Заголовок отчета
         current_time = get_moscow_time().strftime("%d.%m.%Y %H:%M")
         title = Paragraph(f"<b>ФИНАНСОВЫЙ ОТЧЕТ</b><br/>от {current_time}", title_style)
         story.append(title)
+        
+        # Информация о боте
+        bot_info = Paragraph(
+            "Финансовый бот - актуальные данные по валютам, криптовалютам, акциям и индексам", 
+            info_style
+        )
+        story.append(bot_info)
         story.append(Spacer(1, 20))
         
         # Получаем данные
@@ -2477,6 +2544,17 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             gbp_rate = cbr_data.get('Valute', {}).get('GBP', {}).get('Value', 0)
         except:
             usd_rate = eur_rate = cny_rate = gbp_rate = 0
+        
+        # FOREX курс
+        try:
+            forex_response = requests.get(
+                "https://api.exchangerate-api.com/v4/latest/USD",
+                timeout=10
+            )
+            forex_data = forex_response.json()
+            forex_usd_rub = forex_data.get('rates', {}).get('RUB', None)
+        except:
+            forex_usd_rub = None
         
         # Криптовалюты
         try:
@@ -2494,35 +2572,64 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         except:
             indices_data = {}
         
-        # Создаем таблицы данных
+        # Акции
+        try:
+            stocks_data = await get_moex_stocks()
+        except:
+            stocks_data = {}
         
-        # Валюты
+        # Товары
+        try:
+            commodities_data = await get_commodities_data()
+        except:
+            commodities_data = {}
+        
+        # Создаем разделы отчета
+        
+        # 1. КУРСЫ ВАЛЮТ
         currencies_heading = Paragraph("<b>КУРСЫ ВАЛЮТ</b>", heading_style)
         story.append(currencies_heading)
         
         currency_data = [
-            ['Валюта', 'Курс (₽)', 'Источник'],
-            ['USD', f"{format_price(usd_rate)}", 'ЦБ РФ'],
-            ['EUR', f"{format_price(eur_rate)}", 'ЦБ РФ'],
-            ['CNY', f"{format_price(cny_rate)}", 'ЦБ РФ'],
-            ['GBP', f"{format_price(gbp_rate)}", 'ЦБ РФ']
+            ['Валюта', 'Курс (₽)', 'Источник', 'Статус']
         ]
         
-        currency_table = Table(currency_data, colWidths=[2*inch, 2*inch, 2*inch])
+        # Добавляем валюты
+        currencies = [
+            ('USD', usd_rate, 'ЦБ РФ'),
+            ('EUR', eur_rate, 'ЦБ РФ'),
+            ('CNY', cny_rate, 'ЦБ РФ'),
+            ('GBP', gbp_rate, 'ЦБ РФ')
+        ]
+        
+        for currency, rate, source in currencies:
+            if rate and rate > 0:
+                status = "✅ Актуально"
+                if currency == 'USD' and forex_usd_rub:
+                    diff = forex_usd_rub - rate
+                    diff_pct = (diff / rate) * 100
+                    status = f"FOREX: {forex_usd_rub:.2f}₽ ({diff:+.2f}₽, {diff_pct:+.2f}%)"
+            else:
+                status = "❌ Нет данных"
+            
+            currency_data.append([currency, f"{format_price(rate)}", source, status])
+        
+        currency_table = Table(currency_data, colWidths=[1.2*inch, 1.5*inch, 1.2*inch, 2.1*inch])
         currency_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 12),
+            ('FONTSIZE', (0, 0), (-1, 0), 11),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ('BACKGROUND', (0, 1), (-1, -1), colors.lightblue),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ]))
         story.append(currency_table)
-        story.append(Spacer(1, 20))
+        story.append(Spacer(1, 15))
         
-        # Криптовалюты
+        # 2. КРИПТОВАЛЮТЫ
         crypto_heading = Paragraph("<b>КРИПТОВАЛЮТЫ</b>", heading_style)
         story.append(crypto_heading)
         
@@ -2537,68 +2644,166 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             'tether': 'Tether'
         }
         
-        crypto_data = [['Криптовалюта', 'Цена ($)', 'Изменение 24ч']]
+        crypto_data = [['Криптовалюта', 'Цена ($)', 'Изменение 24ч', 'Статус']]
+        
         for crypto_id, crypto_name in crypto_names.items():
             if crypto_id in crypto_data:
                 price = crypto_data[crypto_id].get('usd', 0)
                 change = crypto_data[crypto_id].get('usd_24h_change', 0)
-                change_str = f"{change:+.2f}%" if change is not None else "Н/Д"
-                crypto_data.append([crypto_name, f"${format_price(price)}", change_str])
+                
+                if price and price > 0:
+                    change_str = f"{change:+.2f}%" if change is not None else "Н/Д"
+                    if change and change > 0:
+                        status = "📈 Рост"
+                        row_color = colors.lightgreen
+                    elif change and change < 0:
+                        status = "📉 Падение"
+                        row_color = colors.lightcoral
+                    else:
+                        status = "➡️ Без изменений"
+                        row_color = colors.lightgrey
+                    
+                    crypto_data.append([crypto_name, f"${format_price(price)}", change_str, status])
         
-        crypto_table = Table(crypto_data, colWidths=[2*inch, 2*inch, 2*inch])
-        crypto_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 12),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black)
-        ]))
-        story.append(crypto_table)
-        story.append(Spacer(1, 20))
+        if len(crypto_data) > 1:  # Есть данные
+            crypto_table = Table(crypto_data, colWidths=[1.5*inch, 1.5*inch, 1.2*inch, 1.8*inch])
+            crypto_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.darkgreen),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 11),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.lightgreen),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ]))
+            story.append(crypto_table)
+        else:
+            no_data = Paragraph("Данные по криптовалютам временно недоступны", normal_style)
+            story.append(no_data)
         
-        # Индексы
+        story.append(Spacer(1, 15))
+        
+        # 3. ФОНДОВЫЕ ИНДЕКСЫ
         if indices_data:
             indices_heading = Paragraph("<b>ФОНДОВЫЕ ИНДЕКСЫ</b>", heading_style)
             story.append(indices_heading)
             
-            indices_data_table = [['Индекс', 'Значение', 'Изменение']]
+            indices_data_table = [['Индекс', 'Значение', 'Изменение', 'Статус']]
+            
             for index_id, index_info in indices_data.items():
                 name = index_info.get('name', index_id.upper())
                 price = index_info.get('price', 0)
                 change = index_info.get('change_pct', 0)
-                change_str = f"{change:+.2f}%" if change != 0 else "0.00%"
-                indices_data_table.append([name, str(price), change_str])
+                is_live = index_info.get('is_live', True)
+                
+                if price and price > 0:
+                    change_str = f"{change:+.2f}%" if change != 0 else "0.00%"
+                    if is_live:
+                        status = "🟢 Торги открыты"
+                    else:
+                        status = "🔴 Торги закрыты"
+                    
+                    indices_data_table.append([name, str(price), change_str, status])
             
-            indices_table = Table(indices_data_table, colWidths=[2*inch, 2*inch, 2*inch])
-            indices_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 12),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-                ('GRID', (0, 0), (-1, -1), 1, colors.black)
-            ]))
-            story.append(indices_table)
-            story.append(Spacer(1, 20))
+            if len(indices_data_table) > 1:
+                indices_table = Table(indices_data_table, colWidths=[1.5*inch, 1.5*inch, 1.2*inch, 1.8*inch])
+                indices_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.darkred),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 11),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.lightcoral),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ]))
+                story.append(indices_table)
         
-        # Источники данных
+        story.append(Spacer(1, 15))
+        
+        # 4. ДРАГОЦЕННЫЕ МЕТАЛЛЫ
+        if commodities_data:
+            metals_heading = Paragraph("<b>ДРАГОЦЕННЫЕ МЕТАЛЛЫ</b>", heading_style)
+            story.append(metals_heading)
+            
+            metals_data = [['Металл', 'Цена ($)', 'Цена (₽)', 'Статус']]
+            
+            metals = {
+                'gold': ('Золото', 'XAU'),
+                'silver': ('Серебро', 'XAG')
+            }
+            
+            for metal_id, (metal_name, symbol) in metals.items():
+                if metal_id in commodities_data:
+                    price_usd = commodities_data[metal_id]['price']
+                    price_rub = price_usd * usd_rate if usd_rate > 0 else 0
+                    
+                    if price_usd and price_usd > 0:
+                        metals_data.append([
+                            metal_name,
+                            f"${format_price(price_usd)}",
+                            f"{format_price(price_rub)} ₽",
+                            "✅ Актуально"
+                        ])
+            
+            if len(metals_data) > 1:
+                metals_table = Table(metals_data, colWidths=[1.5*inch, 1.5*inch, 1.5*inch, 1.5*inch])
+                metals_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.darkgoldenrod),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 11),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.lightyellow),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ]))
+                story.append(metals_table)
+        
+        story.append(Spacer(1, 20))
+        
+        # 5. ИСТОЧНИКИ ДАННЫХ
         sources_heading = Paragraph("<b>ИСТОЧНИКИ ДАННЫХ</b>", heading_style)
         story.append(sources_heading)
         
-        sources_text = """
-• ЦБ РФ - курсы валют
-• CoinGecko - криптовалюты
-• MOEX - российские индексы и акции
-• Gold-API - драгоценные металлы
-• Alpha Vantage - международные данные
+        sources_data = [
+            ['Источник', 'Данные', 'Статус'],
+            ['ЦБ РФ', 'Курсы валют', '✅ Активен'],
+            ['CoinGecko', 'Криптовалюты', '✅ Активен'],
+            ['MOEX', 'Российские индексы и акции', '✅ Активен'],
+            ['Gold-API', 'Драгоценные металлы', '✅ Активен'],
+            ['Alpha Vantage', 'Международные данные', '⚠️ Демо-ключ'],
+            ['FOREX', 'Межбанковские курсы', '✅ Активен']
+        ]
+        
+        sources_table = Table(sources_data, colWidths=[2*inch, 3*inch, 1*inch])
+        sources_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.darkgrey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.lightgrey),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        story.append(sources_table)
+        
+        story.append(Spacer(1, 20))
+        
+        # 6. ФУТЕР
+        footer_text = f"""
+        <b>Отчет сгенерирован:</b> {current_time}<br/>
+        <b>Финансовый бот</b> - ваш помощник в мире финансов<br/>
+        <i>Данные обновляются в реальном времени</i>
         """
-        sources_paragraph = Paragraph(sources_text, normal_style)
-        story.append(sources_paragraph)
+        footer = Paragraph(footer_text, info_style)
+        story.append(footer)
         
         # Создаем PDF
         doc.build(story)
@@ -2609,10 +2814,10 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             chat_id=update.effective_chat.id,
             document=buffer,
             filename=f"financial_report_{current_time.replace(' ', '_').replace(':', '-')}.pdf",
-            caption="📊 Ваш финансовый отчет готов!"
+            caption="📊 Ваш красивый финансовый отчет готов! 🎨"
         )
         
-        await update.message.reply_text("✅ PDF отчет успешно создан и отправлен!")
+        await update.message.reply_text("✅ Красивый PDF отчет успешно создан и отправлен!")
         
     except Exception as e:
         logger.error(f"Ошибка создания PDF: {e}")
