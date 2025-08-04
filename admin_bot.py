@@ -709,6 +709,19 @@ async def test_daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text("🧪 Запускаю тестовую ежедневную сводку...")
     
     try:
+        # Добавляем тестового подписчика если нет подписчиков
+        notifications = load_notification_data()
+        if not notifications:
+            logger.info("📝 Создаю тестового подписчика для проверки...")
+            notifications[str(user_id)] = {
+                'subscribed': True,
+                'daily_summary': True,
+                'price_alerts': True,
+                'alerts': {}
+            }
+            save_notification_data(notifications)
+            await update.message.reply_text("✅ Добавлен тестовый подписчик")
+        
         # Вызываем функцию ежедневной сводки вручную
         await daily_summary_job(context)
         await update.message.reply_text("✅ Тестовая ежедневная сводка завершена! Проверьте логи.")
@@ -1842,11 +1855,41 @@ def get_job_queue(context=None):
     logger.error("❌ Система задач недоступна")
     return None
 
+def initialize_data_files():
+    """Инициализировать файлы данных при первом запуске"""
+    logger.info("🔧 Инициализация файлов данных...")
+    
+    # Инициализация настроек
+    if not os.path.exists(SETTINGS_FILE):
+        default_settings = {
+            'daily_summary_time': '09:00',
+            'timezone': 'Europe/Moscow'
+        }
+        save_bot_settings(default_settings)
+        logger.info(f"✅ Создан файл настроек: {SETTINGS_FILE}")
+    
+    # Инициализация уведомлений
+    if not os.path.exists(NOTIFICATION_DATA_FILE):
+        default_notifications = {}
+        save_notification_data(default_notifications)
+        logger.info(f"✅ Создан файл уведомлений: {NOTIFICATION_DATA_FILE}")
+    
+    # Инициализация истории цен
+    if not os.path.exists(PRICE_HISTORY_FILE):
+        default_history = {}
+        save_price_history(default_history)
+        logger.info(f"✅ Создан файл истории цен: {PRICE_HISTORY_FILE}")
+    
+    logger.info("🎉 Инициализация файлов данных завершена")
+
 def main() -> None:
     """Запуск бота - продвинутая версия с уведомлениями"""
     global GLOBAL_JOB_QUEUE
     
     logger.info("🚀 Запуск продвинутого финансового бота...")
+    
+    # Инициализируем файлы данных при первом запуске
+    initialize_data_files()
     
     # Загружаем данные пользователей при старте
     load_user_data()
