@@ -39,7 +39,6 @@ try:
     import schedule
     SCHEDULE_AVAILABLE = True
 except ImportError:
-    logger.warning("⚠️ Модуль 'schedule' не установлен. Альтернативная система задач будет использовать только Timer")
     SCHEDULE_AVAILABLE = False
 
 # Настройка логирования
@@ -48,6 +47,10 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Предупреждение о недоступности schedule
+if not SCHEDULE_AVAILABLE:
+    logger.warning("⚠️ Модуль 'schedule' не установлен. Альтернативная система задач будет использовать только Timer")
 
 # Конфигурация из переменных окружения
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -720,8 +723,16 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка всех остальных сообщений"""
+    message_text = update.message.text
+    user_id = update.effective_user.id
+    
+    # Обновляем активность пользователя
+    if user_id in user_data:
+        user_data[user_id]['last_activity'] = get_moscow_time().isoformat()
+        save_user_data()
+    
     # Если пользователь ввел только "/", показываем команды
-    if update.message.text == "/":
+    if message_text == "/":
         await command_suggestions(update, context)
         return
     
@@ -2262,9 +2273,6 @@ def main() -> None:
     from telegram.ext import CallbackQueryHandler
     application.add_handler(CallbackQueryHandler(button_callback))
 
-    # Обработчик команды "/" для показа доступных команд
-    application.add_handler(CommandHandler("", command_suggestions))
-    
     # Обработчик всех текстовых сообщений (эхо)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
