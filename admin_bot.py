@@ -719,19 +719,15 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработка обычных сообщений"""
-    message_text = update.message.text
-    user_id = update.effective_user.id
+    """Обработка всех остальных сообщений"""
+    # Если пользователь ввел только "/", показываем команды
+    if update.message.text == "/":
+        await command_suggestions(update, context)
+        return
     
-    # Обновляем активность пользователя
-    if user_id in user_data:
-        user_data[user_id]['last_activity'] = get_moscow_time().isoformat()
-        save_user_data()
-    
-    # Простой эхо ответ
+    # Для других сообщений - стандартная обработка
     await update.message.reply_text(
-        f"Получил: {message_text}\n\n"
-        f"💡 Используй /help для списка команд"
+        "🤖 Я не понимаю эту команду. Используйте /help для списка доступных команд."
     )
 
 async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1194,22 +1190,102 @@ async def get_indices_data():
                         response_text = await resp.text() 
                         logger.error(f"❌ RTS ошибка {resp.status}: {response_text[:200]}...")
         else:
-            logger.info("📅 Выходной день - российские индексы недоступны (торги закрыты)")
-            # Можно добавить устаревшие данные из кэша или альтернативных источников
-            indices_data['imoex'] = {
-                'name': 'IMOEX',
-                'price': None,
-                'change_pct': 0,
-                'is_live': False,
-                'note': 'Торги закрыты'
-            }
-            indices_data['rts'] = {
-                'name': 'RTS', 
-                'price': None,
-                'change_pct': 0,
-                'is_live': False,
-                'note': 'Торги закрыты'
-            }
+            logger.info("📅 Выходной день - запрашиваю последние известные значения российских индексов")
+            # Пытаемся получить последние известные значения даже в выходные
+            async with aiohttp.ClientSession() as session:
+                # IMOEX - последнее известное значение
+                imoex_url = "https://iss.moex.com/iss/engines/stock/markets/index/securities/IMOEX.json"
+                logger.info(f"📈 Запрашиваю последнее значение IMOEX: {imoex_url}")
+                async with session.get(imoex_url) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        
+                        if 'marketdata' in data and 'data' in data['marketdata'] and len(data['marketdata']['data']) > 0:
+                            row_data = dict(zip(data['marketdata']['columns'], data['marketdata']['data'][0]))
+                            
+                            # Используем LASTVALUE или PREVPRICE для последнего известного значения
+                            last_value = row_data.get('LASTVALUE') or row_data.get('PREVPRICE')
+                            if last_value:
+                                indices_data['imoex'] = {
+                                    'name': 'IMOEX',
+                                    'price': last_value,
+                                    'change_pct': row_data.get('LASTCHANGEPRC', 0),
+                                    'update_time': row_data.get('UPDATETIME', ''),
+                                    'is_live': False,
+                                    'note': 'Последнее известное значение (торги закрыты)'
+                                }
+                                logger.info(f"✅ IMOEX последнее значение: {last_value}")
+                            else:
+                                indices_data['imoex'] = {
+                                    'name': 'IMOEX',
+                                    'price': None,
+                                    'change_pct': 0,
+                                    'is_live': False,
+                                    'note': 'Данные недоступны'
+                                }
+                        else:
+                            indices_data['imoex'] = {
+                                'name': 'IMOEX',
+                                'price': None,
+                                'change_pct': 0,
+                                'is_live': False,
+                                'note': 'Данные недоступны'
+                            }
+                    else:
+                        indices_data['imoex'] = {
+                            'name': 'IMOEX',
+                            'price': None,
+                            'change_pct': 0,
+                            'is_live': False,
+                            'note': 'Ошибка получения данных'
+                        }
+                
+                # RTS - последнее известное значение
+                rts_url = "https://iss.moex.com/iss/engines/stock/markets/index/securities/RTSI.json"
+                logger.info(f"📈 Запрашиваю последнее значение RTS: {rts_url}")
+                async with session.get(rts_url) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        
+                        if 'marketdata' in data and 'data' in data['marketdata'] and len(data['marketdata']['data']) > 0:
+                            row_data = dict(zip(data['marketdata']['columns'], data['marketdata']['data'][0]))
+                            
+                            # Используем LASTVALUE или PREVPRICE для последнего известного значения
+                            last_value = row_data.get('LASTVALUE') or row_data.get('PREVPRICE')
+                            if last_value:
+                                indices_data['rts'] = {
+                                    'name': 'RTS',
+                                    'price': last_value,
+                                    'change_pct': row_data.get('LASTCHANGEPRC', 0),
+                                    'update_time': row_data.get('UPDATETIME', ''),
+                                    'is_live': False,
+                                    'note': 'Последнее известное значение (торги закрыты)'
+                                }
+                                logger.info(f"✅ RTS последнее значение: {last_value}")
+                            else:
+                                indices_data['rts'] = {
+                                    'name': 'RTS',
+                                    'price': None,
+                                    'change_pct': 0,
+                                    'is_live': False,
+                                    'note': 'Данные недоступны'
+                                }
+                        else:
+                            indices_data['rts'] = {
+                                'name': 'RTS',
+                                'price': None,
+                                'change_pct': 0,
+                                'is_live': False,
+                                'note': 'Данные недоступны'
+                            }
+                    else:
+                        indices_data['rts'] = {
+                            'name': 'RTS',
+                            'price': None,
+                            'change_pct': 0,
+                            'is_live': False,
+                            'note': 'Ошибка получения данных'
+                        }
         
         # 2. S&P 500 через Financial Modeling Prep (работает 24/7)
         logger.info(f"📈 Запрашиваю S&P 500 с FMP, ключ: {FMP_API_KEY[:10]}...")
@@ -2186,6 +2262,9 @@ def main() -> None:
     from telegram.ext import CallbackQueryHandler
     application.add_handler(CallbackQueryHandler(button_callback))
 
+    # Обработчик команды "/" для показа доступных команд
+    application.add_handler(CommandHandler("", command_suggestions))
+    
     # Обработчик всех текстовых сообщений (эхо)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
@@ -2474,15 +2553,15 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         doc = SimpleDocTemplate(buffer, pagesize=A4)
         story = []
         
-        # Создаем стили
+        # Создаем стили с базовыми шрифтами
         styles = getSampleStyleSheet()
         
         # Стиль для заголовка
         title_style = ParagraphStyle(
             'CustomTitle',
             parent=styles['Heading1'],
-            fontSize=24,
-            spaceAfter=30,
+            fontSize=20,
+            spaceAfter=25,
             alignment=1,  # Центр
             textColor=colors.darkblue,
             fontName='Helvetica-Bold'
@@ -2492,9 +2571,9 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         heading_style = ParagraphStyle(
             'CustomHeading',
             parent=styles['Heading2'],
-            fontSize=16,
-            spaceAfter=15,
-            spaceBefore=25,
+            fontSize=14,
+            spaceAfter=12,
+            spaceBefore=20,
             textColor=colors.darkgreen,
             fontName='Helvetica-Bold'
         )
@@ -2515,7 +2594,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             fontSize=9,
             spaceAfter=3,
             textColor=colors.grey,
-            fontName='Helvetica-Oblique'
+            fontName='Helvetica'
         )
         
         # Заголовок отчета
@@ -2591,7 +2670,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         story.append(currencies_heading)
         
         currency_data = [
-            ['Валюта', 'Курс (₽)', 'Источник', 'Статус']
+            ['Валюта', 'Курс (RUB)', 'Источник', 'Статус']
         ]
         
         # Добавляем валюты
@@ -2604,13 +2683,13 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         for currency, rate, source in currencies:
             if rate and rate > 0:
-                status = "✅ Актуально"
+                status = "Актуально"
                 if currency == 'USD' and forex_usd_rub:
                     diff = forex_usd_rub - rate
                     diff_pct = (diff / rate) * 100
-                    status = f"FOREX: {forex_usd_rub:.2f}₽ ({diff:+.2f}₽, {diff_pct:+.2f}%)"
+                    status = f"FOREX: {forex_usd_rub:.2f}RUB ({diff:+.2f}, {diff_pct:+.2f}%)"
             else:
-                status = "❌ Нет данных"
+                status = "Нет данных"
             
             currency_data.append([currency, f"{format_price(rate)}", source, status])
         
@@ -2620,7 +2699,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 11),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
             ('BACKGROUND', (0, 1), (-1, -1), colors.lightblue),
             ('GRID', (0, 0), (-1, -1), 1, colors.black),
@@ -2644,7 +2723,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             'tether': 'Tether'
         }
         
-        crypto_data = [['Криптовалюта', 'Цена ($)', 'Изменение 24ч', 'Статус']]
+        crypto_data = [['Криптовалюта', 'Цена (USD)', 'Изменение 24ч', 'Статус']]
         
         for crypto_id, crypto_name in crypto_names.items():
             if crypto_id in crypto_data:
@@ -2654,14 +2733,11 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 if price and price > 0:
                     change_str = f"{change:+.2f}%" if change is not None else "Н/Д"
                     if change and change > 0:
-                        status = "📈 Рост"
-                        row_color = colors.lightgreen
+                        status = "Рост"
                     elif change and change < 0:
-                        status = "📉 Падение"
-                        row_color = colors.lightcoral
+                        status = "Падение"
                     else:
-                        status = "➡️ Без изменений"
-                        row_color = colors.lightgrey
+                        status = "Без изменений"
                     
                     crypto_data.append([crypto_name, f"${format_price(price)}", change_str, status])
         
@@ -2672,7 +2748,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 11),
+                ('FONTSIZE', (0, 0), (-1, 0), 10),
                 ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.lightgreen),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
@@ -2701,9 +2777,9 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 if price and price > 0:
                     change_str = f"{change:+.2f}%" if change != 0 else "0.00%"
                     if is_live:
-                        status = "🟢 Торги открыты"
+                        status = "Торги открыты"
                     else:
-                        status = "🔴 Торги закрыты"
+                        status = "Торги закрыты"
                     
                     indices_data_table.append([name, str(price), change_str, status])
             
@@ -2714,7 +2790,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                     ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                     ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, 0), 11),
+                    ('FONTSIZE', (0, 0), (-1, 0), 10),
                     ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
                     ('BACKGROUND', (0, 1), (-1, -1), colors.lightcoral),
                     ('GRID', (0, 0), (-1, -1), 1, colors.black),
@@ -2729,7 +2805,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             metals_heading = Paragraph("<b>ДРАГОЦЕННЫЕ МЕТАЛЛЫ</b>", heading_style)
             story.append(metals_heading)
             
-            metals_data = [['Металл', 'Цена ($)', 'Цена (₽)', 'Статус']]
+            metals_data = [['Металл', 'Цена (USD)', 'Цена (RUB)', 'Статус']]
             
             metals = {
                 'gold': ('Золото', 'XAU'),
@@ -2745,8 +2821,8 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         metals_data.append([
                             metal_name,
                             f"${format_price(price_usd)}",
-                            f"{format_price(price_rub)} ₽",
-                            "✅ Актуально"
+                            f"{format_price(price_rub)} RUB",
+                            "Актуально"
                         ])
             
             if len(metals_data) > 1:
@@ -2756,7 +2832,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                     ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                     ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, 0), 11),
+                    ('FONTSIZE', (0, 0), (-1, 0), 10),
                     ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
                     ('BACKGROUND', (0, 1), (-1, -1), colors.lightyellow),
                     ('GRID', (0, 0), (-1, -1), 1, colors.black),
@@ -2772,12 +2848,12 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         sources_data = [
             ['Источник', 'Данные', 'Статус'],
-            ['ЦБ РФ', 'Курсы валют', '✅ Активен'],
-            ['CoinGecko', 'Криптовалюты', '✅ Активен'],
-            ['MOEX', 'Российские индексы и акции', '✅ Активен'],
-            ['Gold-API', 'Драгоценные металлы', '✅ Активен'],
-            ['Alpha Vantage', 'Международные данные', '⚠️ Демо-ключ'],
-            ['FOREX', 'Межбанковские курсы', '✅ Активен']
+            ['ЦБ РФ', 'Курсы валют', 'Активен'],
+            ['CoinGecko', 'Криптовалюты', 'Активен'],
+            ['MOEX', 'Российские индексы и акции', 'Активен'],
+            ['Gold-API', 'Драгоценные металлы', 'Активен'],
+            ['Alpha Vantage', 'Международные данные', 'Демо-ключ'],
+            ['FOREX', 'Межбанковские курсы', 'Активен']
         ]
         
         sources_table = Table(sources_data, colWidths=[2*inch, 3*inch, 1*inch])
@@ -2822,6 +2898,50 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception as e:
         logger.error(f"Ошибка создания PDF: {e}")
         await update.message.reply_text(f"❌ Ошибка создания PDF: {str(e)}")
+
+async def command_suggestions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывать доступные команды при вводе '/'"""
+    user_input = update.message.text
+    
+    if user_input == "/":
+        # Список всех доступных команд
+        commands = [
+            "/start - Запустить бота",
+            "/help - Справка по командам",
+            "/rates - Курсы валют и индексы",
+            "/ping - Проверка работы бота",
+            "/subscribe - Подписаться на уведомления",
+            "/unsubscribe - Отписаться от уведомлений",
+            "/set_alert - Установить алерт",
+            "/view_alerts - Просмотр алертов",
+            "/settings - Меню настроек",
+            "/export_pdf - Экспорт в PDF"
+        ]
+        
+        # Админские команды
+        admin_commands = [
+            "/set_daily_time - Установить время сводки",
+            "/get_daily_settings - Настройки сводки",
+            "/restart_daily_job - Перезапустить сводку",
+            "/test_daily - Тест сводки",
+            "/check_subscribers - Проверить подписчиков"
+        ]
+        
+        message = "📋 **ДОСТУПНЫЕ КОМАНДЫ:**\n\n"
+        
+        for cmd in commands:
+            message += f"• {cmd}\n"
+        
+        # Проверяем права администратора
+        user_id = update.effective_user.id
+        if str(user_id) == os.getenv('ADMIN_USER_ID'):
+            message += "\n🔧 **КОМАНДЫ АДМИНИСТРАТОРА:**\n\n"
+            for cmd in admin_commands:
+                message += f"• {cmd}\n"
+        
+        message += "\n💡 **Совет:** Введите команду полностью для выполнения"
+        
+        await update.message.reply_text(message, parse_mode='Markdown')
 
 if __name__ == '__main__':
     main() 
