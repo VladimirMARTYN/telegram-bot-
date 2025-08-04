@@ -6,12 +6,19 @@ import os
 import asyncio
 from datetime import datetime, time
 import pytz
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, JobQueue
 import json
 import aiohttp
 import requests
 import threading
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib import colors
+from reportlab.pdfgen import canvas
+import io
 
 # Безопасный импорт schedule (может отсутствовать)
 try:
@@ -275,6 +282,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if update.effective_user.id == ADMIN_USER_ID:
         help_text += (
             "🔧 <b>Админские команды:</b>\n"
+            "/settings - Меню настроек бота\n"
+            "/export_pdf - Экспорт отчета в PDF\n"
             "/test_daily - Тестовая ежедневная сводка\n"
             "/check_subscribers - Статус подписчиков\n"
             "/set_daily_time HH:MM - Настроить время сводки\n"
@@ -2154,6 +2163,14 @@ def main() -> None:
     application.add_handler(CommandHandler("set_daily_time", set_daily_time_command))
     application.add_handler(CommandHandler("get_daily_settings", get_daily_settings_command))
     application.add_handler(CommandHandler("restart_daily_job", restart_daily_job_command))
+    
+    # Новые команды
+    application.add_handler(CommandHandler("settings", settings_command))
+    application.add_handler(CommandHandler("export_pdf", export_pdf_command))
+    
+    # Обработчик callback-запросов для меню настроек
+    from telegram.ext import CallbackQueryHandler
+    application.add_handler(CallbackQueryHandler(button_callback))
 
     # Обработчик всех текстовых сообщений (эхо)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
@@ -2226,6 +2243,356 @@ def main() -> None:
     logger.info("🔔 Уведомления: резкие изменения, пороговые алерты, ежедневная сводка")
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Меню настроек бота"""
+    user_id = update.effective_user.id
+    
+    # Проверяем права администратора
+    if str(user_id) != os.getenv('ADMIN_USER_ID'):
+        await update.message.reply_text("❌ Эта команда доступна только администратору.")
+        return
+    
+    # Загружаем текущие настройки
+    settings = load_bot_settings()
+    notifications = load_notification_data()
+    user_notifications = notifications.get(str(user_id), {})
+    
+    # Создаем клавиатуру с настройками
+    keyboard = [
+        [InlineKeyboardButton("⏰ Время сводки", callback_data="settings_time")],
+        [InlineKeyboardButton("⭐ Избранные активы", callback_data="settings_favorites")],
+        [InlineKeyboardButton("🔔 Уведомления", callback_data="settings_notifications")],
+        [InlineKeyboardButton("📊 Персональные настройки", callback_data="settings_personal")],
+        [InlineKeyboardButton("📋 Текущие настройки", callback_data="settings_current")],
+        [InlineKeyboardButton("❌ Закрыть", callback_data="settings_close")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Формируем сообщение с текущими настройками
+    current_time = settings.get('daily_summary_time', '09:00')
+    timezone = settings.get('timezone', 'Europe/Moscow')
+    is_subscribed = user_notifications.get('subscribed', False)
+    threshold = user_notifications.get('threshold', 2.0)
+    
+    message = f"""
+⚙️ **МЕНЮ НАСТРОЕК**
+
+⏰ **Время ежедневной сводки:** {current_time} ({timezone})
+🔔 **Подписка на уведомления:** {'✅ Включена' if is_subscribed else '❌ Отключена'}
+📊 **Порог уведомлений:** {threshold}%
+
+Выберите раздел для настройки:
+"""
+    
+    await update.message.reply_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик нажатий на кнопки меню настроек"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    
+    # Проверяем права администратора
+    if str(user_id) != os.getenv('ADMIN_USER_ID'):
+        await query.edit_message_text("❌ Эта функция доступна только администратору.")
+        return
+    
+    if query.data == "settings_close":
+        await query.edit_message_text("✅ Меню настроек закрыто")
+        return
+    
+    elif query.data == "settings_current":
+        # Показываем текущие настройки
+        settings = load_bot_settings()
+        notifications = load_notification_data()
+        user_notifications = notifications.get(str(user_id), {})
+        
+        current_time = settings.get('daily_summary_time', '09:00')
+        timezone = settings.get('timezone', 'Europe/Moscow')
+        is_subscribed = user_notifications.get('subscribed', False)
+        threshold = user_notifications.get('threshold', 2.0)
+        daily_summary = user_notifications.get('daily_summary', True)
+        
+        message = f"""
+📋 **ТЕКУЩИЕ НАСТРОЙКИ**
+
+⏰ **Время ежедневной сводки:** {current_time} ({timezone})
+🔔 **Подписка на уведомления:** {'✅ Включена' if is_subscribed else '❌ Отключена'}
+📊 **Порог уведомлений:** {threshold}%
+📅 **Ежедневная сводка:** {'✅ Включена' if daily_summary else '❌ Отключена'}
+
+Используйте /settings для изменения настроек
+"""
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="settings_back")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    elif query.data == "settings_back":
+        # Возвращаемся в главное меню настроек
+        await settings_command(update, context)
+    
+    elif query.data == "settings_time":
+        message = """
+⏰ **НАСТРОЙКА ВРЕМЕНИ СВОДКИ**
+
+Используйте команду:
+`/set_daily_time HH:MM`
+
+Например:
+• `/set_daily_time 09:00` - в 9 утра
+• `/set_daily_time 18:30` - в 6:30 вечера
+
+⚠️ Время указывается по Москве (UTC+3)
+"""
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="settings_back")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    elif query.data == "settings_notifications":
+        message = """
+🔔 **НАСТРОЙКА УВЕДОМЛЕНИЙ**
+
+Команды для управления:
+• `/subscribe` - подписаться на уведомления
+• `/unsubscribe` - отписаться от уведомлений
+• `/set_alert АКТИВ ЦЕНА` - установить алерт
+
+Примеры алертов:
+• `/set_alert USD 85` - доллар выше 85₽
+• `/set_alert BTC 115000` - биткоин ниже 115K$
+• `/set_alert SBER 200` - Сбер выше 200₽
+"""
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="settings_back")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    elif query.data == "settings_favorites":
+        message = """
+⭐ **ИЗБРАННЫЕ АКТИВЫ**
+
+Эта функция находится в разработке.
+
+Планируется:
+• Сохранение любимых активов
+• Быстрый доступ к избранному
+• Персональные дашборды
+"""
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="settings_back")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    elif query.data == "settings_personal":
+        message = """
+📊 **ПЕРСОНАЛЬНЫЕ НАСТРОЙКИ**
+
+Эта функция находится в разработке.
+
+Планируется:
+• Выбор предпочитаемых валют
+• Настройка отображения данных
+• Персональные портфели
+• Языковые настройки
+"""
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="settings_back")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+
+async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Экспорт данных в PDF отчет"""
+    user_id = update.effective_user.id
+    
+    # Проверяем права администратора
+    if str(user_id) != os.getenv('ADMIN_USER_ID'):
+        await update.message.reply_text("❌ Эта команда доступна только администратору.")
+        return
+    
+    await update.message.reply_text("📊 Создаю PDF отчет...")
+    
+    try:
+        # Создаем PDF в памяти
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        story = []
+        
+        # Стили
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=16,
+            spaceAfter=30,
+            alignment=1  # Центр
+        )
+        heading_style = ParagraphStyle(
+            'CustomHeading',
+            parent=styles['Heading2'],
+            fontSize=14,
+            spaceAfter=12,
+            spaceBefore=20
+        )
+        normal_style = styles['Normal']
+        
+        # Заголовок
+        current_time = get_moscow_time().strftime("%d.%m.%Y %H:%M")
+        title = Paragraph(f"📊 ФИНАНСОВЫЙ ОТЧЕТ<br/>от {current_time}", title_style)
+        story.append(title)
+        story.append(Spacer(1, 20))
+        
+        # Получаем данные
+        await update.message.reply_text("📡 Получаю актуальные данные...")
+        
+        # Валюты
+        try:
+            cbr_response = requests.get("https://www.cbr-xml-daily.ru/daily_json.js", timeout=10)
+            cbr_data = cbr_response.json()
+            usd_rate = cbr_data.get('Valute', {}).get('USD', {}).get('Value', 0)
+            eur_rate = cbr_data.get('Valute', {}).get('EUR', {}).get('Value', 0)
+            cny_rate = cbr_data.get('Valute', {}).get('CNY', {}).get('Value', 0)
+            gbp_rate = cbr_data.get('Valute', {}).get('GBP', {}).get('Value', 0)
+        except:
+            usd_rate = eur_rate = cny_rate = gbp_rate = 0
+        
+        # Криптовалюты
+        try:
+            crypto_response = requests.get(
+                "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,the-open-network,ripple,cardano,solana,dogecoin,tether&vs_currencies=usd&include_24hr_change=true",
+                timeout=10
+            )
+            crypto_data = crypto_response.json()
+        except:
+            crypto_data = {}
+        
+        # Индексы
+        try:
+            indices_data = await get_indices_data()
+        except:
+            indices_data = {}
+        
+        # Создаем таблицы данных
+        
+        # Валюты
+        currencies_heading = Paragraph("🏛️ КУРСЫ ВАЛЮТ", heading_style)
+        story.append(currencies_heading)
+        
+        currency_data = [
+            ['Валюта', 'Курс (₽)', 'Изменение'],
+            ['USD', f"{format_price(usd_rate)}", 'ЦБ РФ'],
+            ['EUR', f"{format_price(eur_rate)}", 'ЦБ РФ'],
+            ['CNY', f"{format_price(cny_rate)}", 'ЦБ РФ'],
+            ['GBP', f"{format_price(gbp_rate)}", 'ЦБ РФ']
+        ]
+        
+        currency_table = Table(currency_data, colWidths=[2*inch, 2*inch, 2*inch])
+        currency_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        story.append(currency_table)
+        story.append(Spacer(1, 20))
+        
+        # Криптовалюты
+        crypto_heading = Paragraph("💎 КРИПТОВАЛЮТЫ", heading_style)
+        story.append(crypto_heading)
+        
+        crypto_names = {
+            'bitcoin': 'Bitcoin',
+            'ethereum': 'Ethereum', 
+            'the-open-network': 'TON',
+            'ripple': 'XRP',
+            'cardano': 'Cardano',
+            'solana': 'Solana',
+            'dogecoin': 'Dogecoin',
+            'tether': 'Tether'
+        }
+        
+        crypto_data = [['Криптовалюта', 'Цена ($)', 'Изменение 24ч']]
+        for crypto_id, crypto_name in crypto_names.items():
+            if crypto_id in crypto_data:
+                price = crypto_data[crypto_id].get('usd', 0)
+                change = crypto_data[crypto_id].get('usd_24h_change', 0)
+                change_str = f"{change:+.2f}%" if change is not None else "Н/Д"
+                crypto_data.append([crypto_name, f"${format_price(price)}", change_str])
+        
+        crypto_table = Table(crypto_data, colWidths=[2*inch, 2*inch, 2*inch])
+        crypto_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        story.append(crypto_table)
+        story.append(Spacer(1, 20))
+        
+        # Индексы
+        if indices_data:
+            indices_heading = Paragraph("📊 ФОНДОВЫЕ ИНДЕКСЫ", heading_style)
+            story.append(indices_heading)
+            
+            indices_data_table = [['Индекс', 'Значение', 'Изменение']]
+            for index_id, index_info in indices_data.items():
+                name = index_info.get('name', index_id.upper())
+                price = index_info.get('price', 0)
+                change = index_info.get('change_pct', 0)
+                change_str = f"{change:+.2f}%" if change != 0 else "0.00%"
+                indices_data_table.append([name, str(price), change_str])
+            
+            indices_table = Table(indices_data_table, colWidths=[2*inch, 2*inch, 2*inch])
+            indices_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 12),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ]))
+            story.append(indices_table)
+            story.append(Spacer(1, 20))
+        
+        # Источники данных
+        sources_heading = Paragraph("📡 ИСТОЧНИКИ ДАННЫХ", heading_style)
+        story.append(sources_heading)
+        
+        sources_text = """
+• ЦБ РФ - курсы валют
+• CoinGecko - криптовалюты
+• MOEX - российские индексы и акции
+• Gold-API - драгоценные металлы
+• Alpha Vantage - международные данные
+        """
+        sources_paragraph = Paragraph(sources_text, normal_style)
+        story.append(sources_paragraph)
+        
+        # Создаем PDF
+        doc.build(story)
+        buffer.seek(0)
+        
+        # Отправляем файл
+        await context.bot.send_document(
+            chat_id=update.effective_chat.id,
+            document=buffer,
+            filename=f"financial_report_{current_time.replace(' ', '_').replace(':', '-')}.pdf",
+            caption="📊 Ваш финансовый отчет готов!"
+        )
+        
+        await update.message.reply_text("✅ PDF отчет успешно создан и отправлен!")
+        
+    except Exception as e:
+        logger.error(f"Ошибка создания PDF: {e}")
+        await update.message.reply_text(f"❌ Ошибка создания PDF: {str(e)}")
 
 if __name__ == '__main__':
     main() 
