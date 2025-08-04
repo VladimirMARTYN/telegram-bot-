@@ -329,12 +329,46 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception as e:
             logger.error(f"Ошибка получения курсов ЦБ РФ: {e}")
             usd_str = eur_str = cny_str = gbp_str = "❌ Ошибка API"
-            usd_to_rub_rate = 80  # Fallback значение для конвертации
+            usd_to_rub_rate = 0  # Будем использовать FOREX как fallback
+        
+        # 1.5. Курс USD/RUB с FOREX рынка
+        try:
+            forex_response = requests.get(
+                "https://api.exchangerate-api.com/v4/latest/USD",
+                timeout=10
+            )
+            forex_response.raise_for_status()
+            forex_data = forex_response.json()
+            
+            # Получаем курс USD/RUB с FOREX
+            forex_usd_rub = forex_data.get('rates', {}).get('RUB', None)
+            
+            if forex_usd_rub and isinstance(forex_usd_rub, (int, float)):
+                # Если ЦБ РФ недоступен, используем FOREX как основной источник
+                if usd_to_rub_rate == 0:
+                    usd_to_rub_rate = forex_usd_rub
+                    usd_str = f"{format_price(forex_usd_rub)} ₽ (FOREX)"
+                    logger.info(f"📊 Используем FOREX как основной источник: {forex_usd_rub:.2f} ₽")
+                else:
+                    # Вычисляем разницу с курсом ЦБ РФ
+                    diff = forex_usd_rub - usd_to_rub_rate
+                    diff_pct = (diff / usd_to_rub_rate) * 100
+                    diff_str = f" (FOREX: {format_price(forex_usd_rub)} ₽, разница: {diff:+.2f} ₽, {diff_pct:+.2f}%)"
+                    usd_str += diff_str
+                    logger.info(f"📊 FOREX USD/RUB: {forex_usd_rub:.2f} ₽")
+            else:
+                logger.warning("⚠️ FOREX USD/RUB недоступен")
+                
+        except Exception as e:
+            logger.error(f"Ошибка получения курса FOREX: {e}")
+            # Если и ЦБ РФ, и FOREX недоступны, используем fallback
+            if usd_to_rub_rate == 0:
+                usd_to_rub_rate = 80  # Fallback значение для конвертации
         
         # 2. Расширенные курсы криптовалют CoinGecko
         try:
             crypto_response = requests.get(
-                "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,the-open-network,ripple,cardano,solana,dogecoin&vs_currencies=usd&include_24hr_change=true",
+                "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,the-open-network,ripple,cardano,solana,dogecoin,tether&vs_currencies=usd&include_24hr_change=true",
                 timeout=10
             )
             crypto_response.raise_for_status()
@@ -348,6 +382,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             cardano_price = crypto_data.get('cardano', {}).get('usd', 'Н/Д')
             solana_price = crypto_data.get('solana', {}).get('usd', 'Н/Д')
             dogecoin_price = crypto_data.get('dogecoin', {}).get('usd', 'Н/Д')
+            tether_price = crypto_data.get('tether', {}).get('usd', 'Н/Д')
             
             # Форматируем криптовалютные цены (доллары + рубли)
             crypto_strings = {}
@@ -443,6 +478,19 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             else:
                 crypto_strings['dogecoin'] = "Dogecoin: ❌ Н/Д"
                 
+            # Tether
+            if isinstance(tether_price, (int, float)) and usd_to_rub_rate > 0:
+                tether_rub = tether_price * usd_to_rub_rate
+                tether_change = crypto_data.get('tether', {}).get('usd_24h_change', 0)
+                change_str = f" ({tether_change:+.2f}% за 24ч)" if tether_change is not None and tether_change != 0 else ""
+                crypto_strings['tether'] = f"Tether: ${format_price(tether_price)} ({format_price(tether_rub)} ₽){change_str}"
+            elif isinstance(tether_price, (int, float)):
+                tether_change = crypto_data.get('tether', {}).get('usd_24h_change', 0)
+                change_str = f" ({tether_change:+.2f}% за 24ч)" if tether_change is not None and tether_change != 0 else ""
+                crypto_strings['tether'] = f"Tether: ${format_price(tether_price)}{change_str}"
+            else:
+                crypto_strings['tether'] = "Tether: ❌ Н/Д"
+                
         except Exception as e:
             logger.error(f"Ошибка получения курсов криптовалют: {e}")
             crypto_strings = {
@@ -452,7 +500,8 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 'ripple': 'XRP: ❌ Ошибка API',
                 'cardano': 'Cardano: ❌ Ошибка API',
                 'solana': 'Solana: ❌ Ошибка API',
-                'dogecoin': 'Dogecoin: ❌ Ошибка API'
+                'dogecoin': 'Dogecoin: ❌ Ошибка API',
+                'tether': 'Tether: ❌ Ошибка API'
             }
         
         # 3. Получаем данные акций с MOEX
@@ -508,7 +557,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         
         # Криптовалюты
         message += "💎 **КРИПТА:**\n"
-        crypto_items = ['bitcoin', 'ethereum', 'ton', 'ripple', 'cardano', 'solana', 'dogecoin']
+        crypto_items = ['bitcoin', 'ethereum', 'ton', 'ripple', 'cardano', 'solana', 'dogecoin', 'tether']
         for i, crypto in enumerate(crypto_items):
             if crypto in crypto_strings:
                 prefix = "├" if i < len(crypto_items) - 1 else "└"
@@ -726,7 +775,7 @@ async def set_alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             "• <code>/set_alert SBER 200</code> - Сбер выше 200₽\n\n"
             "💡 Поддерживаемые активы:\n"
             "• Валюты: USD, EUR, CNY, GBP\n"
-            "• Криптовалюты: BTC, ETH, TON, XRP, ADA, SOL, DOGE\n"
+            "• Криптовалюты: BTC, ETH, TON, XRP, ADA, SOL, DOGE, USDT\n"
             "• Акции: SBER, YDEX, VKCO, T, GAZP, GMKN, ROSN, LKOH, MTSS, MFON, PIKK, SMLT"
         )
         return
@@ -1322,7 +1371,7 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
         
         # Криптовалюты
         crypto_response = requests.get(
-            "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,the-open-network,ripple,cardano,solana,dogecoin&vs_currencies=usd",
+            "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,the-open-network,ripple,cardano,solana,dogecoin,tether&vs_currencies=usd&include_24hr_change=true",
             timeout=10
         )
         if crypto_response.status_code == 200:
@@ -1334,7 +1383,8 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
                 'XRP': crypto_data.get('ripple', {}).get('usd'),
                 'ADA': crypto_data.get('cardano', {}).get('usd'),
                 'SOL': crypto_data.get('solana', {}).get('usd'),
-                'DOGE': crypto_data.get('dogecoin', {}).get('usd')
+                'DOGE': crypto_data.get('dogecoin', {}).get('usd'),
+                'USDT': crypto_data.get('tether', {}).get('usd')
             })
         
         # Акции
