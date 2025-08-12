@@ -7,11 +7,15 @@ import asyncio
 from datetime import datetime, time
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, JobQueue
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, JobQueue
 import json
 import aiohttp
 import requests
 import threading
+
+# Загружаем переменные окружения из .env файла
+from dotenv import load_dotenv
+load_dotenv()
 
 # Безопасный импорт reportlab (может отсутствовать)
 try:
@@ -2270,7 +2274,6 @@ def main() -> None:
     application.add_handler(CommandHandler("export_pdf", export_pdf_command))
     
     # Обработчик callback-запросов для меню настроек
-    from telegram.ext import CallbackQueryHandler
     application.add_handler(CallbackQueryHandler(button_callback))
 
     # Обработчик всех текстовых сообщений (эхо)
