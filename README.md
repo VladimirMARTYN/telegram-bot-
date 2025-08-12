@@ -63,4 +63,4 @@ python bot.py
 - Отправка изображений и файлов
 - Inline клавиатуры
 - Веб-хуки вместо polling
-- Интеграция с внешними API 
+- Интеграция с внешними API # Render.com deployment ready
