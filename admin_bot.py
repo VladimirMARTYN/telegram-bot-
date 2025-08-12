@@ -2954,7 +2954,7 @@ async def web_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     # Проверяем права администратора
     if str(user_id) == os.getenv('ADMIN_USER_ID'):
-        web_url = os.getenv('WEB_APP_URL', 'https://your-app.railway.app')
+        web_url = os.getenv('WEB_APP_URL', 'https://telegram-bot-web-admin.railway.app')
         
         message = (
             "🌐 <b>Веб-панель администратора</b>\n\n"
