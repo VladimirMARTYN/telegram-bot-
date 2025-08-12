@@ -6,7 +6,7 @@ import os
 import asyncio
 from datetime import datetime, time
 import pytz
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, JobQueue
 import json
 import aiohttp
