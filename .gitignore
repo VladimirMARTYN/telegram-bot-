@@ -108,3 +108,4 @@ saved_features.json
 
 # Данные пользователей бота (персональные данные) 
 user_data.json .DS_Store
+.DS_Store
