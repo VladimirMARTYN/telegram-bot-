@@ -1,0 +1,464 @@
+{% extends "base.html" %}
+
+{% block title %}Настройки - Админ панель бота-финансиста{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2 text-white">
+        <i class="fas fa-cog me-2"></i>
+        Настройки бота
+    </h1>
+    <div class="btn-toolbar mb-2 mb-md-0">
+        <div class="btn-group me-2">
+            <button type="button" class="btn btn-sm btn-success" onclick="saveAllSettings()">
+                <i class="fas fa-save me-1"></i>
+                Сохранить все
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-light" onclick="resetSettings()">
+                <i class="fas fa-undo me-1"></i>
+                Сбросить
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Основные настройки -->
+<div class="row mb-4">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header">
+                <i class="fas fa-robot me-2"></i>
+                Основные настройки бота
+            </div>
+            <div class="card-body">
+                <form id="mainSettingsForm">
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="botName" class="form-label">Название бота</label>
+                            <input type="text" class="form-control" id="botName" name="bot_name" 
+                                   value="{{ settings.get('bot_name', 'Бот-финансист') }}">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="botLanguage" class="form-label">Язык бота</label>
+                            <select class="form-select" id="botLanguage" name="bot_language">
+                                <option value="ru" {% if settings.get('bot_language', 'ru') == 'ru' %}selected{% endif %}>Русский</option>
+                                <option value="en" {% if settings.get('bot_language') == 'en' %}selected{% endif %}>English</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="timezone" class="form-label">Часовой пояс</label>
+                            <select class="form-select" id="timezone" name="timezone">
+                                <option value="Europe/Moscow" {% if settings.get('timezone', 'Europe/Moscow') == 'Europe/Moscow' %}selected{% endif %}>Москва (UTC+3)</option>
+                                <option value="Europe/London" {% if settings.get('timezone') == 'Europe/London' %}selected{% endif %}>Лондон (UTC+0)</option>
+                                <option value="America/New_York" {% if settings.get('timezone') == 'America/New_York' %}selected{% endif %}>Нью-Йорк (UTC-5)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="dateFormat" class="form-label">Формат даты</label>
+                            <select class="form-select" id="dateFormat" name="date_format">
+                                <option value="DD.MM.YYYY" {% if settings.get('date_format', 'DD.MM.YYYY') == 'DD.MM.YYYY' %}selected{% endif %}>DD.MM.YYYY</option>
+                                <option value="MM/DD/YYYY" {% if settings.get('date_format') == 'MM/DD/YYYY' %}selected{% endif %}>MM/DD/YYYY</option>
+                                <option value="YYYY-MM-DD" {% if settings.get('date_format') == 'YYYY-MM-DD' %}selected{% endif %}>YYYY-MM-DD</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="maxUsers" class="form-label">Максимум пользователей</label>
+                            <input type="number" class="form-control" id="maxUsers" name="max_users" 
+                                   value="{{ settings.get('max_users', 1000) }}" min="1" max="10000">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="maxAlerts" class="form-label">Максимум алертов на пользователя</label>
+                            <input type="number" class="form-control" id="maxAlerts" name="max_alerts_per_user" 
+                                   value="{{ settings.get('max_alerts_per_user', 5) }}" min="1" max="20">
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header">
+                <i class="fas fa-toggle-on me-2"></i>
+                Включенные функции
+            </div>
+            <div class="card-body">
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="enableNotifications" 
+                           {% if settings.get('enable_notifications', true) %}checked{% endif %}>
+                    <label class="form-check-label" for="enableNotifications">
+                        Уведомления о изменениях
+                    </label>
+                </div>
+                
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="enableAlerts" 
+                           {% if settings.get('enable_alerts', true) %}checked{% endif %}>
+                    <label class="form-check-label" for="enableAlerts">
+                        Пороговые алерты
+                    </label>
+                </div>
+                
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="enableDailySummary" 
+                           {% if settings.get('enable_daily_summary', true) %}checked{% endif %}>
+                    <label class="form-check-label" for="enableDailySummary">
+                        Ежедневная сводка
+                    </label>
+                </div>
+                
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="enablePDFExport" 
+                           {% if settings.get('enable_pdf_export', true) %}checked{% endif %}>
+                    <label class="form-check-label" for="enablePDFExport">
+                        Экспорт в PDF
+                    </label>
+                </div>
+                
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="enableLogging" 
+                           {% if settings.get('enable_logging', true) %}checked{% endif %}>
+                    <label class="form-check-label" for="enableLogging">
+                        Подробное логирование
+                    </label>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Настройки уведомлений -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <i class="fas fa-bell me-2"></i>
+                Настройки уведомлений
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6>Ежедневная сводка</h6>
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="dailyTime" class="form-label">Время отправки</label>
+                                <input type="time" class="form-control" id="dailyTime" name="daily_summary_time" 
+                                       value="{{ settings.get('daily_summary_time', '09:00') }}">
+                            </div>
+                            <div class="col-md-6">
+                                <label for="dailyTimezone" class="form-label">Часовой пояс</label>
+                                <select class="form-select" id="dailyTimezone" name="daily_summary_timezone">
+                                    <option value="Europe/Moscow" {% if settings.get('daily_summary_timezone', 'Europe/Moscow') == 'Europe/Moscow' %}selected{% endif %}>Москва</option>
+                                    <option value="Europe/London" {% if settings.get('daily_summary_timezone') == 'Europe/London' %}selected{% endif %}>Лондон</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="dailyContent" class="form-label">Содержимое сводки</label>
+                            <select class="form-select" id="dailyContent" name="daily_summary_content" multiple>
+                                <option value="currencies" {% if 'currencies' in settings.get('daily_summary_content', ['currencies']) %}selected{% endif %}>Курсы валют</option>
+                                <option value="crypto" {% if 'crypto' in settings.get('daily_summary_content', ['crypto']) %}selected{% endif %}>Криптовалюты</option>
+                                <option value="stocks" {% if 'stocks' in settings.get('daily_summary_content', ['stocks']) %}selected{% endif %}>Акции</option>
+                                <option value="commodities" {% if 'commodities' in settings.get('daily_summary_content', ['commodities']) %}selected{% endif %}>Товары</option>
+                                <option value="indices" {% if 'indices' in settings.get('daily_summary_content', ['indices']) %}selected{% endif %}>Индексы</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-6">
+                        <h6>Уведомления об изменениях</h6>
+                        <div class="mb-3">
+                            <label for="changeThreshold" class="form-label">Порог изменения (%)</label>
+                            <input type="number" class="form-control" id="changeThreshold" name="change_threshold" 
+                                   value="{{ settings.get('change_threshold', 5) }}" min="1" max="50" step="0.1">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="notificationInterval" class="form-label">Интервал проверки (минуты)</label>
+                            <input type="number" class="form-control" id="notificationInterval" name="notification_interval" 
+                                   value="{{ settings.get('notification_interval', 15) }}" min="1" max="60">
+                        </div>
+                        
+                        <div class="form-check form-switch mb-3">
+                            <input class="form-check-input" type="checkbox" id="enablePriceAlerts" 
+                                   {% if settings.get('enable_price_alerts', true) %}checked{% endif %}>
+                            <label class="form-check-label" for="enablePriceAlerts">
+                                Уведомления о ценах
+                            </label>
+                        </div>
+                        
+                        <div class="form-check form-switch mb-3">
+                            <input class="form-check-input" type="checkbox" id="enableTrendAlerts" 
+                                   {% if settings.get('enable_trend_alerts', true) %}checked{% endif %}>
+                            <label class="form-check-label" for="enableTrendAlerts">
+                                Уведомления о трендах
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- API настройки -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <i class="fas fa-key me-2"></i>
+                API ключи и внешние сервисы
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="mb-3">
+                            <label for="metalPriceApiKey" class="form-label">MetalPriceAPI ключ</label>
+                            <input type="password" class="form-control" id="metalPriceApiKey" name="metalpriceapi_key" 
+                                   value="{{ settings.get('metalpriceapi_key', '') }}" placeholder="Введите API ключ">
+                            <div class="form-text">Для получения данных о драгоценных металлах</div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="apiNinjasKey" class="form-label">API Ninjas ключ</label>
+                            <input type="password" class="form-control" id="apiNinjasKey" name="api_ninjas_key" 
+                                   value="{{ settings.get('api_ninjas_key', '') }}" placeholder="Введите API ключ">
+                            <div class="form-text">Для получения данных о нефти и товарах</div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="fmpApiKey" class="form-label">Financial Modeling Prep ключ</label>
+                            <input type="password" class="form-control" id="fmpApiKey" name="fmp_api_key" 
+                                   value="{{ settings.get('fmp_api_key', '') }}" placeholder="Введите API ключ">
+                            <div class="form-text">Для получения данных об индексах</div>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-6">
+                        <div class="mb-3">
+                            <label for="alphaVantageKey" class="form-label">Alpha Vantage ключ</label>
+                            <input type="password" class="form-control" id="alphaVantageKey" name="alpha_vantage_key" 
+                                   value="{{ settings.get('alpha_vantage_key', '') }}" placeholder="Введите API ключ">
+                            <div class="form-text">Для получения рыночных данных</div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="eiaApiKey" class="form-label">EIA API ключ</label>
+                            <input type="password" class="form-control" id="eiaApiKey" name="eia_api_key" 
+                                   value="{{ settings.get('eia_api_key', '') }}" placeholder="Введите API ключ">
+                            <div class="form-text">Для получения энергетических данных</div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="openaiApiKey" class="form-label">OpenAI API ключ</label>
+                            <input type="password" class="form-control" id="openaiApiKey" name="openai_api_key" 
+                                   value="{{ settings.get('openai_api_key', '') }}" placeholder="Введите API ключ">
+                            <div class="form-text">Для ChatGPT функций (опционально)</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="row mt-3">
+                    <div class="col-12">
+                        <div class="alert alert-info">
+                            <i class="fas fa-info-circle me-2"></i>
+                            <strong>Информация:</strong> API ключи хранятся в зашифрованном виде. 
+                            Для получения ключей посетите соответствующие сервисы.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Дополнительные настройки -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <i class="fas fa-tools me-2"></i>
+                Дополнительные настройки
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6>Производительность</h6>
+                        <div class="mb-3">
+                            <label for="cacheTimeout" class="form-label">Время кэширования (секунды)</label>
+                            <input type="number" class="form-control" id="cacheTimeout" name="cache_timeout" 
+                                   value="{{ settings.get('cache_timeout', 300) }}" min="60" max="3600">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="maxRetries" class="form-label">Максимум попыток API</label>
+                            <input type="number" class="form-control" id="maxRetries" name="max_api_retries" 
+                                   value="{{ settings.get('max_api_retries', 3) }}" min="1" max="10">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="requestTimeout" class="form-label">Таймаут запросов (секунды)</label>
+                            <input type="number" class="form-control" id="requestTimeout" name="request_timeout" 
+                                   value="{{ settings.get('request_timeout', 10) }}" min="5" max="60">
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-6">
+                        <h6>Безопасность</h6>
+                        <div class="form-check form-switch mb-3">
+                            <input class="form-check-input" type="checkbox" id="enableRateLimit" 
+                                   {% if settings.get('enable_rate_limit', true) %}checked{% endif %}>
+                            <label class="form-check-label" for="enableRateLimit">
+                                Ограничение запросов
+                            </label>
+                        </div>
+                        
+                        <div class="form-check form-switch mb-3">
+                            <input class="form-check-input" type="checkbox" id="enableUserValidation" 
+                                   {% if settings.get('enable_user_validation', true) %}checked{% endif %}>
+                            <label class="form-check-label" for="enableUserValidation">
+                                Валидация пользователей
+                            </label>
+                        </div>
+                        
+                        <div class="form-check form-switch mb-3">
+                            <input class="form-check-input" type="checkbox" id="enableDataBackup" 
+                                   {% if settings.get('enable_data_backup', true) %}checked{% endif %}>
+                            <label class="form-check-label" for="enableDataBackup">
+                                Автоматическое резервное копирование
+                            </label>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="backupInterval" class="form-label">Интервал резервного копирования (часы)</label>
+                            <input type="number" class="form-control" id="backupInterval" name="backup_interval" 
+                                   value="{{ settings.get('backup_interval', 24) }}" min="1" max="168">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Функции для работы с настройками
+function saveAllSettings() {
+    const formData = new FormData(document.getElementById('mainSettingsForm'));
+    const settings = {};
+    
+    // Собираем данные из формы
+    for (let [key, value] of formData.entries()) {
+        settings[key] = value;
+    }
+    
+    // Добавляем данные из чекбоксов
+    settings.enable_notifications = document.getElementById('enableNotifications').checked;
+    settings.enable_alerts = document.getElementById('enableAlerts').checked;
+    settings.enable_daily_summary = document.getElementById('enableDailySummary').checked;
+    settings.enable_pdf_export = document.getElementById('enablePDFExport').checked;
+    settings.enable_logging = document.getElementById('enableLogging').checked;
+    settings.enable_price_alerts = document.getElementById('enablePriceAlerts').checked;
+    settings.enable_trend_alerts = document.getElementById('enableTrendAlerts').checked;
+    settings.enable_rate_limit = document.getElementById('enableRateLimit').checked;
+    settings.enable_user_validation = document.getElementById('enableUserValidation').checked;
+    settings.enable_data_backup = document.getElementById('enableDataBackup').checked;
+    
+    // Добавляем API ключи
+    settings.metalpriceapi_key = document.getElementById('metalPriceApiKey').value;
+    settings.api_ninjas_key = document.getElementById('apiNinjasKey').value;
+    settings.fmp_api_key = document.getElementById('fmpApiKey').value;
+    settings.alpha_vantage_key = document.getElementById('alphaVantageKey').value;
+    settings.eia_api_key = document.getElementById('eiaApiKey').value;
+    settings.openai_api_key = document.getElementById('openaiApiKey').value;
+    
+    // Отправляем настройки на сервер
+    fetch('/api/settings', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(settings)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.status === 'success') {
+            showAlert('Настройки успешно сохранены!', 'success');
+        } else {
+            showAlert('Ошибка при сохранении настроек', 'danger');
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        showAlert('Ошибка при сохранении настроек', 'danger');
+    });
+}
+
+function resetSettings() {
+    if (confirm('Вы уверены, что хотите сбросить все настройки к значениям по умолчанию?')) {
+        location.reload();
+    }
+}
+
+function showAlert(message, type) {
+    const alertDiv = document.createElement('div');
+    alertDiv.className = `alert alert-${type} alert-dismissible fade show`;
+    alertDiv.innerHTML = `
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    
+    document.querySelector('.main-content').insertBefore(alertDiv, document.querySelector('.main-content').firstChild);
+    
+    // Автоматически скрываем через 5 секунд
+    setTimeout(() => {
+        if (alertDiv.parentNode) {
+            alertDiv.remove();
+        }
+    }, 5000);
+}
+
+// Валидация настроек
+document.getElementById('maxUsers').addEventListener('change', function() {
+    const value = parseInt(this.value);
+    if (value < 1) this.value = 1;
+    if (value > 10000) this.value = 10000;
+});
+
+document.getElementById('maxAlerts').addEventListener('change', function() {
+    const value = parseInt(this.value);
+    if (value < 1) this.value = 1;
+    if (value > 20) this.value = 20;
+});
+
+document.getElementById('changeThreshold').addEventListener('change', function() {
+    const value = parseFloat(this.value);
+    if (value < 0.1) this.value = 0.1;
+    if (value > 50) this.value = 50;
+});
+
+// Автосохранение при изменении
+let saveTimeout;
+function autoSave() {
+    clearTimeout(saveTimeout);
+    saveTimeout = setTimeout(() => {
+        saveAllSettings();
+    }, 2000);
+}
+
+// Добавляем автосохранение для важных полей
+document.querySelectorAll('input, select').forEach(element => {
+    element.addEventListener('change', autoSave);
+});
+</script>
+{% endblock %} 

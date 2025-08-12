@@ -1,0 +1,515 @@
+{% extends "base.html" %}
+
+{% block title %}Логи - Админ панель бота-финансиста{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2 text-white">
+        <i class="fas fa-file-alt me-2"></i>
+        Логи бота
+    </h1>
+    <div class="btn-toolbar mb-2 mb-md-0">
+        <div class="btn-group me-2">
+            <button type="button" class="btn btn-sm btn-outline-light" onclick="refreshLogs()">
+                <i class="fas fa-sync-alt me-1"></i>
+                Обновить
+            </button>
+            <button type="button" class="btn btn-sm btn-success" onclick="downloadLogs()">
+                <i class="fas fa-download me-1"></i>
+                Скачать
+            </button>
+            <button type="button" class="btn btn-sm btn-warning" onclick="clearLogs()">
+                <i class="fas fa-trash me-1"></i>
+                Очистить
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Фильтры логов -->
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="fas fa-filter me-2"></i>
+        Фильтры логов
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-3">
+                <label for="logLevel" class="form-label">Уровень логирования</label>
+                <select class="form-select" id="logLevel">
+                    <option value="">Все уровни</option>
+                    <option value="DEBUG">DEBUG</option>
+                    <option value="INFO">INFO</option>
+                    <option value="WARNING">WARNING</option>
+                    <option value="ERROR">ERROR</option>
+                    <option value="CRITICAL">CRITICAL</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label for="logDate" class="form-label">Дата</label>
+                <input type="date" class="form-control" id="logDate">
+            </div>
+            <div class="col-md-4">
+                <label for="logSearch" class="form-label">Поиск в логах</label>
+                <input type="text" class="form-control" id="logSearch" placeholder="Введите текст для поиска...">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">&nbsp;</label>
+                <button class="btn btn-primary w-100" onclick="applyLogFilters()">
+                    <i class="fas fa-search me-1"></i>
+                    Найти
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Статистика логов -->
+<div class="row mb-4">
+    <div class="col-md-2">
+        <div class="card stat-card">
+            <div class="card-body">
+                <div class="stat-number text-primary" id="totalLogs">0</div>
+                <div class="stat-label">Всего записей</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stat-card">
+            <div class="card-body">
+                <div class="stat-number text-success" id="infoLogs">0</div>
+                <div class="stat-label">INFO</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stat-card">
+            <div class="card-body">
+                <div class="stat-number text-warning" id="warningLogs">0</div>
+                <div class="stat-label">WARNING</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stat-card">
+            <div class="card-body">
+                <div class="stat-number text-danger" id="errorLogs">0</div>
+                <div class="stat-label">ERROR</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stat-card">
+            <div class="card-body">
+                <div class="stat-number text-info" id="debugLogs">0</div>
+                <div class="stat-label">DEBUG</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stat-card">
+            <div class="card-body">
+                <div class="stat-number text-secondary" id="criticalLogs">0</div>
+                <div class="stat-label">CRITICAL</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Таблица логов -->
+<div class="card">
+    <div class="card-header">
+        <i class="fas fa-list me-2"></i>
+        Записи логов
+        <span class="badge bg-primary ms-2" id="logsCount">0</span>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover" id="logsTable">
+                <thead>
+                    <tr>
+                        <th>Время</th>
+                        <th>Уровень</th>
+                        <th>Модуль</th>
+                        <th>Сообщение</th>
+                        <th>Действия</th>
+                    </tr>
+                </thead>
+                <tbody id="logsTableBody">
+                    <!-- Логи будут загружены динамически -->
+                </tbody>
+            </table>
+        </div>
+        
+        <!-- Пагинация -->
+        <nav aria-label="Навигация по логам">
+            <ul class="pagination justify-content-center" id="logsPagination">
+                <!-- Пагинация будет создана динамически -->
+            </ul>
+        </nav>
+    </div>
+</div>
+
+<!-- Модальное окно для детального просмотра лога -->
+<div class="modal fade" id="logDetailModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Детали записи лога</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="logDetailBody">
+                <!-- Содержимое будет загружено динамически -->
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Закрыть</button>
+                <button type="button" class="btn btn-primary" onclick="copyLogToClipboard()">Копировать</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Переменные для управления логами
+let currentLogs = [];
+let filteredLogs = [];
+let currentPage = 1;
+const logsPerPage = 50;
+
+// Загрузка логов при загрузке страницы
+document.addEventListener('DOMContentLoaded', function() {
+    loadLogs();
+});
+
+// Функция загрузки логов
+function loadLogs() {
+    // Имитация загрузки логов (в реальном приложении здесь будет API запрос)
+    const mockLogs = generateMockLogs();
+    currentLogs = mockLogs;
+    filteredLogs = [...currentLogs];
+    
+    updateLogStatistics();
+    displayLogs();
+}
+
+// Генерация тестовых логов
+function generateMockLogs() {
+    const levels = ['INFO', 'WARNING', 'ERROR', 'DEBUG', 'CRITICAL'];
+    const modules = ['admin_bot', 'api_handler', 'database', 'scheduler', 'notifications'];
+    const messages = [
+        'Бот успешно запущен',
+        'Получены данные о курсах валют',
+        'Ошибка подключения к API',
+        'Пользователь подписался на уведомления',
+        'Отправлена ежедневная сводка',
+        'Проблема с подключением к базе данных',
+        'Обновлены настройки пользователя',
+        'Создан новый алерт',
+        'Ошибка при отправке уведомления',
+        'Завершена синхронизация данных'
+    ];
+    
+    const logs = [];
+    const now = new Date();
+    
+    for (let i = 0; i < 200; i++) {
+        const timestamp = new Date(now.getTime() - Math.random() * 7 * 24 * 60 * 60 * 1000);
+        const level = levels[Math.floor(Math.random() * levels.length)];
+        const module = modules[Math.floor(Math.random() * modules.length)];
+        const message = messages[Math.floor(Math.random() * messages.length)];
+        
+        logs.push({
+            id: i + 1,
+            timestamp: timestamp.toISOString(),
+            level: level,
+            module: module,
+            message: message,
+            details: `Дополнительная информация для записи ${i + 1}`
+        });
+    }
+    
+    return logs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+}
+
+// Обновление статистики логов
+function updateLogStatistics() {
+    const stats = {
+        total: filteredLogs.length,
+        info: filteredLogs.filter(log => log.level === 'INFO').length,
+        warning: filteredLogs.filter(log => log.level === 'WARNING').length,
+        error: filteredLogs.filter(log => log.level === 'ERROR').length,
+        debug: filteredLogs.filter(log => log.level === 'DEBUG').length,
+        critical: filteredLogs.filter(log => log.level === 'CRITICAL').length
+    };
+    
+    document.getElementById('totalLogs').textContent = stats.total;
+    document.getElementById('infoLogs').textContent = stats.info;
+    document.getElementById('warningLogs').textContent = stats.warning;
+    document.getElementById('errorLogs').textContent = stats.error;
+    document.getElementById('debugLogs').textContent = stats.debug;
+    document.getElementById('criticalLogs').textContent = stats.critical;
+}
+
+// Отображение логов
+function displayLogs() {
+    const startIndex = (currentPage - 1) * logsPerPage;
+    const endIndex = startIndex + logsPerPage;
+    const pageLogs = filteredLogs.slice(startIndex, endIndex);
+    
+    const tbody = document.getElementById('logsTableBody');
+    tbody.innerHTML = '';
+    
+    pageLogs.forEach(log => {
+        const row = document.createElement('tr');
+        row.className = getLogRowClass(log.level);
+        
+        row.innerHTML = `
+            <td>${formatTimestamp(log.timestamp)}</td>
+            <td><span class="badge ${getLogBadgeClass(log.level)}">${log.level}</span></td>
+            <td><code>${log.module}</code></td>
+            <td>${log.message}</td>
+            <td>
+                <button class="btn btn-sm btn-outline-primary" onclick="viewLogDetail(${log.id})" title="Просмотр">
+                    <i class="fas fa-eye"></i>
+                </button>
+                <button class="btn btn-sm btn-outline-success" onclick="copyLog(${log.id})" title="Копировать">
+                    <i class="fas fa-copy"></i>
+                </button>
+            </td>
+        `;
+        
+        tbody.appendChild(row);
+    });
+    
+    updatePagination();
+    document.getElementById('logsCount').textContent = filteredLogs.length;
+}
+
+// Получение CSS класса для строки лога
+function getLogRowClass(level) {
+    switch (level) {
+        case 'ERROR':
+        case 'CRITICAL':
+            return 'table-danger';
+        case 'WARNING':
+            return 'table-warning';
+        case 'INFO':
+            return 'table-info';
+        default:
+            return '';
+    }
+}
+
+// Получение CSS класса для бейджа уровня
+function getLogBadgeClass(level) {
+    switch (level) {
+        case 'INFO':
+            return 'bg-success';
+        case 'WARNING':
+            return 'bg-warning text-dark';
+        case 'ERROR':
+            return 'bg-danger';
+        case 'DEBUG':
+            return 'bg-info';
+        case 'CRITICAL':
+            return 'bg-dark';
+        default:
+            return 'bg-secondary';
+    }
+}
+
+// Форматирование временной метки
+function formatTimestamp(timestamp) {
+    const date = new Date(timestamp);
+    return date.toLocaleString('ru-RU');
+}
+
+// Обновление пагинации
+function updatePagination() {
+    const totalPages = Math.ceil(filteredLogs.length / logsPerPage);
+    const pagination = document.getElementById('logsPagination');
+    pagination.innerHTML = '';
+    
+    if (totalPages <= 1) return;
+    
+    // Кнопка "Предыдущая"
+    const prevLi = document.createElement('li');
+    prevLi.className = `page-item ${currentPage === 1 ? 'disabled' : ''}`;
+    prevLi.innerHTML = `<a class="page-link" href="#" onclick="changePage(${currentPage - 1})">Предыдущая</a>`;
+    pagination.appendChild(prevLi);
+    
+    // Номера страниц
+    const startPage = Math.max(1, currentPage - 2);
+    const endPage = Math.min(totalPages, currentPage + 2);
+    
+    for (let i = startPage; i <= endPage; i++) {
+        const li = document.createElement('li');
+        li.className = `page-item ${i === currentPage ? 'active' : ''}`;
+        li.innerHTML = `<a class="page-link" href="#" onclick="changePage(${i})">${i}</a>`;
+        pagination.appendChild(li);
+    }
+    
+    // Кнопка "Следующая"
+    const nextLi = document.createElement('li');
+    nextLi.className = `page-item ${currentPage === totalPages ? 'disabled' : ''}`;
+    nextLi.innerHTML = `<a class="page-link" href="#" onclick="changePage(${currentPage + 1})">Следующая</a>`;
+    pagination.appendChild(nextLi);
+}
+
+// Смена страницы
+function changePage(page) {
+    const totalPages = Math.ceil(filteredLogs.length / logsPerPage);
+    if (page >= 1 && page <= totalPages) {
+        currentPage = page;
+        displayLogs();
+    }
+}
+
+// Применение фильтров
+function applyLogFilters() {
+    const level = document.getElementById('logLevel').value;
+    const date = document.getElementById('logDate').value;
+    const search = document.getElementById('logSearch').value.toLowerCase();
+    
+    filteredLogs = currentLogs.filter(log => {
+        let match = true;
+        
+        // Фильтр по уровню
+        if (level && log.level !== level) {
+            match = false;
+        }
+        
+        // Фильтр по дате
+        if (date) {
+            const logDate = new Date(log.timestamp).toISOString().split('T')[0];
+            if (logDate !== date) {
+                match = false;
+            }
+        }
+        
+        // Фильтр по поиску
+        if (search) {
+            const searchText = `${log.module} ${log.message} ${log.level}`.toLowerCase();
+            if (!searchText.includes(search)) {
+                match = false;
+            }
+        }
+        
+        return match;
+    });
+    
+    currentPage = 1;
+    updateLogStatistics();
+    displayLogs();
+}
+
+// Функции управления логами
+function refreshLogs() {
+    loadLogs();
+}
+
+function downloadLogs() {
+    const csv = generateLogsCSV();
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `bot_logs_${new Date().toISOString().split('T')[0]}.csv`;
+    link.click();
+}
+
+function clearLogs() {
+    if (confirm('Вы уверены, что хотите очистить все логи? Это действие нельзя отменить!')) {
+        currentLogs = [];
+        filteredLogs = [];
+        currentPage = 1;
+        updateLogStatistics();
+        displayLogs();
+        showAlert('Логи успешно очищены', 'success');
+    }
+}
+
+function generateLogsCSV() {
+    let csv = 'Время,Уровень,Модуль,Сообщение\n';
+    
+    filteredLogs.forEach(log => {
+        const timestamp = formatTimestamp(log.timestamp);
+        const message = log.message.replace(/"/g, '""');
+        csv += `"${timestamp}","${log.level}","${log.module}","${message}"\n`;
+    });
+    
+    return csv;
+}
+
+function viewLogDetail(logId) {
+    const log = currentLogs.find(l => l.id === logId);
+    if (log) {
+        const modalBody = document.getElementById('logDetailBody');
+        modalBody.innerHTML = `
+            <div class="row">
+                <div class="col-md-6">
+                    <h6>Основная информация</h6>
+                    <p><strong>ID:</strong> ${log.id}</p>
+                    <p><strong>Время:</strong> ${formatTimestamp(log.timestamp)}</p>
+                    <p><strong>Уровень:</strong> <span class="badge ${getLogBadgeClass(log.level)}">${log.level}</span></p>
+                    <p><strong>Модуль:</strong> <code>${log.module}</code></p>
+                </div>
+                <div class="col-md-6">
+                    <h6>Детали</h6>
+                    <p><strong>Сообщение:</strong></p>
+                    <div class="alert alert-info">${log.message}</div>
+                    <p><strong>Дополнительно:</strong></p>
+                    <div class="alert alert-secondary">${log.details}</div>
+                </div>
+            </div>
+        `;
+        
+        const modal = new bootstrap.Modal(document.getElementById('logDetailModal'));
+        modal.show();
+    }
+}
+
+function copyLog(logId) {
+    const log = currentLogs.find(l => l.id === logId);
+    if (log) {
+        const logText = `[${formatTimestamp(log.timestamp)}] ${log.level} - ${log.module}: ${log.message}`;
+        navigator.clipboard.writeText(logText).then(() => {
+            showAlert('Лог скопирован в буфер обмена', 'success');
+        });
+    }
+}
+
+function copyLogToClipboard() {
+    const logText = document.getElementById('logDetailBody').textContent;
+    navigator.clipboard.writeText(logText).then(() => {
+        showAlert('Детали лога скопированы в буфер обмена', 'success');
+    });
+}
+
+function showAlert(message, type) {
+    const alertDiv = document.createElement('div');
+    alertDiv.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
+    alertDiv.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
+    alertDiv.innerHTML = `
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    
+    document.body.appendChild(alertDiv);
+    
+    setTimeout(() => {
+        if (alertDiv.parentNode) {
+            alertDiv.remove();
+        }
+    }, 3000);
+}
+
+// Автообновление логов каждые 30 секунд
+setInterval(() => {
+    if (document.getElementById('logLevel').value === '') {
+        loadLogs();
+    }
+}, 30000);
+</script>
+{% endblock %} 

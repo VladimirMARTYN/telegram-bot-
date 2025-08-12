@@ -1,0 +1,317 @@
+{% extends "base.html" %}
+
+{% block title %}Дашборд - Админ панель бота-финансиста{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2 text-white">
+        <i class="fas fa-tachometer-alt me-2"></i>
+        Дашборд
+    </h1>
+    <div class="btn-toolbar mb-2 mb-md-0">
+        <div class="btn-group me-2">
+            <button type="button" class="btn btn-sm btn-outline-light" onclick="refreshData()">
+                <i class="fas fa-sync-alt me-1"></i>
+                Обновить
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Статистика -->
+<div class="row mb-4">
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card">
+            <div class="card-body">
+                <div class="stat-number text-primary" id="totalUsers">{{ bot_status.users_count }}</div>
+                <div class="stat-label">Всего пользователей</div>
+                <i class="fas fa-users fa-2x text-muted mt-2"></i>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card">
+            <div class="card-body">
+                <div class="stat-number text-success" id="subscribedUsers">{{ bot_status.notifications_count }}</div>
+                <div class="stat-label">Подписчики</div>
+                <i class="fas fa-bell fa-2x text-muted mt-2"></i>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card">
+            <div class="card-body">
+                <div class="stat-number text-warning" id="totalAlerts">{{ bot_status.alerts_count }}</div>
+                <div class="stat-label">Активные алерты</div>
+                <i class="fas fa-exclamation-triangle fa-2x text-muted mt-2"></i>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card">
+            <div class="card-body">
+                <div class="stat-number text-info" id="uptime">{{ bot_status.uptime or '00:00:00' }}</div>
+                <div class="stat-label">Время работы</div>
+                <i class="fas fa-clock fa-2x text-muted mt-2"></i>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Графики и диаграммы -->
+<div class="row mb-4">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header">
+                <i class="fas fa-chart-line me-2"></i>
+                Активность пользователей
+            </div>
+            <div class="card-body">
+                <canvas id="activityChart" width="400" height="200"></canvas>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header">
+                <i class="fas fa-chart-pie me-2"></i>
+                Распределение пользователей
+            </div>
+            <div class="card-body">
+                <canvas id="usersChart" width="400" height="200"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Последние действия -->
+<div class="row">
+    <div class="col-lg-6">
+        <div class="card">
+            <div class="card-header">
+                <i class="fas fa-users me-2"></i>
+                Последние пользователи
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Имя</th>
+                                <th>Дата регистрации</th>
+                                <th>Статус</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recentUsers">
+                            {% for user in bot_data.users[-5:] %}
+                            <tr>
+                                <td>{{ user.user_id }}</td>
+                                <td>{{ user.first_name or 'Неизвестно' }}</td>
+                                <td>{{ user.registration_date or 'Не указано' }}</td>
+                                <td>
+                                    {% if user.subscribed %}
+                                    <span class="badge bg-success">Подписан</span>
+                                    {% else %}
+                                    <span class="badge bg-secondary">Не подписан</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-lg-6">
+        <div class="card">
+            <div class="card-header">
+                <i class="fas fa-cog me-2"></i>
+                Статус системы
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-6">
+                        <div class="d-flex align-items-center mb-3">
+                            <div class="status-indicator status-online me-2"></div>
+                            <span>Бот работает</span>
+                        </div>
+                        <div class="d-flex align-items-center mb-3">
+                            <div class="status-indicator status-online me-2"></div>
+                            <span>API доступен</span>
+                        </div>
+                        <div class="d-flex align-items-center mb-3">
+                            <div class="status-indicator status-online me-2"></div>
+                            <span>База данных</span>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="d-flex align-items-center mb-3">
+                            <div class="status-indicator status-online me-2"></div>
+                            <span>Уведомления</span>
+                        </div>
+                        <div class="d-flex align-items-center mb-3">
+                            <div class="status-indicator status-online me-2"></div>
+                            <span>Алерты</span>
+                        </div>
+                        <div class="d-flex align-items-center mb-3">
+                            <div class="status-indicator status-online me-2"></div>
+                            <span>Ежедневная сводка</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <hr>
+                
+                <div class="row text-center">
+                    <div class="col-6">
+                        <h5 class="text-primary">{{ bot_status.users_count }}</h5>
+                        <small class="text-muted">Пользователей</small>
+                    </div>
+                    <div class="col-6">
+                        <h5 class="text-success">{{ bot_status.notifications_count }}</h5>
+                        <small class="text-muted">Подписчиков</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Быстрые действия -->
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <i class="fas fa-bolt me-2"></i>
+                Быстрые действия
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-3 mb-2">
+                        <button class="btn btn-primary w-100" onclick="sendTestMessage()">
+                            <i class="fas fa-paper-plane me-1"></i>
+                            Тестовое сообщение
+                        </button>
+                    </div>
+                    <div class="col-md-3 mb-2">
+                        <button class="btn btn-success w-100" onclick="exportData()">
+                            <i class="fas fa-download me-1"></i>
+                            Экспорт данных
+                        </button>
+                    </div>
+                    <div class="col-md-3 mb-2">
+                        <button class="btn btn-warning w-100" onclick="backupData()">
+                            <i class="fas fa-save me-1"></i>
+                            Резервная копия
+                        </button>
+                    </div>
+                    <div class="col-md-3 mb-2">
+                        <button class="btn btn-info w-100" onclick="viewLogs()">
+                            <i class="fas fa-file-alt me-1"></i>
+                            Просмотр логов
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// График активности пользователей
+const activityCtx = document.getElementById('activityChart').getContext('2d');
+const activityChart = new Chart(activityCtx, {
+    type: 'line',
+    data: {
+        labels: ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'],
+        datasets: [{
+            label: 'Новые пользователи',
+            data: [12, 19, 3, 5, 2, 3, 7],
+            borderColor: '#3498db',
+            backgroundColor: 'rgba(52, 152, 219, 0.1)',
+            tension: 0.4
+        }]
+    },
+    options: {
+        responsive: true,
+        plugins: {
+            legend: {
+                position: 'top',
+            }
+        },
+        scales: {
+            y: {
+                beginAtZero: true
+            }
+        }
+    }
+});
+
+// Круговая диаграмма пользователей
+const usersCtx = document.getElementById('usersChart').getContext('2d');
+const usersChart = new Chart(usersCtx, {
+    type: 'doughnut',
+    data: {
+        labels: ['Подписчики', 'Не подписанные'],
+        datasets: [{
+            data: [{{ bot_status.notifications_count }}, {{ bot_status.users_count - bot_status.notifications_count }}],
+            backgroundColor: [
+                '#27ae60',
+                '#95a5a6'
+            ],
+            borderWidth: 0
+        }]
+    },
+    options: {
+        responsive: true,
+        plugins: {
+            legend: {
+                position: 'bottom',
+            }
+        }
+    }
+});
+
+// Функции для быстрых действий
+function refreshData() {
+    location.reload();
+}
+
+function sendTestMessage() {
+    alert('Функция отправки тестового сообщения будет добавлена позже');
+}
+
+function exportData() {
+    alert('Функция экспорта данных будет добавлена позже');
+}
+
+function backupData() {
+    alert('Функция резервного копирования будет добавлена позже');
+}
+
+function viewLogs() {
+    window.location.href = '/logs';
+}
+
+// Обновление данных через WebSocket
+socket.on('status_update', function(data) {
+    document.getElementById('totalUsers').textContent = data.users_count;
+    document.getElementById('subscribedUsers').textContent = data.notifications_count;
+    document.getElementById('totalAlerts').textContent = data.alerts_count;
+    document.getElementById('uptime').textContent = data.uptime || '00:00:00';
+    
+    // Обновляем графики
+    usersChart.data.datasets[0].data = [data.notifications_count, data.users_count - data.notifications_count];
+    usersChart.update();
+});
+</script>
+{% endblock %} 
