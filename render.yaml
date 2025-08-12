@@ -2,7 +2,7 @@ services:
   - type: worker
     name: telegram-financial-bot
     env: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements-simple.txt
     startCommand: python admin_bot.py
     envVars:
       - key: BOT_TOKEN

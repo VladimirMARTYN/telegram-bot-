@@ -17,6 +17,13 @@ import threading
 from dotenv import load_dotenv
 load_dotenv()
 
+# Настройка логирования (должна быть перед импортом reportlab)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
 # Безопасный импорт reportlab (может отсутствовать)
 try:
     from reportlab.lib.pagesizes import letter, A4
@@ -47,12 +54,7 @@ try:
 except ImportError:
     SCHEDULE_AVAILABLE = False
 
-# Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# Логирование уже настроено выше
 
 # Предупреждение о недоступности schedule
 if not SCHEDULE_AVAILABLE:
