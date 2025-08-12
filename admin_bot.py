@@ -26,6 +26,7 @@ try:
     from reportlab.lib import colors
     from reportlab.pdfgen import canvas
     REPORTLAB_AVAILABLE = True
+    logger.info("✅ ReportLab доступен для PDF экспорта")
 except ImportError:
     REPORTLAB_AVAILABLE = False
     # Создаем заглушки для типов
@@ -35,6 +36,7 @@ except ImportError:
     inch = None
     colors = None
     canvas = None
+    logger.warning("⚠️ ReportLab недоступен - PDF экспорт отключен")
 
 import io
 
