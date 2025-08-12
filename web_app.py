@@ -29,6 +29,15 @@ bot_status = {
     'start_time': None
 }
 
+def serialize_bot_status():
+    """Сериализует bot_status для JSON"""
+    status = bot_status.copy()
+    if status['start_time']:
+        status['start_time'] = status['start_time'].isoformat()
+    if status['last_activity']:
+        status['last_activity'] = status['last_activity']
+    return status
+
 # Функции для работы с данными бота
 def load_bot_data():
     """Загружает данные бота из JSON файлов"""
@@ -183,7 +192,7 @@ def api_toggle_subscription(user_id):
 def handle_connect():
     """Обработка подключения клиента"""
     print('Client connected')
-    emit('status_update', bot_status)
+    emit('status_update', serialize_bot_status())
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -200,7 +209,7 @@ def update_bot_status():
         bot_status['last_activity'] = get_moscow_time().strftime('%H:%M:%S')
         
         # Отправляем обновление всем подключенным клиентам
-        socketio.emit('status_update', bot_status)
+        socketio.emit('status_update', serialize_bot_status())
 
 # Запуск фонового потока для обновления статуса
 def start_status_updater():
@@ -221,4 +230,8 @@ if __name__ == '__main__':
     print("📊 Дашборд доступен по адресу: http://localhost:5001")
     print("🔧 API доступен по адресу: http://localhost:5001/api/")
     
-    socketio.run(app, host='0.0.0.0', port=5001, debug=True) 
+    # Получаем порт из переменных окружения (для Railway)
+    port = int(os.getenv('PORT', 5001))
+    
+    # Запускаем в продакшн режиме на Railway
+    socketio.run(app, host='0.0.0.0', port=port, debug=False) 

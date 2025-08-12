@@ -2277,6 +2277,7 @@ def main() -> None:
     # Новые команды
     application.add_handler(CommandHandler("settings", settings_command))
     application.add_handler(CommandHandler("export_pdf", export_pdf_command))
+    application.add_handler(CommandHandler("webadmin", web_admin_command))
     
     # Обработчик callback-запросов для меню настроек
     application.add_handler(CallbackQueryHandler(button_callback))
@@ -2946,6 +2947,29 @@ def setup_bot_commands(application):
         logger.info("✅ Команды бота настроены для автодополнения")
     except Exception as e:
         logger.error(f"❌ Ошибка настройки команд: {e}")
+
+async def web_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда для доступа к веб-панели"""
+    user_id = update.effective_user.id
+    
+    # Проверяем права администратора
+    if str(user_id) == os.getenv('ADMIN_USER_ID'):
+        web_url = os.getenv('WEB_APP_URL', 'https://your-app.railway.app')
+        
+        message = (
+            "🌐 <b>Веб-панель администратора</b>\n\n"
+            f"🔗 <a href='{web_url}'>Открыть веб-панель</a>\n\n"
+            "📊 <b>Возможности:</b>\n"
+            "• Управление пользователями\n"
+            "• Настройки бота\n"
+            "• Просмотр логов\n"
+            "• Статистика в реальном времени\n\n"
+            "⚠️ <i>Доступно только администраторам</i>"
+        )
+        
+        await update.message.reply_text(message, parse_mode='HTML', disable_web_page_preview=True)
+    else:
+        await update.message.reply_text("❌ У вас нет прав для доступа к веб-панели.")
 
 async def command_suggestions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывать доступные команды при вводе '/'"""
