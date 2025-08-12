@@ -37,22 +37,37 @@ def load_bot_data():
     # Загружаем пользователей
     try:
         with open('notifications.json', 'r', encoding='utf-8') as f:
-            data['users'] = json.load(f)
-    except FileNotFoundError:
+            users_data = json.load(f)
+            # Убеждаемся, что это список
+            if isinstance(users_data, list):
+                data['users'] = users_data
+            else:
+                data['users'] = []
+    except (FileNotFoundError, json.JSONDecodeError):
         data['users'] = []
     
     # Загружаем настройки бота
     try:
         with open('bot_settings.json', 'r', encoding='utf-8') as f:
-            data['settings'] = json.load(f)
-    except FileNotFoundError:
+            settings_data = json.load(f)
+            # Убеждаемся, что это словарь
+            if isinstance(settings_data, dict):
+                data['settings'] = settings_data
+            else:
+                data['settings'] = {}
+    except (FileNotFoundError, json.JSONDecodeError):
         data['settings'] = {}
     
     # Загружаем историю цен
     try:
         with open('price_history.json', 'r', encoding='utf-8') as f:
-            data['price_history'] = json.load(f)
-    except FileNotFoundError:
+            history_data = json.load(f)
+            # Убеждаемся, что это словарь
+            if isinstance(history_data, dict):
+                data['price_history'] = history_data
+            else:
+                data['price_history'] = {}
+    except (FileNotFoundError, json.JSONDecodeError):
         data['price_history'] = {}
     
     return data
@@ -203,7 +218,7 @@ if __name__ == '__main__':
     
     # Запускаем веб-приложение
     print("🌐 Веб-приложение для администрирования бота запущено!")
-    print("📊 Дашборд доступен по адресу: http://localhost:5000")
-    print("🔧 API доступен по адресу: http://localhost:5000/api/")
+    print("📊 Дашборд доступен по адресу: http://localhost:5001")
+    print("🔧 API доступен по адресу: http://localhost:5001/api/")
     
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True) 
+    socketio.run(app, host='0.0.0.0', port=5001, debug=True) 

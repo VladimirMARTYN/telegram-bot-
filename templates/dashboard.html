@@ -263,7 +263,7 @@ const usersChart = new Chart(usersCtx, {
     data: {
         labels: ['Подписчики', 'Не подписанные'],
         datasets: [{
-            data: [{{ bot_status.notifications_count }}, {{ bot_status.users_count - bot_status.notifications_count }}],
+            data: [{{ bot_status.notifications_count or 0 }}, {{ (bot_status.users_count or 0) - (bot_status.notifications_count or 0) }}],
             backgroundColor: [
                 '#27ae60',
                 '#95a5a6'
