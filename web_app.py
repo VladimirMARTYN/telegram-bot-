@@ -53,7 +53,30 @@ def load_bot_data():
             else:
                 data['users'] = []
     except (FileNotFoundError, json.JSONDecodeError):
-        data['users'] = []
+        # Создаем тестовые данные для демонстрации
+        data['users'] = [
+            {
+                'user_id': 123456789,
+                'name': 'Vladimir',
+                'username': 'vladimir_test',
+                'first_seen': '2025-08-13T10:00:00',
+                'last_activity': '2025-08-13T14:30:00',
+                'subscribed': True,
+                'alerts': [
+                    {'asset': 'USD', 'price': 85.0, 'type': 'above'},
+                    {'asset': 'BTC', 'price': 115000, 'type': 'below'}
+                ]
+            },
+            {
+                'user_id': 987654321,
+                'name': 'Test User',
+                'username': 'test_user',
+                'first_seen': '2025-08-13T11:00:00',
+                'last_activity': '2025-08-13T13:45:00',
+                'subscribed': False,
+                'alerts': []
+            }
+        ]
     
     # Загружаем настройки бота
     try:
@@ -65,7 +88,13 @@ def load_bot_data():
             else:
                 data['settings'] = {}
     except (FileNotFoundError, json.JSONDecodeError):
-        data['settings'] = {}
+        # Создаем тестовые настройки
+        data['settings'] = {
+            'daily_summary_time': '09:00',
+            'timezone': 'Europe/Moscow',
+            'notifications_enabled': True,
+            'price_check_interval': 30
+        }
     
     # Загружаем историю цен
     try:
@@ -77,7 +106,12 @@ def load_bot_data():
             else:
                 data['price_history'] = {}
     except (FileNotFoundError, json.JSONDecodeError):
-        data['price_history'] = {}
+        # Создаем тестовую историю цен
+        data['price_history'] = {
+            'USD': {'current': 85.50, 'previous': 85.20, 'change': 0.35},
+            'EUR': {'current': 92.80, 'previous': 92.50, 'change': 0.32},
+            'BTC': {'current': 115500, 'previous': 115000, 'change': 0.43}
+        }
     
     return data
 
@@ -234,4 +268,4 @@ if __name__ == '__main__':
     port = int(os.getenv('PORT', 5001))
     
     # Запускаем в продакшн режиме на Railway
-    socketio.run(app, host='0.0.0.0', port=port, debug=False) 
+    socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True) 

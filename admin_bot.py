@@ -12,6 +12,8 @@ import json
 import aiohttp
 import requests
 import threading
+from flask import Flask, jsonify
+import threading
 
 # Загружаем переменные окружения из .env файла
 from dotenv import load_dotenv
@@ -279,7 +281,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"📊 <b>Пользователей:</b> {len(user_data)}"
     )
     
-    await update.message.reply_html(welcome_text)
+    # Создаем клавиатуру с основными кнопками
+    keyboard = [
+        [InlineKeyboardButton("📊 Курсы валют", callback_data="rates")],
+        [InlineKeyboardButton("🔔 Подписаться на уведомления", callback_data="subscribe")],
+        [InlineKeyboardButton("🌐 Веб-панель", url="https://telegram-bot-admin-web-production.up.railway.app")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_html(welcome_text, reply_markup=reply_markup)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда /help"""
@@ -1165,8 +1175,8 @@ async def get_indices_data():
                                 
                                 indices_data['imoex'] = {
                                     'name': 'IMOEX',
-                                    'price': row_data['LASTVALUE'],
-                                    'change_pct': row_data.get('LASTCHANGEPRC', 0),
+                                    'price': row_data.get('CURRENTVALUE', row_data['LASTVALUE']),
+                                    'change_pct': row_data.get('LASTCHANGETOOPENPRC', row_data.get('LASTCHANGEPRC', 0)),
                                     'update_time': update_time,
                                     'is_live': True
                                 }
@@ -1196,8 +1206,8 @@ async def get_indices_data():
                                 
                                 indices_data['rts'] = {
                                     'name': 'RTS',
-                                    'price': row_data['LASTVALUE'],
-                                    'change_pct': row_data.get('LASTCHANGEPRC', 0),
+                                    'price': row_data.get('CURRENTVALUE', row_data['LASTVALUE']),
+                                    'change_pct': row_data.get('LASTCHANGETOOPENPRC', row_data.get('LASTCHANGEPRC', 0)),
                                     'update_time': update_time,
                                     'is_live': True
                                 }
@@ -1223,13 +1233,13 @@ async def get_indices_data():
                         if 'marketdata' in data and 'data' in data['marketdata'] and len(data['marketdata']['data']) > 0:
                             row_data = dict(zip(data['marketdata']['columns'], data['marketdata']['data'][0]))
                             
-                            # Используем LASTVALUE или PREVPRICE для последнего известного значения
-                            last_value = row_data.get('LASTVALUE') or row_data.get('PREVPRICE')
+                            # Используем CURRENTVALUE, LASTVALUE или PREVPRICE для последнего известного значения
+                            last_value = row_data.get('CURRENTVALUE') or row_data.get('LASTVALUE') or row_data.get('PREVPRICE')
                             if last_value:
                                 indices_data['imoex'] = {
                                     'name': 'IMOEX',
                                     'price': last_value,
-                                    'change_pct': row_data.get('LASTCHANGEPRC', 0),
+                                    'change_pct': row_data.get('LASTCHANGETOOPENPRC', row_data.get('LASTCHANGEPRC', 0)),
                                     'update_time': row_data.get('UPDATETIME', ''),
                                     'is_live': False,
                                     'note': 'Последнее известное значение (торги закрыты)'
@@ -1270,13 +1280,13 @@ async def get_indices_data():
                         if 'marketdata' in data and 'data' in data['marketdata'] and len(data['marketdata']['data']) > 0:
                             row_data = dict(zip(data['marketdata']['columns'], data['marketdata']['data'][0]))
                             
-                            # Используем LASTVALUE или PREVPRICE для последнего известного значения
-                            last_value = row_data.get('LASTVALUE') or row_data.get('PREVPRICE')
+                            # Используем CURRENTVALUE, LASTVALUE или PREVPRICE для последнего известного значения
+                            last_value = row_data.get('CURRENTVALUE') or row_data.get('LASTVALUE') or row_data.get('PREVPRICE')
                             if last_value:
                                 indices_data['rts'] = {
                                     'name': 'RTS',
                                     'price': last_value,
-                                    'change_pct': row_data.get('LASTCHANGEPRC', 0),
+                                    'change_pct': row_data.get('LASTCHANGETOOPENPRC', row_data.get('LASTCHANGEPRC', 0)),
                                     'update_time': row_data.get('UPDATETIME', ''),
                                     'is_live': False,
                                     'note': 'Последнее известное значение (торги закрыты)'
@@ -2378,6 +2388,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         [InlineKeyboardButton("🔔 Уведомления", callback_data="settings_notifications")],
         [InlineKeyboardButton("📊 Персональные настройки", callback_data="settings_personal")],
         [InlineKeyboardButton("📋 Текущие настройки", callback_data="settings_current")],
+        [InlineKeyboardButton("🌐 Веб-панель", url="https://telegram-bot-admin-web-production.up.railway.app")],
         [InlineKeyboardButton("❌ Закрыть", callback_data="settings_close")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2401,13 +2412,21 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text(message, reply_markup=reply_markup, parse_mode='Markdown')
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик нажатий на кнопки меню настроек"""
+    """Обработчик нажатий на кнопки меню"""
     query = update.callback_query
     await query.answer()
     
     user_id = update.effective_user.id
     
-    # Проверяем права администратора
+    # Обработка кнопок для всех пользователей
+    if query.data == "rates":
+        await rates_command(update, context)
+        return
+    elif query.data == "subscribe":
+        await subscribe_command(update, context)
+        return
+    
+    # Проверяем права администратора для админских функций
     if str(user_id) != os.getenv('ADMIN_USER_ID'):
         await query.edit_message_text("❌ Эта функция доступна только администратору.")
         return
@@ -2458,6 +2477,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             [InlineKeyboardButton("🔔 Уведомления", callback_data="settings_notifications")],
             [InlineKeyboardButton("📊 Персональные настройки", callback_data="settings_personal")],
             [InlineKeyboardButton("📋 Текущие настройки", callback_data="settings_current")],
+            [InlineKeyboardButton("🌐 Веб-панель", url="https://telegram-bot-admin-web-production.up.railway.app")],
             [InlineKeyboardButton("❌ Закрыть", callback_data="settings_close")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -3015,5 +3035,53 @@ async def command_suggestions(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         await update.message.reply_text(message, parse_mode='Markdown')
 
+# Flask сервер для API данных
+def create_data_api():
+    """Создает Flask сервер для API данных"""
+    app = Flask(__name__)
+    
+    @app.route('/api/users')
+    def get_users():
+        """API для получения пользователей"""
+        try:
+            with open('notifications.json', 'r', encoding='utf-8') as f:
+                users_data = json.load(f)
+                return jsonify(users_data)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return jsonify([])
+    
+    @app.route('/api/settings')
+    def get_settings():
+        """API для получения настроек"""
+        try:
+            with open('bot_settings.json', 'r', encoding='utf-8') as f:
+                settings_data = json.load(f)
+                return jsonify(settings_data)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return jsonify({})
+    
+    @app.route('/api/status')
+    def get_status():
+        """API для получения статуса бота"""
+        return jsonify({
+            'status': 'running',
+            'users_count': len(load_user_data()),
+            'timestamp': datetime.now().isoformat()
+        })
+    
+    return app
+
+def start_data_api():
+    """Запускает API сервер в отдельном потоке"""
+    app = create_data_api()
+    def run_api():
+        app.run(host='0.0.0.0', port=5002, debug=False)
+    
+    api_thread = threading.Thread(target=run_api, daemon=True)
+    api_thread.start()
+    logger.info("🌐 API сервер запущен на порту 5002")
+
 if __name__ == '__main__':
+    # Запускаем API сервер
+    start_data_api()
     main() 

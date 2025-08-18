@@ -8,6 +8,4 @@ pillow==10.3.0
 qrcode==7.4.2
 pytz==2023.3
 schedule==1.2.2
-reportlab==4.4.3
-flask==3.0.0
-flask-socketio==5.3.6 
+reportlab==4.4.3 
