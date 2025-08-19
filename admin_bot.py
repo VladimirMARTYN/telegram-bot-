@@ -211,7 +211,176 @@ async def get_moex_stocks():
     
     return stocks_data
 
-# Функция для получения ключевой ставки ЦБ РФ убрана - API не работает стабильно
+async def get_crypto_data_with_fallback():
+    """Получить данные криптовалют с резервными источниками"""
+    crypto_data = {}
+    
+    # Список криптовалют для мониторинга
+    crypto_list = [
+        {'id': 'bitcoin', 'symbol': 'BTC', 'name': 'Bitcoin'},
+        {'id': 'ethereum', 'symbol': 'ETH', 'name': 'Ethereum'},
+        {'id': 'the-open-network', 'symbol': 'TON', 'name': 'TON'},
+        {'id': 'ripple', 'symbol': 'XRP', 'name': 'XRP'},
+        {'id': 'cardano', 'symbol': 'ADA', 'name': 'Cardano'},
+        {'id': 'solana', 'symbol': 'SOL', 'name': 'Solana'},
+        {'id': 'dogecoin', 'symbol': 'DOGE', 'name': 'Dogecoin'},
+        {'id': 'tether', 'symbol': 'USDT', 'name': 'Tether'}
+    ]
+    
+    # 1. Пробуем CoinGecko (основной источник)
+    logger.info("🪙 Пробуем получить данные криптовалют с CoinGecko...")
+    try:
+        crypto_ids = ','.join([crypto['id'] for crypto in crypto_list])
+        crypto_response = requests.get(
+            f"https://api.coingecko.com/api/v3/simple/price?ids={crypto_ids}&vs_currencies=usd&include_24hr_change=true",
+            timeout=10
+        )
+        
+        if crypto_response.status_code == 200:
+            data = crypto_response.json()
+            
+            for crypto in crypto_list:
+                crypto_id = crypto['id']
+                if crypto_id in data:
+                    price = data[crypto_id].get('usd')
+                    change_24h = data[crypto_id].get('usd_24h_change', 0)
+                    
+                    if price is not None:
+                        crypto_data[crypto_id] = {
+                            'price': price,
+                            'change_24h': change_24h,
+                            'source': 'CoinGecko'
+                        }
+            
+            if crypto_data:
+                logger.info(f"✅ CoinGecko успешно получены данные для {len(crypto_data)} криптовалют")
+                return crypto_data
+            else:
+                logger.warning("⚠️ CoinGecko вернул пустые данные")
+        else:
+            logger.warning(f"⚠️ CoinGecko вернул статус {crypto_response.status_code}")
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка CoinGecko: {e}")
+    
+    # 2. Пробуем Coinbase API (резервный источник)
+    logger.info("🪙 Пробуем получить данные криптовалют с Coinbase...")
+    try:
+        coinbase_symbols = [crypto['symbol'] for crypto in crypto_list]
+        
+        for symbol in coinbase_symbols:
+            try:
+                coinbase_response = requests.get(
+                    f"https://api.coinbase.com/v2/prices/{symbol}-USD/spot",
+                    timeout=10
+                )
+                
+                if coinbase_response.status_code == 200:
+                    data = coinbase_response.json()
+                    price = float(data['data']['amount'])
+                    
+                    # Находим соответствующий crypto_id
+                    for crypto in crypto_list:
+                        if crypto['symbol'] == symbol:
+                            crypto_id = crypto['id']
+                            crypto_data[crypto_id] = {
+                                'price': price,
+                                'change_24h': 0,  # Coinbase не предоставляет изменение за 24ч в этом эндпоинте
+                                'source': 'Coinbase'
+                            }
+                            break
+                            
+            except Exception as e:
+                logger.debug(f"❌ Ошибка получения {symbol} с Coinbase: {e}")
+                continue
+        
+        if crypto_data:
+            logger.info(f"✅ Coinbase успешно получены данные для {len(crypto_data)} криптовалют")
+            return crypto_data
+            
+    except Exception as e:
+        logger.error(f"❌ Общая ошибка Coinbase: {e}")
+    
+    # 3. Пробуем Binance API (еще один резервный источник)
+    logger.info("🪙 Пробуем получить данные криптовалют с Binance...")
+    try:
+        binance_symbols = [f"{crypto['symbol']}USDT" for crypto in crypto_list]
+        
+        for symbol in binance_symbols:
+            try:
+                binance_response = requests.get(
+                    f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}",
+                    timeout=10
+                )
+                
+                if binance_response.status_code == 200:
+                    data = binance_response.json()
+                    price = float(data['price'])
+                    
+                    # Находим соответствующий crypto_id
+                    for crypto in crypto_list:
+                        if f"{crypto['symbol']}USDT" == symbol:
+                            crypto_id = crypto['id']
+                            crypto_data[crypto_id] = {
+                                'price': price,
+                                'change_24h': 0,  # Binance не предоставляет изменение за 24ч в этом эндпоинте
+                                'source': 'Binance'
+                            }
+                            break
+                            
+            except Exception as e:
+                logger.debug(f"❌ Ошибка получения {symbol} с Binance: {e}")
+                continue
+        
+        if crypto_data:
+            logger.info(f"✅ Binance успешно получены данные для {len(crypto_data)} криптовалют")
+            return crypto_data
+            
+    except Exception as e:
+        logger.error(f"❌ Общая ошибка Binance: {e}")
+    
+    # 4. Пробуем CryptoCompare API (последний резервный источник)
+    logger.info("🪙 Пробуем получить данные криптовалют с CryptoCompare...")
+    try:
+        cryptocompare_symbols = [crypto['symbol'] for crypto in crypto_list]
+        
+        for symbol in cryptocompare_symbols:
+            try:
+                cryptocompare_response = requests.get(
+                    f"https://min-api.cryptocompare.com/data/price?fsym={symbol}&tsyms=USD",
+                    timeout=10
+                )
+                
+                if cryptocompare_response.status_code == 200:
+                    data = cryptocompare_response.json()
+                    price = data.get('USD')
+                    
+                    if price is not None:
+                        # Находим соответствующий crypto_id
+                        for crypto in crypto_list:
+                            if crypto['symbol'] == symbol:
+                                crypto_id = crypto['id']
+                                crypto_data[crypto_id] = {
+                                    'price': price,
+                                    'change_24h': 0,  # CryptoCompare не предоставляет изменение за 24ч в этом эндпоинте
+                                    'source': 'CryptoCompare'
+                                }
+                                break
+                            
+            except Exception as e:
+                logger.debug(f"❌ Ошибка получения {symbol} с CryptoCompare: {e}")
+                continue
+        
+        if crypto_data:
+            logger.info(f"✅ CryptoCompare успешно получены данные для {len(crypto_data)} криптовалют")
+            return crypto_data
+            
+    except Exception as e:
+        logger.error(f"❌ Общая ошибка CryptoCompare: {e}")
+    
+    # Если все источники не сработали, возвращаем пустые данные
+    logger.error("❌ Все источники криптовалют недоступны")
+    return crypto_data
 
 # Время запуска бота
 bot_start_time = get_moscow_time()
@@ -330,7 +499,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     help_text += (
         "🔄 <b>Источники данных:</b>\n"
         "• ЦБ РФ - курсы валют\n"
-        "• CoinGecko - криптовалюты\n" 
+        "• CoinGecko/Coinbase/Binance/CryptoCompare - криптовалюты (с резервными источниками)\n" 
         "• MOEX - российские акции и индексы\n"
         "• Gold-API.com - драгоценные металлы\n"
         "• EIA API - точные цены нефти\n"
@@ -410,144 +579,47 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             if usd_to_rub_rate == 0:
                 usd_to_rub_rate = 80  # Fallback значение для конвертации
         
-        # 2. Расширенные курсы криптовалют CoinGecko
-        try:
-            crypto_response = requests.get(
-                "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,the-open-network,ripple,cardano,solana,dogecoin,tether&vs_currencies=usd&include_24hr_change=true",
-                timeout=10
-            )
-            crypto_response.raise_for_status()
-            crypto_data = crypto_response.json()
+        # 2. Расширенные курсы криптовалют с резервными источниками
+        crypto_data = await get_crypto_data_with_fallback()
+        
+        # Форматируем криптовалютные цены (доллары + рубли)
+        crypto_strings = {}
+        
+        # Список криптовалют для форматирования
+        crypto_list = [
+            {'id': 'bitcoin', 'name': 'Bitcoin', 'decimals': 0},
+            {'id': 'ethereum', 'name': 'Ethereum', 'decimals': 0},
+            {'id': 'the-open-network', 'name': 'TON', 'decimals': 2},
+            {'id': 'ripple', 'name': 'XRP', 'decimals': 3},
+            {'id': 'cardano', 'name': 'Cardano', 'decimals': 3},
+            {'id': 'solana', 'name': 'Solana', 'decimals': 2},
+            {'id': 'dogecoin', 'name': 'Dogecoin', 'decimals': 3},
+            {'id': 'tether', 'name': 'Tether', 'decimals': 2}
+        ]
+        
+        for crypto in crypto_list:
+            crypto_id = crypto['id']
+            crypto_name = crypto['name']
+            decimals = crypto['decimals']
             
-            # Получаем цены криптовалют
-            bitcoin_price = crypto_data.get('bitcoin', {}).get('usd', 'Н/Д')
-            ethereum_price = crypto_data.get('ethereum', {}).get('usd', 'Н/Д')
-            ton_price = crypto_data.get('the-open-network', {}).get('usd', 'Н/Д')
-            ripple_price = crypto_data.get('ripple', {}).get('usd', 'Н/Д')
-            cardano_price = crypto_data.get('cardano', {}).get('usd', 'Н/Д')
-            solana_price = crypto_data.get('solana', {}).get('usd', 'Н/Д')
-            dogecoin_price = crypto_data.get('dogecoin', {}).get('usd', 'Н/Д')
-            tether_price = crypto_data.get('tether', {}).get('usd', 'Н/Д')
-            
-            # Форматируем криптовалютные цены (доллары + рубли)
-            crypto_strings = {}
-            
-            # Bitcoin
-            if isinstance(bitcoin_price, (int, float)) and usd_to_rub_rate > 0:
-                btc_rub = bitcoin_price * usd_to_rub_rate
-                btc_change = crypto_data.get('bitcoin', {}).get('usd_24h_change', 0)
-                change_str = f" ({btc_change:+.2f}% за 24ч)" if btc_change is not None and btc_change != 0 else ""
-                crypto_strings['bitcoin'] = f"Bitcoin: ${format_price(bitcoin_price, 0)} ({format_price(btc_rub, 0)} ₽){change_str}"
-            elif isinstance(bitcoin_price, (int, float)):
-                btc_change = crypto_data.get('bitcoin', {}).get('usd_24h_change', 0)
-                change_str = f" ({btc_change:+.2f}% за 24ч)" if btc_change is not None and btc_change != 0 else ""
-                crypto_strings['bitcoin'] = f"Bitcoin: ${format_price(bitcoin_price, 0)}{change_str}"
-            else:
-                crypto_strings['bitcoin'] = "Bitcoin: ❌ Н/Д"
+            if crypto_id in crypto_data:
+                price = crypto_data[crypto_id]['price']
+                change_24h = crypto_data[crypto_id]['change_24h']
+                source = crypto_data[crypto_id]['source']
                 
-            # Ethereum
-            if isinstance(ethereum_price, (int, float)) and usd_to_rub_rate > 0:
-                eth_rub = ethereum_price * usd_to_rub_rate
-                eth_change = crypto_data.get('ethereum', {}).get('usd_24h_change', 0)
-                change_str = f" ({eth_change:+.2f}% за 24ч)" if eth_change is not None and eth_change != 0 else ""
-                crypto_strings['ethereum'] = f"Ethereum: ${format_price(ethereum_price, 0)} ({format_price(eth_rub, 0)} ₽){change_str}"
-            elif isinstance(ethereum_price, (int, float)):
-                eth_change = crypto_data.get('ethereum', {}).get('usd_24h_change', 0)
-                change_str = f" ({eth_change:+.2f}% за 24ч)" if eth_change is not None and eth_change != 0 else ""
-                crypto_strings['ethereum'] = f"Ethereum: ${format_price(ethereum_price, 0)}{change_str}"
+                if isinstance(price, (int, float)) and usd_to_rub_rate > 0:
+                    rub_price = price * usd_to_rub_rate
+                    change_str = f" ({change_24h:+.2f}% за 24ч)" if change_24h != 0 else ""
+                    source_str = f" [{source}]" if source != 'CoinGecko' else ""
+                    crypto_strings[crypto_id] = f"{crypto_name}: ${format_price(price, decimals)} ({format_price(rub_price, decimals)} ₽){change_str}{source_str}"
+                elif isinstance(price, (int, float)):
+                    change_str = f" ({change_24h:+.2f}% за 24ч)" if change_24h != 0 else ""
+                    source_str = f" [{source}]" if source != 'CoinGecko' else ""
+                    crypto_strings[crypto_id] = f"{crypto_name}: ${format_price(price, decimals)}{change_str}{source_str}"
+                else:
+                    crypto_strings[crypto_id] = f"{crypto_name}: ❌ Н/Д"
             else:
-                crypto_strings['ethereum'] = "Ethereum: ❌ Н/Д"
-                
-            # TON
-            if isinstance(ton_price, (int, float)) and usd_to_rub_rate > 0:
-                ton_rub = ton_price * usd_to_rub_rate
-                ton_change = crypto_data.get('the-open-network', {}).get('usd_24h_change', 0)
-                change_str = f" ({ton_change:+.2f}% за 24ч)" if ton_change is not None and ton_change != 0 else ""
-                crypto_strings['ton'] = f"TON: ${format_price(ton_price)} ({format_price(ton_rub)} ₽){change_str}"
-            elif isinstance(ton_price, (int, float)):
-                ton_change = crypto_data.get('the-open-network', {}).get('usd_24h_change', 0)
-                change_str = f" ({ton_change:+.2f}% за 24ч)" if ton_change is not None and ton_change != 0 else ""
-                crypto_strings['ton'] = f"TON: ${format_price(ton_price)}{change_str}"
-            else:
-                crypto_strings['ton'] = "TON: ❌ Н/Д"
-                
-            # XRP
-            if isinstance(ripple_price, (int, float)) and usd_to_rub_rate > 0:
-                xrp_rub = ripple_price * usd_to_rub_rate
-                xrp_change = crypto_data.get('ripple', {}).get('usd_24h_change', 0)
-                change_str = f" ({xrp_change:+.2f}% за 24ч)" if xrp_change is not None and xrp_change != 0 else ""
-                crypto_strings['ripple'] = f"XRP: ${format_price(ripple_price, 3)} ({format_price(xrp_rub)} ₽){change_str}"
-            elif isinstance(ripple_price, (int, float)):
-                xrp_change = crypto_data.get('ripple', {}).get('usd_24h_change', 0)
-                change_str = f" ({xrp_change:+.2f}% за 24ч)" if xrp_change is not None and xrp_change != 0 else ""
-                crypto_strings['ripple'] = f"XRP: ${format_price(ripple_price, 3)}{change_str}"
-            else:
-                crypto_strings['ripple'] = "XRP: ❌ Н/Д"
-                
-            # Cardano
-            if isinstance(cardano_price, (int, float)) and usd_to_rub_rate > 0:
-                ada_rub = cardano_price * usd_to_rub_rate
-                ada_change = crypto_data.get('cardano', {}).get('usd_24h_change', 0)
-                change_str = f" ({ada_change:+.2f}% за 24ч)" if ada_change is not None and ada_change != 0 else ""
-                crypto_strings['cardano'] = f"Cardano: ${format_price(cardano_price, 3)} ({format_price(ada_rub)} ₽){change_str}"
-            elif isinstance(cardano_price, (int, float)):
-                ada_change = crypto_data.get('cardano', {}).get('usd_24h_change', 0)
-                change_str = f" ({ada_change:+.2f}% за 24ч)" if ada_change is not None and ada_change != 0 else ""
-                crypto_strings['cardano'] = f"Cardano: ${format_price(cardano_price, 3)}{change_str}"
-            else:
-                crypto_strings['cardano'] = "Cardano: ❌ Н/Д"
-                
-            # Solana
-            if isinstance(solana_price, (int, float)) and usd_to_rub_rate > 0:
-                sol_rub = solana_price * usd_to_rub_rate
-                sol_change = crypto_data.get('solana', {}).get('usd_24h_change', 0)
-                change_str = f" ({sol_change:+.2f}% за 24ч)" if sol_change is not None and sol_change != 0 else ""
-                crypto_strings['solana'] = f"Solana: ${format_price(solana_price)} ({format_price(sol_rub)} ₽){change_str}"
-            elif isinstance(solana_price, (int, float)):
-                sol_change = crypto_data.get('solana', {}).get('usd_24h_change', 0)
-                change_str = f" ({sol_change:+.2f}% за 24ч)" if sol_change is not None and sol_change != 0 else ""
-                crypto_strings['solana'] = f"Solana: ${format_price(solana_price)}{change_str}"
-            else:
-                crypto_strings['solana'] = "Solana: ❌ Н/Д"
-                
-            # Dogecoin
-            if isinstance(dogecoin_price, (int, float)) and usd_to_rub_rate > 0:
-                doge_rub = dogecoin_price * usd_to_rub_rate
-                doge_change = crypto_data.get('dogecoin', {}).get('usd_24h_change', 0)
-                change_str = f" ({doge_change:+.2f}% за 24ч)" if doge_change is not None and doge_change != 0 else ""
-                crypto_strings['dogecoin'] = f"Dogecoin: ${format_price(dogecoin_price, 3)} ({format_price(doge_rub)} ₽){change_str}"
-            elif isinstance(dogecoin_price, (int, float)):
-                doge_change = crypto_data.get('dogecoin', {}).get('usd_24h_change', 0)
-                change_str = f" ({doge_change:+.2f}% за 24ч)" if doge_change is not None and doge_change != 0 else ""
-                crypto_strings['dogecoin'] = f"Dogecoin: ${format_price(dogecoin_price, 3)}{change_str}"
-            else:
-                crypto_strings['dogecoin'] = "Dogecoin: ❌ Н/Д"
-                
-            # Tether
-            if isinstance(tether_price, (int, float)) and usd_to_rub_rate > 0:
-                tether_rub = tether_price * usd_to_rub_rate
-                tether_change = crypto_data.get('tether', {}).get('usd_24h_change', 0)
-                change_str = f" ({tether_change:+.2f}% за 24ч)" if tether_change is not None and tether_change != 0 else ""
-                crypto_strings['tether'] = f"Tether: ${format_price(tether_price)} ({format_price(tether_rub)} ₽){change_str}"
-            elif isinstance(tether_price, (int, float)):
-                tether_change = crypto_data.get('tether', {}).get('usd_24h_change', 0)
-                change_str = f" ({tether_change:+.2f}% за 24ч)" if tether_change is not None and tether_change != 0 else ""
-                crypto_strings['tether'] = f"Tether: ${format_price(tether_price)}{change_str}"
-            else:
-                crypto_strings['tether'] = "Tether: ❌ Н/Д"
-                
-        except Exception as e:
-            logger.error(f"Ошибка получения курсов криптовалют: {e}")
-            crypto_strings = {
-                'bitcoin': 'Bitcoin: ❌ Ошибка API',
-                'ethereum': 'Ethereum: ❌ Ошибка API',
-                'ton': 'TON: ❌ Ошибка API',
-                'ripple': 'XRP: ❌ Ошибка API',
-                'cardano': 'Cardano: ❌ Ошибка API',
-                'solana': 'Solana: ❌ Ошибка API',
-                'dogecoin': 'Dogecoin: ❌ Ошибка API',
-                'tether': 'Tether: ❌ Ошибка API'
-            }
+                crypto_strings[crypto_id] = f"{crypto_name}: ❌ Н/Д"
         
         # 3. Получаем данные акций с MOEX
         moex_stocks = await get_moex_stocks()
@@ -727,7 +799,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # Время и источники
         current_time = get_moscow_time().strftime("%d.%m.%Y %H:%M")
         message += f"🕐 **Время:** {current_time}\n"
-        message += f"📡 **Источники:** ЦБ РФ, CoinGecko, MOEX, Gold-API, Alpha Vantage"
+        message += f"📡 **Источники:** ЦБ РФ, CoinGecko/Coinbase/Binance/CryptoCompare, MOEX, Gold-API, Alpha Vantage"
 
         await update.message.reply_text(message, parse_mode='Markdown')
         
@@ -1498,23 +1570,23 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
                 'GBP': cbr_data.get('Valute', {}).get('GBP', {}).get('Value')
             })
         
-        # Криптовалюты
-        crypto_response = requests.get(
-            "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,the-open-network,ripple,cardano,solana,dogecoin,tether&vs_currencies=usd&include_24hr_change=true",
-            timeout=10
-        )
-        if crypto_response.status_code == 200:
-            crypto_data = crypto_response.json()
-            current_prices.update({
-                'BTC': crypto_data.get('bitcoin', {}).get('usd'),
-                'ETH': crypto_data.get('ethereum', {}).get('usd'),
-                'TON': crypto_data.get('the-open-network', {}).get('usd'),
-                'XRP': crypto_data.get('ripple', {}).get('usd'),
-                'ADA': crypto_data.get('cardano', {}).get('usd'),
-                'SOL': crypto_data.get('solana', {}).get('usd'),
-                'DOGE': crypto_data.get('dogecoin', {}).get('usd'),
-                'USDT': crypto_data.get('tether', {}).get('usd')
-            })
+        # Криптовалюты с резервными источниками
+        crypto_data = await get_crypto_data_with_fallback()
+        crypto_mapping = {
+            'bitcoin': 'BTC',
+            'ethereum': 'ETH', 
+            'the-open-network': 'TON',
+            'ripple': 'XRP',
+            'cardano': 'ADA',
+            'solana': 'SOL',
+            'dogecoin': 'DOGE',
+            'tether': 'USDT'
+        }
+        
+        for crypto_id, price_data in crypto_data.items():
+            if crypto_id in crypto_mapping:
+                symbol = crypto_mapping[crypto_id]
+                current_prices[symbol] = price_data['price']
         
         # Акции
         moex_data = await get_moex_stocks()
@@ -2679,15 +2751,8 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         except:
             forex_usd_rub = None
         
-        # Криптовалюты
-        try:
-            crypto_response = requests.get(
-                "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,the-open-network,ripple,cardano,solana,dogecoin,tether&vs_currencies=usd&include_24hr_change=true",
-                timeout=10
-            )
-            crypto_data = crypto_response.json()
-        except:
-            crypto_data = {}
+        # Криптовалюты с резервными источниками
+        crypto_data = await get_crypto_data_with_fallback()
         
         # Индексы
         try:
