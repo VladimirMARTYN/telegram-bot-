@@ -92,286 +92,6 @@ def get_moscow_time():
     return datetime.now(moscow_tz)
 
 # Старые функции удалены - используются функции из data_sources.py
-    """Получить данные акций с Московской биржи"""
-    stocks_data = {}
-    
-    # Проверяем, является ли сегодня торговым днем
-    from datetime import datetime
-    moscow_tz = pytz.timezone('Europe/Moscow')
-    current_moscow = datetime.now(moscow_tz)
-    is_weekend = current_moscow.weekday() >= 5  # 5=суббота, 6=воскресенье
-    
-    logger.info(f"📅 Проверка торговых дней для акций: {'Выходной' if is_weekend else 'Торговый день'}")
-    
-    # Список акций для мониторинга
-    stocks = {
-        # Основные российские акции
-        'SBER': {'name': 'Сбер', 'emoji': '🟢'},
-        'YDEX': {'name': 'Яндекс', 'emoji': '🔴'},
-        'VKCO': {'name': 'ВК', 'emoji': '🔵'},
-        'T': {'name': 'Т-Технологии', 'emoji': '🟡'},
-        'GAZP': {'name': 'Газпром', 'emoji': '💎'},
-        'GMKN': {'name': 'Норникель', 'emoji': '⚡'},
-        'ROSN': {'name': 'Роснефть', 'emoji': '🛢️'},
-        'LKOH': {'name': 'ЛУКОЙЛ', 'emoji': '⛽'},
-        'MTSS': {'name': 'МТС', 'emoji': '📱'},
-        'MFON': {'name': 'Мегафон', 'emoji': '📶'},
-        # Акции застройщиков
-        'PIKK': {'name': 'ПИК', 'emoji': '🏗️'},
-        'SMLT': {'name': 'Самолёт', 'emoji': '✈️'}
-    }
-    
-    # Если выходной день, возвращаем пустые данные с пометкой
-    if is_weekend:
-        logger.info("📅 Выходной день - торги на MOEX закрыты")
-        for ticker, info in stocks.items():
-            stocks_data[ticker] = {
-                'name': info['name'],
-                'emoji': info['emoji'],
-                'price': None,
-                'change': 0,
-                'change_pct': 0,
-                'is_live': False,
-                'note': 'Торги закрыты'
-            }
-        return stocks_data
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            # Получаем данные торгов
-            trading_url = "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json"
-            params = {
-                'securities': ','.join(stocks.keys()),
-                'iss.meta': 'off',
-                'iss.only': 'securities,marketdata'
-            }
-            
-            async with session.get(trading_url, params=params) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    
-                    # Парсим данные торгов
-                    securities_data = {}
-                    marketdata = {}
-                    
-                    if 'securities' in data and 'data' in data['securities']:
-                        securities_cols = data['securities']['columns']
-                        for row in data['securities']['data']:
-                            row_data = dict(zip(securities_cols, row))
-                            secid = row_data.get('SECID')
-                            if secid in stocks:
-                                securities_data[secid] = {
-                                    'shortname': row_data.get('SHORTNAME', stocks[secid]['name']),
-                                    'lotsize': row_data.get('LOTSIZE', 1)
-                                }
-                    
-                    if 'marketdata' in data and 'data' in data['marketdata']:
-                        marketdata_cols = data['marketdata']['columns']
-                        for row in data['marketdata']['data']:
-                            row_data = dict(zip(marketdata_cols, row))
-                            secid = row_data.get('SECID')
-                            if secid in stocks:
-                                marketdata[secid] = {
-                                    'last': row_data.get('LAST'),
-                                    'change': row_data.get('CHANGE'),
-                                    'changeprcnt': row_data.get('CHANGEPRCNT'),
-                                    'volume': row_data.get('VALTODAY'),
-                                    'open': row_data.get('OPEN'),
-                                    'high': row_data.get('HIGH'),
-                                    'low': row_data.get('LOW')
-                                }
-                    
-                    # Объединяем данные
-                    for ticker in stocks:
-                        if ticker in securities_data or ticker in marketdata:
-                            stocks_data[ticker] = {
-                                'name': stocks[ticker]['name'],
-                                'emoji': stocks[ticker]['emoji'],
-                                'shortname': securities_data.get(ticker, {}).get('shortname', stocks[ticker]['name']),
-                                'price': marketdata.get(ticker, {}).get('last'),
-                                'change': marketdata.get(ticker, {}).get('change'),
-                                'change_pct': marketdata.get(ticker, {}).get('changeprcnt'),
-                                'volume': marketdata.get(ticker, {}).get('volume'),
-                                'open': marketdata.get(ticker, {}).get('open'),
-                                'high': marketdata.get(ticker, {}).get('high'),
-                                'low': marketdata.get(ticker, {}).get('low')
-                            }
-    
-    except Exception as e:
-        logger.error(f"Ошибка получения данных MOEX: {e}")
-    
-    return stocks_data
-
-async def get_crypto_data_with_fallback():
-    """Получить данные криптовалют с резервными источниками"""
-    crypto_data = {}
-    
-    # Список криптовалют для мониторинга
-    crypto_list = [
-        {'id': 'bitcoin', 'symbol': 'BTC', 'name': 'Bitcoin'},
-        {'id': 'ethereum', 'symbol': 'ETH', 'name': 'Ethereum'},
-        {'id': 'the-open-network', 'symbol': 'TON', 'name': 'TON'},
-        {'id': 'ripple', 'symbol': 'XRP', 'name': 'XRP'},
-        {'id': 'cardano', 'symbol': 'ADA', 'name': 'Cardano'},
-        {'id': 'solana', 'symbol': 'SOL', 'name': 'Solana'},
-        {'id': 'dogecoin', 'symbol': 'DOGE', 'name': 'Dogecoin'},
-        {'id': 'tether', 'symbol': 'USDT', 'name': 'Tether'}
-    ]
-    
-    # 1. Пробуем CoinGecko (основной источник)
-    logger.info("🪙 Пробуем получить данные криптовалют с CoinGecko...")
-    try:
-        crypto_ids = ','.join([crypto['id'] for crypto in crypto_list])
-        crypto_response = requests.get(
-            f"https://api.coingecko.com/api/v3/simple/price?ids={crypto_ids}&vs_currencies=usd&include_24hr_change=true",
-            timeout=10
-        )
-        
-        if crypto_response.status_code == 200:
-            data = crypto_response.json()
-            
-            for crypto in crypto_list:
-                crypto_id = crypto['id']
-                if crypto_id in data:
-                    price = data[crypto_id].get('usd')
-                    change_24h = data[crypto_id].get('usd_24h_change', 0)
-                    
-                    if price is not None:
-                        crypto_data[crypto_id] = {
-                            'price': price,
-                            'change_24h': change_24h,
-                            'source': 'CoinGecko'
-                        }
-            
-            if crypto_data:
-                logger.info(f"✅ CoinGecko успешно получены данные для {len(crypto_data)} криптовалют")
-                return crypto_data
-            else:
-                logger.warning("⚠️ CoinGecko вернул пустые данные")
-        else:
-            logger.warning(f"⚠️ CoinGecko вернул статус {crypto_response.status_code}")
-            
-    except Exception as e:
-        logger.error(f"❌ Ошибка CoinGecko: {e}")
-    
-    # 2. Пробуем Coinbase API (резервный источник)
-    logger.info("🪙 Пробуем получить данные криптовалют с Coinbase...")
-    try:
-        coinbase_symbols = [crypto['symbol'] for crypto in crypto_list]
-        
-        for symbol in coinbase_symbols:
-            try:
-                coinbase_response = requests.get(
-                    f"https://api.coinbase.com/v2/prices/{symbol}-USD/spot",
-                    timeout=10
-                )
-                
-                if coinbase_response.status_code == 200:
-                    data = coinbase_response.json()
-                    price = float(data['data']['amount'])
-                    
-                    # Находим соответствующий crypto_id
-                    for crypto in crypto_list:
-                        if crypto['symbol'] == symbol:
-                            crypto_id = crypto['id']
-                            crypto_data[crypto_id] = {
-                                'price': price,
-                                'change_24h': 0,  # Coinbase не предоставляет изменение за 24ч в этом эндпоинте
-                                'source': 'Coinbase'
-                            }
-                            break
-                            
-            except Exception as e:
-                logger.debug(f"❌ Ошибка получения {symbol} с Coinbase: {e}")
-                continue
-        
-        if crypto_data:
-            logger.info(f"✅ Coinbase успешно получены данные для {len(crypto_data)} криптовалют")
-            return crypto_data
-            
-    except Exception as e:
-        logger.error(f"❌ Общая ошибка Coinbase: {e}")
-    
-    # 3. Пробуем Binance API (еще один резервный источник)
-    logger.info("🪙 Пробуем получить данные криптовалют с Binance...")
-    try:
-        binance_symbols = [f"{crypto['symbol']}USDT" for crypto in crypto_list]
-        
-        for symbol in binance_symbols:
-            try:
-                binance_response = requests.get(
-                    f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}",
-                    timeout=10
-                )
-                
-                if binance_response.status_code == 200:
-                    data = binance_response.json()
-                    price = float(data['price'])
-                    
-                    # Находим соответствующий crypto_id
-                    for crypto in crypto_list:
-                        if f"{crypto['symbol']}USDT" == symbol:
-                            crypto_id = crypto['id']
-                            crypto_data[crypto_id] = {
-                                'price': price,
-                                'change_24h': 0,  # Binance не предоставляет изменение за 24ч в этом эндпоинте
-                                'source': 'Binance'
-                            }
-                            break
-                            
-            except Exception as e:
-                logger.debug(f"❌ Ошибка получения {symbol} с Binance: {e}")
-                continue
-        
-        if crypto_data:
-            logger.info(f"✅ Binance успешно получены данные для {len(crypto_data)} криптовалют")
-            return crypto_data
-            
-    except Exception as e:
-        logger.error(f"❌ Общая ошибка Binance: {e}")
-    
-    # 4. Пробуем CryptoCompare API (последний резервный источник)
-    logger.info("🪙 Пробуем получить данные криптовалют с CryptoCompare...")
-    try:
-        cryptocompare_symbols = [crypto['symbol'] for crypto in crypto_list]
-        
-        for symbol in cryptocompare_symbols:
-            try:
-                cryptocompare_response = requests.get(
-                    f"https://min-api.cryptocompare.com/data/price?fsym={symbol}&tsyms=USD",
-                    timeout=10
-                )
-                
-                if cryptocompare_response.status_code == 200:
-                    data = cryptocompare_response.json()
-                    price = data.get('USD')
-                    
-                    if price is not None:
-                        # Находим соответствующий crypto_id
-                        for crypto in crypto_list:
-                            if crypto['symbol'] == symbol:
-                                crypto_id = crypto['id']
-                                crypto_data[crypto_id] = {
-                                    'price': price,
-                                    'change_24h': 0,  # CryptoCompare не предоставляет изменение за 24ч в этом эндпоинте
-                                    'source': 'CryptoCompare'
-                                }
-                                break
-                            
-            except Exception as e:
-                logger.debug(f"❌ Ошибка получения {symbol} с CryptoCompare: {e}")
-                continue
-        
-        if crypto_data:
-            logger.info(f"✅ CryptoCompare успешно получены данные для {len(crypto_data)} криптовалют")
-            return crypto_data
-            
-    except Exception as e:
-        logger.error(f"❌ Общая ошибка CryptoCompare: {e}")
-    
-    # Если все источники не сработали, возвращаем пустые данные
-    logger.error("❌ Все источники криптовалют недоступны")
-    return crypto_data
 
 # Время запуска бота
 bot_start_time = get_moscow_time()
@@ -1105,407 +825,7 @@ async def check_subscribers_command(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text(f"❌ Ошибка проверки подписчиков: {e}")
         logger.error(f"Ошибка check_subscribers: {e}")
 
-# Функции для получения дополнительных данных
-async def get_commodities_data():
-    """Получить данные по товарам из ПОЛНОСТЬЮ БЕСПЛАТНЫХ источников"""
-    commodities_data = {}
-    
-    try:
-        # 🥇 Gold-API.com - полностью бесплатный для золота и серебра, без ключей!
-        logger.info("🥇 Запрашиваю металлы с Gold-API.com (100% бесплатно)...")
-        
-        # Золото
-        try:
-            gold_response = requests.get("https://api.gold-api.com/price/XAU", timeout=10)
-            logger.info(f"📊 Gold-API золото статус: {gold_response.status_code}")
-            
-            if gold_response.status_code == 200:
-                gold_data = gold_response.json()
-                logger.info(f"📊 Gold-API золото ответ: {gold_data}")
-                
-                if 'price' in gold_data:
-                    commodities_data['gold'] = {
-                        'name': 'Золото',
-                        'price': gold_data['price'],
-                        'currency': 'USD'
-                    }
-                    logger.info(f"✅ Золото получено: ${gold_data['price']:.2f}")
-                else:
-                    logger.warning("❌ Gold-API: нет 'price' в ответе золота")
-            else:
-                logger.error(f"❌ Gold-API золото ошибка {gold_response.status_code}: {gold_response.text}")
-        except Exception as e:
-            logger.error(f"❌ Ошибка запроса золота: {e}")
-        
-        # Серебро
-        try:
-            silver_response = requests.get("https://api.gold-api.com/price/XAG", timeout=10)
-            logger.info(f"📊 Gold-API серебро статус: {silver_response.status_code}")
-            
-            if silver_response.status_code == 200:
-                silver_data = silver_response.json()
-                logger.info(f"📊 Gold-API серебро ответ: {silver_data}")
-                
-                if 'price' in silver_data:
-                    commodities_data['silver'] = {
-                        'name': 'Серебро',
-                        'price': silver_data['price'],
-                        'currency': 'USD'
-                    }
-                    logger.info(f"✅ Серебро получено: ${silver_data['price']:.2f}")
-                else:
-                    logger.warning("❌ Gold-API: нет 'price' в ответе серебра")
-            else:
-                logger.error(f"❌ Gold-API серебро ошибка {silver_response.status_code}: {silver_response.text}")
-        except Exception as e:
-            logger.error(f"❌ Ошибка запроса серебра: {e}")
-        
-        # 🛢️ EIA API для точной нефти Brent (официальный API правительства США, бесплатно!)
-        logger.info(f"🛢️ Запрашиваю нефть Brent из EIA API, ключ: {EIA_API_KEY[:10]}...")
-        try:
-            # Получаем последнюю цену Brent Europe из EIA
-            brent_response = requests.get(
-                f"https://api.eia.gov/v2/petroleum/pri/spt/data/?api_key={EIA_API_KEY}&facets[product][]=EPCBRENT&data[0]=value&sort[0][column]=period&sort[0][direction]=desc&length=1",
-                timeout=10
-            )
-            logger.info(f"📊 EIA Brent статус: {brent_response.status_code}")
-            
-            if brent_response.status_code == 200:
-                brent_data = brent_response.json()
-                logger.info(f"📊 EIA Brent ответ: {brent_data}")
-                
-                # EIA возвращает данные в "response.data"
-                if 'response' in brent_data and 'data' in brent_data['response'] and len(brent_data['response']['data']) > 0:
-                    brent_price = float(brent_data['response']['data'][0]['value'])
-                    commodities_data['brent'] = {
-                        'name': 'Нефть Brent',
-                        'price': brent_price,
-                        'currency': 'USD'
-                    }
-                    logger.info(f"✅ Нефть Brent получена: ${brent_price:.2f}")
-                else:
-                    logger.warning(f"❌ EIA: нет данных в ответе: {brent_data}")
-            else:
-                logger.error(f"❌ EIA Brent ошибка {brent_response.status_code}: {brent_response.text}")
-        except Exception as e:
-            logger.error(f"❌ Ошибка запроса Brent из EIA: {e}")
-        
-        # Fallback: Alpha Vantage для нефти WTI через USO ETF (если EIA не сработал)
-        if 'brent' not in commodities_data:
-            logger.info("🔄 EIA не сработал, пробуем Alpha Vantage USO ETF...")
-            try:
-                oil_response = requests.get(
-                    f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=USO&apikey={ALPHA_VANTAGE_KEY}",
-                    timeout=10
-                )
-                logger.info(f"📊 Alpha Vantage USO статус: {oil_response.status_code}")
-                
-                if oil_response.status_code == 200:
-                    oil_data = oil_response.json()
-                    logger.info(f"📊 Alpha Vantage USO ответ: {oil_data}")
-                    
-                    if 'Global Quote' in oil_data and '05. price' in oil_data['Global Quote']:
-                        oil_price = float(oil_data['Global Quote']['05. price'])
-                        estimated_oil_price = oil_price * 12  # Приблизительная конвертация USO ETF
-                        commodities_data['brent'] = {
-                            'name': 'Нефть Brent (приблиз.)',
-                            'price': estimated_oil_price,
-                            'currency': 'USD'
-                        }
-                        logger.info(f"✅ Нефть Brent (USO fallback): ${estimated_oil_price:.2f}")
-                    else:
-                        logger.warning(f"❌ Alpha Vantage USO: неожиданная структура: {oil_data}")
-                else:
-                    logger.error(f"❌ Alpha Vantage USO ошибка {oil_response.status_code}: {oil_response.text}")
-            except Exception as e:
-                logger.error(f"❌ Ошибка Alpha Vantage USO: {e}")
-        
-        # Fallback только для расчетных значений (не статичных!)
-        if 'silver' not in commodities_data and 'gold' in commodities_data:
-            logger.info("🔄 Серебро недоступно, рассчитываем от золота...")
-            gold_price = commodities_data['gold']['price']
-            silver_fallback = gold_price / 80  # Историческое соотношение
-            commodities_data['silver'] = {
-                'name': 'Серебро (расчетное)',
-                'price': silver_fallback,
-                'currency': 'USD'
-            }
-            logger.info(f"✅ Серебро рассчитано: ${silver_fallback:.2f}")
-        
-        # Рассчитываем Urals от Brent (российская нефть торгуется с дисконтом)
-        if 'brent' in commodities_data:
-            logger.info("🔄 Рассчитываем Urals от Brent...")
-            brent_price = commodities_data['brent']['price']
-            # Urals обычно торгуется с дисконтом $2-5 к Brent
-            urals_discount = 3.5  # Средний дисконт
-            urals_price = brent_price - urals_discount
-            commodities_data['urals'] = {
-                'name': 'Нефть Urals (расчетная)',
-                'price': urals_price,
-                'currency': 'USD'
-            }
-            logger.info(f"✅ Urals рассчитана: ${urals_price:.2f} (Brent ${brent_price:.2f} - ${urals_discount})")
-        
-        if 'brent' not in commodities_data:
-            logger.warning("⚠️ Нефть недоступна из всех бесплатных источников")
-    
-    except Exception as e:
-        logger.error(f"❌ Общая ошибка получения данных товаров: {e}")
-    
-    logger.info(f"📊 Итого товаров получено: {len(commodities_data)} - {list(commodities_data.keys())}")
-    return commodities_data
-
-async def get_indices_data():
-    """Получить данные по индексам: IMOEX, RTS, S&P 500 с учетом торговых дней"""
-    indices_data = {}
-    
-    # Проверяем, является ли сегодня торговым днем
-    from datetime import datetime
-    moscow_tz = pytz.timezone('Europe/Moscow')
-    current_moscow = datetime.now(moscow_tz)
-    is_weekend = current_moscow.weekday() >= 5  # 5=суббота, 6=воскресенье
-    
-    logger.info(f"📅 Текущее время МСК: {current_moscow.strftime('%H:%M:%S %d.%m.%Y')}")
-    logger.info(f"📅 Выходной день: {'Да' if is_weekend else 'Нет'}")
-    
-    try:
-        # 1. Российские индексы через MOEX (только в торговые дни)
-        if not is_weekend:
-            logger.info("📊 Запрашиваю российские индексы с MOEX (торговый день)...")
-            async with aiohttp.ClientSession() as session:
-                # IMOEX
-                imoex_url = "https://iss.moex.com/iss/engines/stock/markets/index/securities/IMOEX.json"
-                logger.info(f"📈 Запрашиваю IMOEX: {imoex_url}")
-                async with session.get(imoex_url) as resp:
-                    logger.info(f"📊 IMOEX статус: {resp.status}")
-                    if resp.status == 200:
-                        data = await resp.json()
-                        
-                        if 'marketdata' in data and 'data' in data['marketdata'] and len(data['marketdata']['data']) > 0:
-                            row_data = dict(zip(data['marketdata']['columns'], data['marketdata']['data'][0]))
-                            
-                            if 'LASTVALUE' in row_data and row_data['LASTVALUE']:
-                                # Проверяем время последнего обновления
-                                update_time = row_data.get('UPDATETIME', '')
-                                logger.info(f"📊 IMOEX время обновления: {update_time}")
-                                
-                                indices_data['imoex'] = {
-                                    'name': 'IMOEX',
-                                    'price': row_data.get('CURRENTVALUE', row_data['LASTVALUE']),
-                                    'change_pct': row_data.get('LASTCHANGETOOPENPRC', row_data.get('LASTCHANGEPRC', 0)),
-                                    'update_time': update_time,
-                                    'is_live': True
-                                }
-                                logger.info(f"✅ IMOEX получен: {row_data['LASTVALUE']}")
-                            else:
-                                logger.warning(f"❌ IMOEX: нет LASTVALUE или LASTVALUE пустой")
-                        else:
-                            logger.warning("❌ IMOEX: нет marketdata или данных")
-                    else:
-                        response_text = await resp.text()
-                        logger.error(f"❌ IMOEX ошибка {resp.status}: {response_text[:200]}...")
-                
-                # RTS
-                rts_url = "https://iss.moex.com/iss/engines/stock/markets/index/securities/RTSI.json"
-                logger.info(f"📈 Запрашиваю RTS: {rts_url}")
-                async with session.get(rts_url) as resp:
-                    logger.info(f"📊 RTS статус: {resp.status}")
-                    if resp.status == 200:
-                        data = await resp.json()
-                        
-                        if 'marketdata' in data and 'data' in data['marketdata'] and len(data['marketdata']['data']) > 0:
-                            row_data = dict(zip(data['marketdata']['columns'], data['marketdata']['data'][0]))
-                            
-                            if 'LASTVALUE' in row_data and row_data['LASTVALUE']:
-                                update_time = row_data.get('UPDATETIME', '')
-                                logger.info(f"📊 RTS время обновления: {update_time}")
-                                
-                                indices_data['rts'] = {
-                                    'name': 'RTS',
-                                    'price': row_data.get('CURRENTVALUE', row_data['LASTVALUE']),
-                                    'change_pct': row_data.get('LASTCHANGETOOPENPRC', row_data.get('LASTCHANGEPRC', 0)),
-                                    'update_time': update_time,
-                                    'is_live': True
-                                }
-                                logger.info(f"✅ RTS получен: {row_data['LASTVALUE']}")
-                            else:
-                                logger.warning(f"❌ RTS: нет LASTVALUE или LASTVALUE пустой")
-                        else:
-                            logger.warning("❌ RTS: нет marketdata или данных")
-                    else:
-                        response_text = await resp.text() 
-                        logger.error(f"❌ RTS ошибка {resp.status}: {response_text[:200]}...")
-        else:
-            logger.info("📅 Выходной день - запрашиваю последние известные значения российских индексов")
-            # Пытаемся получить последние известные значения даже в выходные
-            async with aiohttp.ClientSession() as session:
-                # IMOEX - последнее известное значение
-                imoex_url = "https://iss.moex.com/iss/engines/stock/markets/index/securities/IMOEX.json"
-                logger.info(f"📈 Запрашиваю последнее значение IMOEX: {imoex_url}")
-                async with session.get(imoex_url) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        
-                        if 'marketdata' in data and 'data' in data['marketdata'] and len(data['marketdata']['data']) > 0:
-                            row_data = dict(zip(data['marketdata']['columns'], data['marketdata']['data'][0]))
-                            
-                            # Используем CURRENTVALUE, LASTVALUE или PREVPRICE для последнего известного значения
-                            last_value = row_data.get('CURRENTVALUE') or row_data.get('LASTVALUE') or row_data.get('PREVPRICE')
-                            if last_value:
-                                indices_data['imoex'] = {
-                                    'name': 'IMOEX',
-                                    'price': last_value,
-                                    'change_pct': row_data.get('LASTCHANGETOOPENPRC', row_data.get('LASTCHANGEPRC', 0)),
-                                    'update_time': row_data.get('UPDATETIME', ''),
-                                    'is_live': False,
-                                    'note': 'Последнее известное значение (торги закрыты)'
-                                }
-                                logger.info(f"✅ IMOEX последнее значение: {last_value}")
-                            else:
-                                indices_data['imoex'] = {
-                                    'name': 'IMOEX',
-                                    'price': None,
-                                    'change_pct': 0,
-                                    'is_live': False,
-                                    'note': 'Данные недоступны'
-                                }
-                        else:
-                            indices_data['imoex'] = {
-                                'name': 'IMOEX',
-                                'price': None,
-                                'change_pct': 0,
-                                'is_live': False,
-                                'note': 'Данные недоступны'
-                            }
-                    else:
-                        indices_data['imoex'] = {
-                            'name': 'IMOEX',
-                            'price': None,
-                            'change_pct': 0,
-                            'is_live': False,
-                            'note': 'Ошибка получения данных'
-                        }
-                
-                # RTS - последнее известное значение
-                rts_url = "https://iss.moex.com/iss/engines/stock/markets/index/securities/RTSI.json"
-                logger.info(f"📈 Запрашиваю последнее значение RTS: {rts_url}")
-                async with session.get(rts_url) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        
-                        if 'marketdata' in data and 'data' in data['marketdata'] and len(data['marketdata']['data']) > 0:
-                            row_data = dict(zip(data['marketdata']['columns'], data['marketdata']['data'][0]))
-                            
-                            # Используем CURRENTVALUE, LASTVALUE или PREVPRICE для последнего известного значения
-                            last_value = row_data.get('CURRENTVALUE') or row_data.get('LASTVALUE') or row_data.get('PREVPRICE')
-                            if last_value:
-                                indices_data['rts'] = {
-                                    'name': 'RTS',
-                                    'price': last_value,
-                                    'change_pct': row_data.get('LASTCHANGETOOPENPRC', row_data.get('LASTCHANGEPRC', 0)),
-                                    'update_time': row_data.get('UPDATETIME', ''),
-                                    'is_live': False,
-                                    'note': 'Последнее известное значение (торги закрыты)'
-                                }
-                                logger.info(f"✅ RTS последнее значение: {last_value}")
-                            else:
-                                indices_data['rts'] = {
-                                    'name': 'RTS',
-                                    'price': None,
-                                    'change_pct': 0,
-                                    'is_live': False,
-                                    'note': 'Данные недоступны'
-                                }
-                        else:
-                            indices_data['rts'] = {
-                                'name': 'RTS',
-                                'price': None,
-                                'change_pct': 0,
-                                'is_live': False,
-                                'note': 'Данные недоступны'
-                            }
-                    else:
-                        indices_data['rts'] = {
-                            'name': 'RTS',
-                            'price': None,
-                            'change_pct': 0,
-                            'is_live': False,
-                            'note': 'Ошибка получения данных'
-                        }
-        
-        # 2. S&P 500 через Financial Modeling Prep (работает 24/7)
-        logger.info(f"📈 Запрашиваю S&P 500 с FMP, ключ: {FMP_API_KEY[:10]}...")
-        sp500_response = requests.get(
-            f"https://financialmodelingprep.com/api/v3/quote/%5EGSPC?apikey={FMP_API_KEY}",
-            timeout=10
-        )
-        logger.info(f"📊 FMP статус: {sp500_response.status_code}")
-        
-        if sp500_response.status_code == 200:
-            sp500_data = sp500_response.json()
-            
-            if isinstance(sp500_data, list) and len(sp500_data) > 0:
-                sp500_info = sp500_data[0]
-                if 'price' in sp500_info:
-                    indices_data['sp500'] = {
-                        'name': 'S&P 500',
-                        'price': sp500_info['price'],
-                        'change_pct': sp500_info.get('changesPercentage', 0),
-                        'is_live': True
-                    }
-                    logger.info(f"✅ S&P 500 получен: {sp500_info['price']}")
-                else:
-                    logger.warning("❌ S&P 500: нет 'price' в ответе FMP")
-            else:
-                logger.warning("❌ S&P 500: ответ FMP не список или пустой")
-        else:
-            logger.error(f"❌ FMP ошибка {sp500_response.status_code}: {sp500_response.text}")
-        
-        # Fallback: попробуем Alpha Vantage для S&P 500 если FMP не работает
-        if 'sp500' not in indices_data:
-            logger.info(f"🔄 Пробуем fallback Alpha Vantage для S&P 500, ключ: {ALPHA_VANTAGE_KEY[:10]}...")
-            try:
-                alpha_response = requests.get(
-                    f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=SPY&apikey={ALPHA_VANTAGE_KEY}",
-                    timeout=10
-                )
-                logger.info(f"📊 Alpha Vantage статус: {alpha_response.status_code}")
-                
-                if alpha_response.status_code == 200:
-                    alpha_data = alpha_response.json()
-                    
-                    if 'Global Quote' in alpha_data:
-                        quote = alpha_data['Global Quote']
-                        if '05. price' in quote:
-                            price = float(quote['05. price'])
-                            change_pct = float(quote['10. change percent'].replace('%', ''))
-                            indices_data['sp500'] = {
-                                'name': 'S&P 500 (SPY)',
-                                'price': price,
-                                'change_pct': change_pct,
-                                'is_live': True
-                            }
-                            logger.info(f"✅ S&P 500 из Alpha Vantage: {price}")
-                        else:
-                            logger.warning("❌ Alpha Vantage: нет '05. price'")
-                    else:
-                        logger.warning("❌ Alpha Vantage: нет 'Global Quote'")
-                else:
-                    logger.error(f"❌ Alpha Vantage ошибка {alpha_response.status_code}: {alpha_response.text}")
-            except Exception as fallback_e:
-                logger.error(f"❌ Alpha Vantage fallback ошибка: {fallback_e}")
-                    
-        # Fallback: если S&P 500 не получен, логируем предупреждение
-        if 'sp500' not in indices_data:
-            logger.warning("⚠️ S&P 500 недоступен даже из Alpha Vantage - проверьте ключ API")
-                    
-    except Exception as e:
-        logger.error(f"❌ Общая ошибка получения данных индексов: {e}")
-    
-    logger.info(f"📊 Итого индексов получено: {len(indices_data)} - {list(indices_data.keys())}")
-    return indices_data
-
-# Функция get_crypto_extended() удалена - заменена на прямые запросы к CoinGecko
+# Старые функции get_commodities_data и get_indices_data удалены - используются из data_sources.py
 
 # Файлы данных
 NOTIFICATION_DATA_FILE = 'notifications.json'
@@ -1558,14 +878,14 @@ def load_bot_settings():
                 return json.load(f)
         # Настройки по умолчанию
         return {
-            'daily_summary_time': '09:00',  # Время в формате HH:MM
-            'timezone': 'Europe/Moscow'
+            'daily_summary_time': DEFAULT_DAILY_TIME,
+            'timezone': DEFAULT_TIMEZONE
         }
     except Exception as e:
         logger.error(f"Ошибка загрузки настроек: {e}")
         return {
-            'daily_summary_time': '09:00',
-            'timezone': 'Europe/Moscow'
+            'daily_summary_time': DEFAULT_DAILY_TIME,
+            'timezone': DEFAULT_TIMEZONE
         }
 
 def save_bot_settings(settings):
@@ -1595,6 +915,8 @@ def validate_time_format(time_str):
         return True
     except (ValueError, AttributeError):
         return False
+
+# Старые функции удалены - перенесены в data_sources.py
 
 # Функции проверки изменений и отправки уведомлений
 async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
@@ -2808,48 +2130,52 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Получаем данные
         await update.message.reply_text("📡 Получаю актуальные данные...")
         
-        # Валюты
-        try:
-            cbr_response = requests.get("https://www.cbr-xml-daily.ru/daily_json.js", timeout=10)
-            cbr_data = cbr_response.json()
-            usd_rate = cbr_data.get('Valute', {}).get('USD', {}).get('Value', 0)
-            eur_rate = cbr_data.get('Valute', {}).get('EUR', {}).get('Value', 0)
-            cny_rate = cbr_data.get('Valute', {}).get('CNY', {}).get('Value', 0)
-            gbp_rate = cbr_data.get('Valute', {}).get('GBP', {}).get('Value', 0)
-        except:
-            usd_rate = eur_rate = cny_rate = gbp_rate = 0
+        session = get_http_session()
         
-        # FOREX курс
+        # Получаем все данные параллельно
         try:
-            forex_response = requests.get(
-                "https://api.exchangerate-api.com/v4/latest/USD",
-                timeout=10
+            cbr_data, forex_data, crypto_data, stocks_data, commodities_data, indices_data = await asyncio.gather(
+                get_cbr_rates(session),
+                get_forex_rates(session),
+                get_crypto_data(session),
+                get_moex_stocks(session),
+                get_commodities_data(session),
+                get_indices_data(session),
+                return_exceptions=True
             )
-            forex_data = forex_response.json()
-            forex_usd_rub = forex_data.get('rates', {}).get('RUB', None)
-        except:
+            
+            # Обрабатываем валюты из ЦБ РФ
+            if isinstance(cbr_data, Exception):
+                usd_rate = eur_rate = cny_rate = gbp_rate = 0
+            else:
+                usd_rate = cbr_data.get('Valute', {}).get('USD', {}).get('Value', 0)
+                eur_rate = cbr_data.get('Valute', {}).get('EUR', {}).get('Value', 0)
+                cny_rate = cbr_data.get('Valute', {}).get('CNY', {}).get('Value', 0)
+                gbp_rate = cbr_data.get('Valute', {}).get('GBP', {}).get('Value', 0)
+            
+            # Обрабатываем FOREX курс
+            if isinstance(forex_data, Exception):
+                forex_usd_rub = None
+            else:
+                forex_usd_rub = forex_data.get('rates', {}).get('RUB', None)
+            
+            # Обрабатываем остальные данные
+            if isinstance(crypto_data, Exception):
+                crypto_data = {}
+            if isinstance(stocks_data, Exception):
+                stocks_data = {}
+            if isinstance(commodities_data, Exception):
+                commodities_data = {}
+            if isinstance(indices_data, Exception):
+                indices_data = {}
+        except Exception as e:
+            logger.error(f"Ошибка получения данных для PDF: {e}")
+            usd_rate = eur_rate = cny_rate = gbp_rate = 0
             forex_usd_rub = None
-        
-        # Криптовалюты с резервными источниками
-        crypto_data = await get_crypto_data_with_fallback()
-        
-        # Индексы
-        try:
-            indices_data = await get_indices_data()
-        except:
-            indices_data = {}
-        
-        # Акции
-        try:
-            stocks_data = await get_moex_stocks()
-        except:
+            crypto_data = {}
             stocks_data = {}
-        
-        # Товары
-        try:
-            commodities_data = await get_commodities_data()
-        except:
             commodities_data = {}
+            indices_data = {}
         
         # Создаем разделы отчета
         
