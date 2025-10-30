@@ -392,49 +392,74 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
     """Получить данные фондовых индексов"""
     indices_data = {}
     
-    moscow_tz = pytz.timezone('Europe/Moscow')
-    current_moscow = datetime.now(moscow_tz)
-    is_weekend = current_moscow.weekday() >= 5
-    
     try:
-        # IMOEX и RTS с MOEX
-        if not is_weekend:
-            logger.debug("Запрашиваю индексы MOEX...")
-            try:
-                async with session.get(
-                    "https://iss.moex.com/iss/engines/stock/markets/index/boards/SNDX/securities.json",
-                    params={'iss.meta': 'off', 'iss.only': 'securities,marketdata'},
-                    timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        
-                        # Парсим IMOEX и RTS
-                        if 'marketdata' in data and 'data' in data['marketdata']:
-                            marketdata_cols = data['marketdata']['columns']
-                            for row in data['marketdata']['data']:
-                                row_data = dict(zip(marketdata_cols, row))
-                                secid = row_data.get('SECID')
-                                
-                                if secid == 'IMOEX':
+        # IMOEX и RTS с MOEX (запрашиваем всегда, проверяем данные)
+        logger.debug("Запрашиваю индексы MOEX...")
+        try:
+            async with session.get(
+                "https://iss.moex.com/iss/engines/stock/markets/index/boards/SNDX/securities.json",
+                params={'iss.meta': 'off', 'iss.only': 'securities,marketdata'},
+                timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    
+                    # Парсим IMOEX и RTS
+                    if 'marketdata' in data and 'data' in data['marketdata']:
+                        marketdata_cols = data['marketdata']['columns']
+                        for row in data['marketdata']['data']:
+                            row_data = dict(zip(marketdata_cols, row))
+                            secid = row_data.get('SECID')
+                            
+                            if secid == 'IMOEX':
+                                last_value = row_data.get('LAST')
+                                # Используем LAST, CURRENTVALUE или PREVPRICE
+                                price = last_value or row_data.get('CURRENTVALUE') or row_data.get('PREVPRICE')
+                                if price:
                                     indices_data['imoex'] = {
                                         'name': 'IMOEX',
-                                        'price': row_data.get('LAST'),
+                                        'price': price,
                                         'change_pct': row_data.get('CHANGEPRCNT', 0),
-                                        'is_live': True
+                                        'is_live': last_value is not None  # Live если есть LAST
                                     }
-                                elif secid == 'RTSI':
+                            elif secid == 'RTSI':
+                                last_value = row_data.get('LAST')
+                                price = last_value or row_data.get('CURRENTVALUE') or row_data.get('PREVPRICE')
+                                if price:
                                     indices_data['rts'] = {
                                         'name': 'RTS',
-                                        'price': row_data.get('LAST'),
+                                        'price': price,
                                         'change_pct': row_data.get('CHANGEPRCNT', 0),
-                                        'is_live': True
+                                        'is_live': last_value is not None
                                     }
-            except Exception as e:
-                logger.error(f"Ошибка получения индексов MOEX: {e}")
+        except Exception as e:
+            logger.error(f"Ошибка получения индексов MOEX: {e}")
         
-        # S&P 500
+        # S&P 500 через FMP (основной источник) или Alpha Vantage
         logger.debug("Запрашиваю S&P 500...")
+        try:
+            # Пробуем FMP сначала
+            from config import FMP_API_KEY
+            if FMP_API_KEY and FMP_API_KEY != 'demo':
+                url = f"https://financialmodelingprep.com/api/v3/quote/%5EGSPC?apikey={FMP_API_KEY}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)) as resp:
+                    if resp.status == 200:
+                        sp500_data = await resp.json()
+                        if isinstance(sp500_data, list) and len(sp500_data) > 0:
+                            sp500_info = sp500_data[0]
+                            if 'price' in sp500_info:
+                                indices_data['sp500'] = {
+                                    'name': 'S&P 500',
+                                    'price': sp500_info['price'],
+                                    'change_pct': sp500_info.get('changesPercentage', 0),
+                                    'is_live': True  # FMP дает актуальные данные
+                                }
+                                logger.info(f"✅ S&P 500 получен из FMP: {sp500_info['price']:.2f}")
+                                # Не возвращаем здесь, чтобы можно было вернуть все индексы вместе
+        except Exception as e:
+            logger.debug(f"Ошибка получения S&P 500 из FMP: {e}")
+        
+        # Fallback: Alpha Vantage SPY
         try:
             url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=SPY&apikey={ALPHA_VANTAGE_KEY}"
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)) as resp:
@@ -446,14 +471,17 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
                         sp500_price = spy_price * 10
                         change_pct = float(sp500_data['Global Quote'].get('10. change percent', '0%').replace('%', ''))
                         
+                        # Проверяем, открыт ли рынок (если есть время торговли в данных)
+                        trading_status = sp500_data['Global Quote'].get('07. latest trading day', '')
+                        is_live = bool(trading_status)  # Если есть дата торговли, считаем что это актуальные данные
+                        
                         indices_data['sp500'] = {
                             'name': 'S&P 500',
                             'price': sp500_price,
                             'change_pct': change_pct,
-                            'is_live': False,
-                            'note': 'Закрытие предыдущего дня'
+                            'is_live': is_live
                         }
-                        logger.info(f"✅ S&P 500 получен: {sp500_price:.2f}")
+                        logger.info(f"✅ S&P 500 получен из Alpha Vantage: {sp500_price:.2f}")
         except Exception as e:
             logger.error(f"Ошибка получения S&P 500: {e}")
     

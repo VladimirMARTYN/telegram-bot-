@@ -270,29 +270,68 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         
         # Обработка курсов валют ЦБ РФ
+        usd_str = eur_str = cny_str = gbp_str = "❌ Ошибка API"
+        usd_to_rub_rate = 0
+        
         try:
             if isinstance(cbr_data, Exception):
                 raise cbr_data
             
-            # Получаем курсы валют (только 4 основные)
-            usd_rate = cbr_data.get('Valute', {}).get('USD', {}).get('Value', 'Н/Д')
-            eur_rate = cbr_data.get('Valute', {}).get('EUR', {}).get('Value', 'Н/Д')
-            cny_rate = cbr_data.get('Valute', {}).get('CNY', {}).get('Value', 'Н/Д')
-            gbp_rate = cbr_data.get('Valute', {}).get('GBP', {}).get('Value', 'Н/Д')
+            if not cbr_data or not isinstance(cbr_data, dict):
+                logger.error("Данные ЦБ РФ не получены или имеют неправильный формат")
+                raise ValueError("Данные ЦБ РФ недоступны")
+            
+            valute = cbr_data.get('Valute', {})
+            if not valute:
+                logger.error("Данные Valute отсутствуют в ответе ЦБ РФ")
+                raise ValueError("Данные валют отсутствуют")
+            
+            # Получаем курсы валют (только 4 основные) с индивидуальной обработкой ошибок
+            usd_info = valute.get('USD', {})
+            usd_rate = usd_info.get('Value') if isinstance(usd_info, dict) else None
+            
+            eur_info = valute.get('EUR', {})
+            eur_rate = eur_info.get('Value') if isinstance(eur_info, dict) else None
+            
+            cny_info = valute.get('CNY', {})
+            cny_rate = cny_info.get('Value') if isinstance(cny_info, dict) else None
+            
+            gbp_info = valute.get('GBP', {})
+            gbp_rate = gbp_info.get('Value') if isinstance(gbp_info, dict) else None
             
             # Сохраняем курс доллара для конвертации в рубли
             usd_to_rub_rate = usd_rate if isinstance(usd_rate, (int, float)) else 0
             
-            # Форматируем валютные курсы
-            usd_str = f"{format_price(usd_rate)} ₽" if isinstance(usd_rate, (int, float)) else str(usd_rate)
-            eur_str = f"{format_price(eur_rate)} ₽" if isinstance(eur_rate, (int, float)) else str(eur_rate)
-            cny_str = f"{format_price(cny_rate)} ₽" if isinstance(cny_rate, (int, float)) else str(cny_rate)
-            gbp_str = f"{format_price(gbp_rate)} ₽" if isinstance(gbp_rate, (int, float)) else str(gbp_rate)
+            # Форматируем валютные курсы индивидуально
+            if isinstance(usd_rate, (int, float)):
+                usd_str = f"{format_price(usd_rate)} ₽"
+            else:
+                usd_str = "❌ Ошибка API"
+                logger.warning(f"USD курс не получен: {usd_rate}")
+            
+            if isinstance(eur_rate, (int, float)):
+                eur_str = f"{format_price(eur_rate)} ₽"
+            else:
+                eur_str = "❌ Ошибка API"
+                logger.warning(f"EUR курс не получен: {eur_rate}")
+            
+            if isinstance(cny_rate, (int, float)):
+                cny_str = f"{format_price(cny_rate)} ₽"
+            else:
+                cny_str = "❌ Ошибка API"
+                logger.warning(f"CNY курс не получен: {cny_rate}")
+            
+            if isinstance(gbp_rate, (int, float)):
+                gbp_str = f"{format_price(gbp_rate)} ₽"
+            else:
+                gbp_str = "❌ Ошибка API"
+                logger.warning(f"GBP курс не получен: {gbp_rate}")
                 
         except Exception as e:
             logger.error(f"Ошибка получения курсов ЦБ РФ: {e}")
-            usd_str = eur_str = cny_str = gbp_str = "❌ Ошибка API"
-            usd_to_rub_rate = 0
+            import traceback
+            logger.error(f"Трассировка: {traceback.format_exc()}")
+            # Не меняем значения, если они уже установлены индивидуально
         
         # Обработка курса USD/RUB с FOREX
         try:
@@ -523,19 +562,19 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         for i, index in enumerate(index_items):
             if index in indices_data:
                 name = indices_data[index]['name']
-                price = indices_data[index]['price']
+                price = indices_data[index].get('price')
                 change = indices_data[index].get('change_pct', 0)
                 is_live = indices_data[index].get('is_live', True)
                 note = indices_data[index].get('note', '')
                 
                 prefix = "├" if i < len(index_items) - 1 else "└"
                 
-                if price is not None:
+                if price is not None and price != 0:
                     # Определяем тип изменения для индекса
                     if index in ['imoex', 'rts']:
                         change_period = "с открытия" if is_live else "с закрытия"
                     elif index == 'sp500':
-                        change_period = "с закрытия"
+                        change_period = "с закрытия" if not is_live else "с открытия"
                     else:
                         change_period = ""
                     
@@ -544,7 +583,13 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     note_str = f" ({note})" if note else ""
                     message += f"{prefix} {status_icon} {name}: **{format_price(price)}** {change_str}{note_str}\n"
                 else:
-                    message += f"{prefix} 🔴 {name}: **Торги закрыты**\n"
+                    # Если данных нет, но индекс был запрошен - показываем что данные временно недоступны
+                    message += f"{prefix} 🔴 {name}: **Данные временно недоступны**\n"
+            else:
+                # Если индекса вообще нет в данных
+                index_name = {'imoex': 'IMOEX', 'rts': 'RTS', 'sp500': 'S&P 500'}.get(index, index)
+                prefix = "├" if i < len(index_items) - 1 else "└"
+                message += f"{prefix} 🔴 {index_name}: **Данные временно недоступны**\n"
         message += "\n"
         
         # Время и источники
