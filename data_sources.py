@@ -8,6 +8,7 @@
 
 import logging
 import aiohttp
+import json
 from typing import Dict, Any, Optional
 from datetime import datetime
 import pytz
@@ -22,16 +23,21 @@ from utils import get_cached_data, fetch_with_retry
 
 logger = logging.getLogger(__name__)
 
+# Создаем общий timeout объект для всех запросов
+_TIMEOUT = aiohttp.ClientTimeout(total=API_TIMEOUT)
+
 
 async def get_cbr_rates(session: aiohttp.ClientSession) -> Dict[str, Any]:
     """Получить курсы валют ЦБ РФ"""
     async def _fetch():
         async with session.get(
             "https://www.cbr-xml-daily.ru/daily_json.js",
-            timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)
+            timeout=_TIMEOUT
         ) as resp:
             resp.raise_for_status()
-            return await resp.json()
+            # ЦБ РФ возвращает application/javascript, поэтому сначала получаем текст, потом парсим JSON
+            text = await resp.text()
+            return json.loads(text)
     
     return await fetch_with_retry(
         _fetch,
@@ -46,7 +52,7 @@ async def get_forex_rates(session: aiohttp.ClientSession) -> Dict[str, Any]:
     async def _fetch():
         async with session.get(
             "https://api.exchangerate-api.com/v4/latest/USD",
-            timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)
+            timeout=_TIMEOUT
         ) as resp:
             resp.raise_for_status()
             return await resp.json()
@@ -81,7 +87,7 @@ async def get_crypto_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
         crypto_ids = ','.join([crypto['id'] for crypto in crypto_list])
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={crypto_ids}&vs_currencies=usd&include_24hr_change=true"
         
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)) as resp:
+        async with session.get(url, timeout=_TIMEOUT) as resp:
             if resp.status == 200:
                 data = await resp.json()
                 
@@ -112,7 +118,7 @@ async def get_crypto_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
             symbol = crypto['symbol']
             try:
                 url = f"https://api.coinbase.com/v2/prices/{symbol}-USD/spot"
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)) as resp:
+                async with session.get(url, timeout=_TIMEOUT) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         price = float(data['data']['amount'])
@@ -141,7 +147,7 @@ async def get_crypto_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
             symbol = f"{crypto['symbol']}USDT"
             try:
                 url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)) as resp:
+                async with session.get(url, timeout=_TIMEOUT) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         price = float(data['price'])
@@ -220,7 +226,7 @@ async def get_moex_stocks(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
         async with session.get(
             trading_url,
             params=params,
-            timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)
+            timeout=_TIMEOUT
         ) as resp:
             if resp.status == 200:
                 data = await resp.json()
@@ -287,7 +293,7 @@ async def get_commodities_data(session: aiohttp.ClientSession) -> Dict[str, Dict
         try:
             async with session.get(
                 "https://api.gold-api.com/price/XAU",
-                timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)
+                timeout=_TIMEOUT
             ) as resp:
                 if resp.status == 200:
                     gold_data = await resp.json()
@@ -306,7 +312,7 @@ async def get_commodities_data(session: aiohttp.ClientSession) -> Dict[str, Dict
         try:
             async with session.get(
                 "https://api.gold-api.com/price/XAG",
-                timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)
+                timeout=_TIMEOUT
             ) as resp:
                 if resp.status == 200:
                     silver_data = await resp.json()
@@ -324,7 +330,7 @@ async def get_commodities_data(session: aiohttp.ClientSession) -> Dict[str, Dict
         logger.debug("Запрашиваю нефть Brent из EIA API...")
         try:
             url = f"https://api.eia.gov/v2/petroleum/pri/spt/data/?api_key={EIA_API_KEY}&facets[product][]=EPCBRENT&data[0]=value&sort[0][column]=period&sort[0][direction]=desc&length=1"
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)) as resp:
+            async with session.get(url, timeout=_TIMEOUT) as resp:
                 if resp.status == 200:
                     brent_data = await resp.json()
                     if 'response' in brent_data and 'data' in brent_data['response'] and len(brent_data['response']['data']) > 0:
@@ -343,7 +349,7 @@ async def get_commodities_data(session: aiohttp.ClientSession) -> Dict[str, Dict
             logger.debug("EIA не сработал, пробуем Alpha Vantage USO ETF...")
             try:
                 url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=USO&apikey={ALPHA_VANTAGE_KEY}"
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)) as resp:
+                async with session.get(url, timeout=_TIMEOUT) as resp:
                     if resp.status == 200:
                         oil_data = await resp.json()
                         if 'Global Quote' in oil_data and '05. price' in oil_data['Global Quote']:
@@ -399,7 +405,7 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
             async with session.get(
                 "https://iss.moex.com/iss/engines/stock/markets/index/boards/SNDX/securities.json",
                 params={'iss.meta': 'off', 'iss.only': 'securities,marketdata'},
-                timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)
+                timeout=_TIMEOUT
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -442,7 +448,7 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
             from config import FMP_API_KEY
             if FMP_API_KEY and FMP_API_KEY != 'demo':
                 url = f"https://financialmodelingprep.com/api/v3/quote/%5EGSPC?apikey={FMP_API_KEY}"
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)) as resp:
+                async with session.get(url, timeout=_TIMEOUT) as resp:
                     if resp.status == 200:
                         sp500_data = await resp.json()
                         if isinstance(sp500_data, list) and len(sp500_data) > 0:
@@ -462,7 +468,7 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
         # Fallback: Alpha Vantage SPY
         try:
             url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=SPY&apikey={ALPHA_VANTAGE_KEY}"
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)) as resp:
+            async with session.get(url, timeout=_TIMEOUT) as resp:
                 if resp.status == 200:
                     sp500_data = await resp.json()
                     if 'Global Quote' in sp500_data and '05. price' in sp500_data['Global Quote']:
