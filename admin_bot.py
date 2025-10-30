@@ -10,14 +10,24 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, JobQueue
 import json
 import aiohttp
-import requests
 import threading
 from flask import Flask, jsonify
-import threading
 
-# Загружаем переменные окружения из .env файла
-from dotenv import load_dotenv
-load_dotenv()
+# Импорты конфигурации и утилит
+from config import (
+    BOT_TOKEN, ADMIN_USER_ID, DEFAULT_THRESHOLD, PRICE_CHECK_INTERVAL,
+    DEFAULT_DAILY_TIME, DEFAULT_TIMEZONE, CACHE_TTL_CURRENCIES,
+    CACHE_TTL_CRYPTO, CACHE_TTL_STOCKS, CACHE_TTL_COMMODITIES, CACHE_TTL_INDICES,
+    SUPPORTED_CURRENCIES, SUPPORTED_CRYPTO, SUPPORTED_STOCKS
+)
+from utils import (
+    is_admin, get_cached_data, fetch_with_retry, validate_positive_number,
+    validate_asset, escape_html, format_price, clear_cache
+)
+from data_sources import (
+    get_cbr_rates, get_forex_rates, get_crypto_data, get_moex_stocks,
+    get_commodities_data, get_indices_data
+)
 
 # Настройка логирования (должна быть перед импортом reportlab)
 logging.basicConfig(
@@ -62,45 +72,26 @@ except ImportError:
 if not SCHEDULE_AVAILABLE:
     logger.warning("⚠️ Модуль 'schedule' не установлен. Альтернативная система задач будет использовать только Timer")
 
-# Конфигурация из переменных окружения
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '0'))
-
 # Глобальная переменная для системы задач
 GLOBAL_JOB_QUEUE = None
 
-# API ключи для внешних сервисов (для продакшена нужны настоящие ключи)
-METALPRICEAPI_KEY = os.getenv('METALPRICEAPI_KEY', 'demo')  # https://metalpriceapi.com/
-API_NINJAS_KEY = os.getenv('API_NINJAS_KEY', 'demo')        # https://api.api-ninjas.com/
-FMP_API_KEY = os.getenv('FMP_API_KEY', 'demo')              # https://financialmodelingprep.com/
-ALPHA_VANTAGE_KEY = os.getenv('ALPHA_VANTAGE_KEY', 'demo')  # https://www.alphavantage.co/
-EIA_API_KEY = os.getenv('EIA_API_KEY', 'demo')
+# Глобальная сессия aiohttp для переиспользования
+_http_session: aiohttp.ClientSession = None
 
-if not BOT_TOKEN:
-    logger.error("❌ BOT_TOKEN не найден в переменных окружения!")
-    exit(1)
-
-if ADMIN_USER_ID == 0:
-    logger.warning("⚠️ ADMIN_USER_ID не установлен!")
+def get_http_session() -> aiohttp.ClientSession:
+    """Получить или создать глобальную HTTP сессию"""
+    global _http_session
+    if _http_session is None or _http_session.closed:
+        _http_session = aiohttp.ClientSession()
+    return _http_session
 
 # Функция для получения московского времени
 def get_moscow_time():
     """Возвращает текущее время в московском часовом поясе"""
-    moscow_tz = pytz.timezone('Europe/Moscow')
+    moscow_tz = pytz.timezone(DEFAULT_TIMEZONE)
     return datetime.now(moscow_tz)
 
-# Функция для форматирования чисел с разделителями тысяч
-def format_price(price, decimal_places=2):
-    """Форматирует цену с разделителями тысяч и нужным количеством знаков после запятой"""
-    if isinstance(price, (int, float)):
-        return f"{price:,.{decimal_places}f}".replace(',', ' ')
-    return str(price)
-
-# Создание inline клавиатур
-# УДАЛЕНО: inline клавиатуры больше не используются
-
-# Функция для получения данных акций с MOEX
-async def get_moex_stocks():
+# Старые функции удалены - используются функции из data_sources.py
     """Получить данные акций с Московской биржи"""
     stocks_data = {}
     
@@ -484,7 +475,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     
     # Добавляем админские команды только для администратора
-    if update.effective_user.id == ADMIN_USER_ID:
+    if is_admin(update.effective_user.id):
         help_text += (
             "🔧 <b>Админские команды:</b>\n"
             "/settings - Меню настроек бота\n"
@@ -519,11 +510,49 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     try:
         await update.message.reply_text("📊 Получаю информацию")
         
-        # 1. Курсы валют ЦБ РФ
+        session = get_http_session()
+        
+        # Получаем все данные параллельно с кэшированием
+        async def fetch_cbr():
+            async def _fetch():
+                return await get_cbr_rates(session)
+            return await get_cached_data('cbr_rates', _fetch, CACHE_TTL_CURRENCIES)
+        
+        async def fetch_forex():
+            async def _fetch():
+                return await get_forex_rates(session)
+            return await get_cached_data('forex_rates', _fetch, CACHE_TTL_CURRENCIES)
+        
+        async def fetch_crypto():
+            async def _fetch():
+                return await get_crypto_data(session)
+            return await get_cached_data('crypto_data', _fetch, CACHE_TTL_CRYPTO)
+        
+        async def fetch_stocks():
+            async def _fetch():
+                return await get_moex_stocks(session)
+            return await get_cached_data('moex_stocks', _fetch, CACHE_TTL_STOCKS)
+        
+        async def fetch_commodities():
+            async def _fetch():
+                return await get_commodities_data(session)
+            return await get_cached_data('commodities', _fetch, CACHE_TTL_COMMODITIES)
+        
+        async def fetch_indices():
+            async def _fetch():
+                return await get_indices_data(session)
+            return await get_cached_data('indices', _fetch, CACHE_TTL_INDICES)
+        
+        # Параллельный запрос всех данных
+        cbr_data, forex_data, crypto_data, stocks_data, commodities_data, indices_data = await asyncio.gather(
+            fetch_cbr(), fetch_forex(), fetch_crypto(), fetch_stocks(), fetch_commodities(), fetch_indices(),
+            return_exceptions=True
+        )
+        
+        # Обработка курсов валют ЦБ РФ
         try:
-            cbr_response = requests.get("https://www.cbr-xml-daily.ru/daily_json.js", timeout=10)
-            cbr_response.raise_for_status()
-            cbr_data = cbr_response.json()
+            if isinstance(cbr_data, Exception):
+                raise cbr_data
             
             # Получаем курсы валют (только 4 основные)
             usd_rate = cbr_data.get('Valute', {}).get('USD', {}).get('Value', 'Н/Д')
@@ -543,16 +572,12 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception as e:
             logger.error(f"Ошибка получения курсов ЦБ РФ: {e}")
             usd_str = eur_str = cny_str = gbp_str = "❌ Ошибка API"
-            usd_to_rub_rate = 0  # Будем использовать FOREX как fallback
+            usd_to_rub_rate = 0
         
-        # 1.5. Курс USD/RUB с FOREX рынка
+        # Обработка курса USD/RUB с FOREX
         try:
-            forex_response = requests.get(
-                "https://api.exchangerate-api.com/v4/latest/USD",
-                timeout=10
-            )
-            forex_response.raise_for_status()
-            forex_data = forex_response.json()
+            if isinstance(forex_data, Exception):
+                raise forex_data
             
             # Получаем курс USD/RUB с FOREX
             forex_usd_rub = forex_data.get('rates', {}).get('RUB', None)
@@ -562,30 +587,27 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 if usd_to_rub_rate == 0:
                     usd_to_rub_rate = forex_usd_rub
                     usd_str = f"{format_price(forex_usd_rub)} ₽ (FOREX)"
-                    logger.info(f"📊 Используем FOREX как основной источник: {forex_usd_rub:.2f} ₽")
+                    logger.debug(f"Используем FOREX как основной источник: {forex_usd_rub:.2f} ₽")
                 else:
                     # Вычисляем разницу с курсом ЦБ РФ
                     diff = forex_usd_rub - usd_to_rub_rate
                     diff_pct = (diff / usd_to_rub_rate) * 100
                     diff_str = f" (FOREX: {format_price(forex_usd_rub)} ₽, разница: {diff:+.2f} ₽, {diff_pct:+.2f}%)"
                     usd_str += diff_str
-                    logger.info(f"📊 FOREX USD/RUB: {forex_usd_rub:.2f} ₽")
-            else:
-                logger.warning("⚠️ FOREX USD/RUB недоступен")
+                    logger.debug(f"FOREX USD/RUB: {forex_usd_rub:.2f} ₽")
                 
         except Exception as e:
             logger.error(f"Ошибка получения курса FOREX: {e}")
-            # Если и ЦБ РФ, и FOREX недоступны, используем fallback
             if usd_to_rub_rate == 0:
-                usd_to_rub_rate = 80  # Fallback значение для конвертации
+                usd_to_rub_rate = 80  # Fallback значение
         
-        # 2. Расширенные курсы криптовалют с резервными источниками
-        crypto_data = await get_crypto_data_with_fallback()
+        # Обработка криптовалют
+        if isinstance(crypto_data, Exception):
+            logger.error(f"Ошибка получения криптовалют: {crypto_data}")
+            crypto_data = {}
         
         # Форматируем криптовалютные цены (доллары + рубли)
         crypto_strings = {}
-        
-        # Список криптовалют для форматирования
         crypto_list = [
             {'id': 'bitcoin', 'name': 'Bitcoin', 'decimals': 0},
             {'id': 'ethereum', 'name': 'Ethereum', 'decimals': 0},
@@ -621,46 +643,57 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             else:
                 crypto_strings[crypto_id] = f"{crypto_name}: ❌ Н/Д"
         
-        # 3. Получаем данные акций с MOEX
-        moex_stocks = await get_moex_stocks()
+        # Обработка акций
+        if isinstance(stocks_data, Exception):
+            logger.error(f"Ошибка получения акций: {stocks_data}")
+            stocks_data = {}
         
-        # Разделяем акции на основные и застройщиков
-        main_stocks = {}
-        real_estate_stocks = {}
+        # Обработка товаров
+        if isinstance(commodities_data, Exception):
+            logger.error(f"Ошибка получения товаров: {commodities_data}")
+            commodities_data = {}
         
-        for ticker, data in moex_stocks.items():
-            if ticker in ['PIKK', 'SMLT']:
-                real_estate_stocks[ticker] = data
-            else:
-                main_stocks[ticker] = data
+        # Обработка индексов
+        if isinstance(indices_data, Exception):
+            logger.error(f"Ошибка получения индексов: {indices_data}")
+            indices_data = {}
         
-        # Форматируем акции
-        def format_stock_data(stocks_dict):
-            result = {}
-            for ticker, data in stocks_dict.items():
-                price = data.get('price')
-                change_pct = data.get('change_pct')
-                name = data.get('name', ticker)
+        # Форматируем криптовалютные цены (доллары + рубли)
+        crypto_strings = {}
+        crypto_list = [
+            {'id': 'bitcoin', 'name': 'Bitcoin', 'decimals': 0},
+            {'id': 'ethereum', 'name': 'Ethereum', 'decimals': 0},
+            {'id': 'the-open-network', 'name': 'TON', 'decimals': 2},
+            {'id': 'ripple', 'name': 'XRP', 'decimals': 3},
+            {'id': 'cardano', 'name': 'Cardano', 'decimals': 3},
+            {'id': 'solana', 'name': 'Solana', 'decimals': 2},
+            {'id': 'dogecoin', 'name': 'Dogecoin', 'decimals': 3},
+            {'id': 'tether', 'name': 'Tether', 'decimals': 2}
+        ]
+        
+        for crypto in crypto_list:
+            crypto_id = crypto['id']
+            crypto_name = crypto['name']
+            decimals = crypto['decimals']
+            
+            if crypto_id in crypto_data:
+                price = crypto_data[crypto_id]['price']
+                change_24h = crypto_data[crypto_id]['change_24h']
+                source = crypto_data[crypto_id]['source']
                 
-                if price is not None:
-                    price_str = f"{price:.2f} ₽"
-                    
-                    if change_pct is not None:
-                        if change_pct > 0:
-                            change_str = f"(+{change_pct:.2f}%)"
-                        elif change_pct < 0:
-                            change_str = f"({change_pct:.2f}%)"
-                        else:
-                            change_str = "(0.00%)"
-                        
-                        result[ticker] = f"{name}: {price_str} {change_str}"
-                    else:
-                        result[ticker] = f"{name}: {price_str}"
+                if isinstance(price, (int, float)) and usd_to_rub_rate > 0:
+                    rub_price = price * usd_to_rub_rate
+                    change_str = f" ({change_24h:+.2f}% за 24ч)" if change_24h != 0 else ""
+                    source_str = f" [{source}]" if source != 'CoinGecko' else ""
+                    crypto_strings[crypto_id] = f"{crypto_name}: ${format_price(price, decimals)} ({format_price(rub_price, decimals)} ₽){change_str}{source_str}"
+                elif isinstance(price, (int, float)):
+                    change_str = f" ({change_24h:+.2f}% за 24ч)" if change_24h != 0 else ""
+                    source_str = f" [{source}]" if source != 'CoinGecko' else ""
+                    crypto_strings[crypto_id] = f"{crypto_name}: ${format_price(price, decimals)}{change_str}{source_str}"
                 else:
-                    result[ticker] = f"{name}: ❌ Н/Д"
-            return result
-        
-
+                    crypto_strings[crypto_id] = f"{crypto_name}: ❌ Н/Д"
+            else:
+                crypto_strings[crypto_id] = f"{crypto_name}: ❌ Н/Д"
         
         # Формируем итоговое сообщение с улучшенным форматированием
         message = "📊 **На сегодня курсы такие:**\n\n"
@@ -674,16 +707,16 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         
         # Криптовалюты
         message += "💎 **КРИПТА:**\n"
-        crypto_items = ['bitcoin', 'ethereum', 'ton', 'ripple', 'cardano', 'solana', 'dogecoin', 'tether']
-        for i, crypto in enumerate(crypto_items):
-            if crypto in crypto_strings:
+        crypto_items = ['bitcoin', 'ethereum', 'the-open-network', 'ripple', 'cardano', 'solana', 'dogecoin', 'tether']
+        for i, crypto_id in enumerate(crypto_items):
+            crypto_key = crypto_id if crypto_id != 'the-open-network' else 'ton'
+            if crypto_id in crypto_strings:
                 prefix = "├" if i < len(crypto_items) - 1 else "└"
-                message += f"{prefix} {crypto_strings[crypto]}\n"
+                message += f"{prefix} {crypto_strings[crypto_id]}\n"
         message += "\n"
         
         # Российские акции
         message += "📈 **РОССИЙСКИЕ АКЦИИ (MOEX):**\n"
-        stocks_data = await get_moex_stocks()
         stock_names = {
             'SBER': 'Сбер', 'YDEX': 'Яндекс', 'VKCO': 'ВК', 
             'T': 'T-Технологии', 'GAZP': 'Газпром', 'GMKN': 'Норникель',
@@ -743,8 +776,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         
         # Товары 
         message += "🛠️ **ЗОЛОТО, НЕФТЬ:**\n"
-        commodities_data = await get_commodities_data()
-        commodity_items = ['gold', 'silver', 'brent', 'urals']  # Добавляем urals
+        commodity_items = ['gold', 'silver', 'brent', 'urals']
         commodity_names = {
             'gold': 'Золото', 
             'silver': 'Серебро', 
@@ -766,7 +798,6 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         
         # Фондовые индексы
         message += "📊 **ФОНДОВЫЕ ИНДЕКСЫ:**\n"
-        indices_data = await get_indices_data()
         index_items = ['imoex', 'rts', 'sp500']
         
         for i, index in enumerate(index_items):
@@ -840,7 +871,7 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if str(user_id) not in notifications:
         notifications[str(user_id)] = {
             'subscribed': True,
-            'threshold': 2.0,  # 2% по умолчанию
+            'threshold': DEFAULT_THRESHOLD,  # 2% по умолчанию
             'alerts': {},
             'daily_summary': True
         }
@@ -905,18 +936,31 @@ async def set_alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text("❌ Укажите актив и пороговое значение")
         return
     
-    asset = context.args[0].upper()
+    asset = escape_html(context.args[0].upper())
+    
+    # Валидация актива
+    if not validate_asset(asset):
+        await update.message.reply_html(
+            f"❌ <b>Неподпираемый актив:</b> {asset}\n\n"
+            f"💡 Поддерживаемые активы:\n"
+            f"• Валюты: {', '.join(SUPPORTED_CURRENCIES)}\n"
+            f"• Криптовалюты: {', '.join(SUPPORTED_CRYPTO)}\n"
+            f"• Акции: {', '.join(SUPPORTED_STOCKS)}"
+        )
+        return
+    
+    # Валидация порогового значения
     try:
-        threshold = float(context.args[1])
-    except ValueError:
-        await update.message.reply_text("❌ Пороговое значение должно быть числом")
+        threshold = validate_positive_number(context.args[1])
+    except ValueError as e:
+        await update.message.reply_text(f"❌ {str(e)}")
         return
     
     notifications = load_notification_data()
     if str(user_id) not in notifications:
         notifications[str(user_id)] = {
             'subscribed': True,
-            'threshold': 2.0,
+            'threshold': DEFAULT_THRESHOLD,
             'alerts': {},
             'daily_summary': True
         }
@@ -973,7 +1017,7 @@ async def test_daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_id = update.effective_user.id
     
     # Проверяем права администратора
-    if user_id != ADMIN_USER_ID:
+    if not is_admin(user_id):
         await update.message.reply_text("🚫 Команда доступна только администратору")
         return
     
@@ -1005,7 +1049,7 @@ async def check_subscribers_command(update: Update, context: ContextTypes.DEFAUL
     user_id = update.effective_user.id
     
     # Проверяем права администратора
-    if user_id != ADMIN_USER_ID:
+    if not is_admin(user_id):
         await update.message.reply_text("🚫 Команда доступна только администратору")
         return
     
@@ -1556,42 +1600,75 @@ def validate_time_format(time_str):
 async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
     """Проверить изменения цен и отправить уведомления"""
     try:
-        # Получаем текущие данные
+        session = get_http_session()
         current_prices = {}
         
-        # Курсы валют
-        cbr_response = requests.get("https://www.cbr-xml-daily.ru/daily_json.js", timeout=10)
-        if cbr_response.status_code == 200:
-            cbr_data = cbr_response.json()
-            current_prices.update({
-                'USD': cbr_data.get('Valute', {}).get('USD', {}).get('Value'),
-                'EUR': cbr_data.get('Valute', {}).get('EUR', {}).get('Value'),
-                'CNY': cbr_data.get('Valute', {}).get('CNY', {}).get('Value'),
-                'GBP': cbr_data.get('Valute', {}).get('GBP', {}).get('Value')
-            })
+        # Получаем данные параллельно с кэшированием
+        async def fetch_cbr():
+            try:
+                async def _fetch_cbr():
+                    return await get_cbr_rates(session)
+                cbr_data = await get_cached_data('cbr_rates_check', _fetch_cbr, CACHE_TTL_CURRENCIES)
+                return {
+                    'USD': cbr_data.get('Valute', {}).get('USD', {}).get('Value'),
+                    'EUR': cbr_data.get('Valute', {}).get('EUR', {}).get('Value'),
+                    'CNY': cbr_data.get('Valute', {}).get('CNY', {}).get('Value'),
+                    'GBP': cbr_data.get('Valute', {}).get('GBP', {}).get('Value')
+                }
+            except Exception as e:
+                logger.error(f"Ошибка получения курсов валют для проверки: {e}")
+                return {}
         
-        # Криптовалюты с резервными источниками
-        crypto_data = await get_crypto_data_with_fallback()
-        crypto_mapping = {
-            'bitcoin': 'BTC',
-            'ethereum': 'ETH', 
-            'the-open-network': 'TON',
-            'ripple': 'XRP',
-            'cardano': 'ADA',
-            'solana': 'SOL',
-            'dogecoin': 'DOGE',
-            'tether': 'USDT'
-        }
+        async def fetch_crypto():
+            try:
+                async def _fetch_crypto():
+                    return await get_crypto_data(session)
+                crypto_data = await get_cached_data('crypto_data_check', _fetch_crypto, CACHE_TTL_CRYPTO)
+                crypto_mapping = {
+                    'bitcoin': 'BTC',
+                    'ethereum': 'ETH', 
+                    'the-open-network': 'TON',
+                    'ripple': 'XRP',
+                    'cardano': 'ADA',
+                    'solana': 'SOL',
+                    'dogecoin': 'DOGE',
+                    'tether': 'USDT'
+                }
+                result = {}
+                for crypto_id, price_data in crypto_data.items():
+                    if crypto_id in crypto_mapping:
+                        symbol = crypto_mapping[crypto_id]
+                        result[symbol] = price_data['price']
+                return result
+            except Exception as e:
+                logger.error(f"Ошибка получения криптовалют для проверки: {e}")
+                return {}
         
-        for crypto_id, price_data in crypto_data.items():
-            if crypto_id in crypto_mapping:
-                symbol = crypto_mapping[crypto_id]
-                current_prices[symbol] = price_data['price']
+        async def fetch_stocks():
+            try:
+                async def _fetch_stocks():
+                    return await get_moex_stocks(session)
+                moex_data = await get_cached_data('moex_stocks_check', _fetch_stocks, CACHE_TTL_STOCKS)
+                result = {}
+                for ticker, data in moex_data.items():
+                    result[ticker] = data.get('price')
+                return result
+            except Exception as e:
+                logger.error(f"Ошибка получения акций для проверки: {e}")
+                return {}
         
-        # Акции
-        moex_data = await get_moex_stocks()
-        for ticker, data in moex_data.items():
-            current_prices[ticker] = data.get('price')
+        # Параллельный запрос данных
+        currencies, crypto, stocks = await asyncio.gather(
+            fetch_cbr(), fetch_crypto(), fetch_stocks(),
+            return_exceptions=True
+        )
+        
+        if not isinstance(currencies, Exception):
+            current_prices.update(currencies)
+        if not isinstance(crypto, Exception):
+            current_prices.update(crypto)
+        if not isinstance(stocks, Exception):
+            current_prices.update(stocks)
         
         # Загружаем предыдущие цены
         price_history = load_price_history()
@@ -1602,7 +1679,7 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
             if not user_notifications.get('subscribed', False):
                 continue
             
-            threshold = user_notifications.get('threshold', 2.0)
+            threshold = user_notifications.get('threshold', DEFAULT_THRESHOLD)
             alerts = user_notifications.get('alerts', {})
             
             notifications_to_send = []
@@ -1620,8 +1697,9 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
                 
                 if abs(change_pct) >= threshold:
                     emoji = "📈" if change_pct > 0 else "📉"
+                    asset_name = escape_html(str(asset))
                     notifications_to_send.append(
-                        f"{emoji} <b>{asset}</b>: {change_pct:+.2f}% за 30 мин "
+                        f"{emoji} <b>{asset_name}</b>: {change_pct:+.2f}% за 30 мин "
                         f"({previous_price:.2f} → {current_price:.2f})"
                     )
             
@@ -1632,8 +1710,9 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
                     continue
                 
                 if current_price >= alert_threshold:
+                    asset_name = escape_html(str(asset))
                     notifications_to_send.append(
-                        f"🚨 <b>АЛЕРТ:</b> {asset} достиг {current_price:.2f} "
+                        f"🚨 <b>АЛЕРТ:</b> {asset_name} достиг {current_price:.2f} "
                         f"(порог: {alert_threshold})"
                     )
             
@@ -1735,7 +1814,7 @@ async def set_daily_time_command(update: Update, context: ContextTypes.DEFAULT_T
     user_id = update.effective_user.id
     
     # Проверяем права администратора
-    if user_id != ADMIN_USER_ID:
+    if not is_admin(user_id):
         await update.message.reply_text("🚫 Команда доступна только администратору")
         return
     
@@ -1848,7 +1927,7 @@ async def get_daily_settings_command(update: Update, context: ContextTypes.DEFAU
     user_id = update.effective_user.id
     
     # Проверяем права администратора
-    if user_id != ADMIN_USER_ID:
+    if not is_admin(user_id):
         await update.message.reply_text("🚫 Команда доступна только администратору")
         return
     
@@ -1913,7 +1992,7 @@ async def restart_daily_job_command(update: Update, context: ContextTypes.DEFAUL
     user_id = update.effective_user.id
     
     # Проверяем права администратора
-    if user_id != ADMIN_USER_ID:
+    if not is_admin(user_id):
         await update.message.reply_text("🚫 Команда доступна только администратору")
         return
     
@@ -2444,7 +2523,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     user_id = update.effective_user.id
     
     # Проверяем права администратора
-    if str(user_id) != os.getenv('ADMIN_USER_ID'):
+    if not is_admin(user_id):
         await update.message.reply_text("❌ Эта команда доступна только администратору.")
         return
     
@@ -2643,7 +2722,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_id = update.effective_user.id
     
     # Проверяем права администратора
-    if str(user_id) != os.getenv('ADMIN_USER_ID'):
+    if not is_admin(user_id):
         await update.message.reply_text("❌ Эта команда доступна только администратору.")
         return
     
@@ -3038,7 +3117,7 @@ async def web_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user_id = update.effective_user.id
     
     # Проверяем права администратора
-    if str(user_id) == os.getenv('ADMIN_USER_ID'):
+    if is_admin(user_id):
         web_url = os.getenv('WEB_APP_URL', 'https://telegram-bot-web-admin.railway.app')
         
         message = (
