@@ -17,14 +17,33 @@ from config import (
     CACHE_TTL_CURRENCIES, CACHE_TTL_CRYPTO, CACHE_TTL_STOCKS,
     CACHE_TTL_COMMODITIES, CACHE_TTL_INDICES, API_TIMEOUT,
     API_RETRY_ATTEMPTS, API_RETRY_DELAY_MIN, API_RETRY_DELAY_MAX,
-    URALS_DISCOUNT, EIA_API_KEY, ALPHA_VANTAGE_KEY
+    URALS_DISCOUNT, EIA_API_KEY, ALPHA_VANTAGE_KEY,
+    GOLD_SILVER_RATIO, USO_TO_BRENT_MULTIPLIER
 )
-from utils import get_cached_data, fetch_with_retry
+from utils import get_cached_data, fetch_with_retry, save_last_known_rate, get_last_known_rate
 
 logger = logging.getLogger(__name__)
 
-# Создаем общий timeout объект для всех запросов
-_TIMEOUT = aiohttp.ClientTimeout(total=API_TIMEOUT)
+# Используем просто число для таймаута, чтобы избежать проблем с контекстным менеджером
+_TIMEOUT = API_TIMEOUT
+
+
+async def safe_json_response(resp: aiohttp.ClientResponse) -> Any:
+    """
+    Безопасное получение JSON из ответа с обработкой ошибок Content-Type
+    
+    Args:
+        resp: Объект ответа aiohttp
+        
+    Returns:
+        Распарсенный JSON объект
+    """
+    try:
+        return await resp.json()
+    except aiohttp.client_exceptions.ContentTypeError:
+        # Если Content-Type неправильный, получаем текст и парсим вручную
+        text = await resp.text(encoding='utf-8')
+        return json.loads(text)
 
 
 async def get_cbr_rates(session: aiohttp.ClientSession) -> Dict[str, Any]:
@@ -35,9 +54,8 @@ async def get_cbr_rates(session: aiohttp.ClientSession) -> Dict[str, Any]:
             timeout=_TIMEOUT
         ) as resp:
             resp.raise_for_status()
-            # ЦБ РФ возвращает application/javascript, поэтому сначала получаем текст, потом парсим JSON
-            text = await resp.text()
-            return json.loads(text)
+            # ЦБ РФ возвращает application/javascript, используем безопасную функцию
+            return await safe_json_response(resp)
     
     return await fetch_with_retry(
         _fetch,
@@ -55,7 +73,7 @@ async def get_forex_rates(session: aiohttp.ClientSession) -> Dict[str, Any]:
             timeout=_TIMEOUT
         ) as resp:
             resp.raise_for_status()
-            return await resp.json()
+            return await safe_json_response(resp)
     
     return await fetch_with_retry(
         _fetch,
@@ -89,7 +107,7 @@ async def get_crypto_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
         
         async with session.get(url, timeout=_TIMEOUT) as resp:
             if resp.status == 200:
-                data = await resp.json()
+                data = await safe_json_response(resp)
                 
                 for crypto in crypto_list:
                     crypto_id = crypto['id']
@@ -120,7 +138,7 @@ async def get_crypto_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
                 url = f"https://api.coinbase.com/v2/prices/{symbol}-USD/spot"
                 async with session.get(url, timeout=_TIMEOUT) as resp:
                     if resp.status == 200:
-                        data = await resp.json()
+                        data = await safe_json_response(resp)
                         price = float(data['data']['amount'])
                         
                         crypto_id = crypto['id']
@@ -149,7 +167,7 @@ async def get_crypto_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
                 url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
                 async with session.get(url, timeout=_TIMEOUT) as resp:
                     if resp.status == 200:
-                        data = await resp.json()
+                        data = await safe_json_response(resp)
                         price = float(data['price'])
                         
                         crypto_id = crypto['id']
@@ -229,7 +247,7 @@ async def get_moex_stocks(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
             timeout=_TIMEOUT
         ) as resp:
             if resp.status == 200:
-                data = await resp.json()
+                data = await safe_json_response(resp)
                 
                 securities_data = {}
                 marketdata = {}
@@ -296,14 +314,18 @@ async def get_commodities_data(session: aiohttp.ClientSession) -> Dict[str, Dict
                 timeout=_TIMEOUT
             ) as resp:
                 if resp.status == 200:
-                    gold_data = await resp.json()
+                    gold_data = await safe_json_response(resp)
                     if 'price' in gold_data:
+                        gold_price = gold_data['price']
                         commodities_data['gold'] = {
                             'name': 'Золото',
-                            'price': gold_data['price'],
+                            'price': gold_price,
                             'currency': 'USD'
                         }
-                        logger.info(f"✅ Золото получено: ${gold_data['price']:.2f}")
+                        logger.info(f"✅ Золото получено: ${gold_price:.2f}")
+                        
+                        # Сохраняем цену золота для расчета соотношений
+                        save_last_known_rate('GOLD_PRICE', gold_price)
         except Exception as e:
             logger.error(f"Ошибка запроса золота: {e}")
         
@@ -315,14 +337,23 @@ async def get_commodities_data(session: aiohttp.ClientSession) -> Dict[str, Dict
                 timeout=_TIMEOUT
             ) as resp:
                 if resp.status == 200:
-                    silver_data = await resp.json()
+                    silver_data = await safe_json_response(resp)
                     if 'price' in silver_data:
+                        silver_price = silver_data['price']
                         commodities_data['silver'] = {
                             'name': 'Серебро',
-                            'price': silver_data['price'],
+                            'price': silver_price,
                             'currency': 'USD'
                         }
-                        logger.info(f"✅ Серебро получено: ${silver_data['price']:.2f}")
+                        logger.info(f"✅ Серебро получено: ${silver_price:.2f}")
+                        
+                        # Сохраняем цену серебра и соотношение с золотом
+                        save_last_known_rate('SILVER_PRICE', silver_price)
+                        if 'gold' in commodities_data:
+                            gold_price = commodities_data['gold']['price']
+                            ratio = gold_price / silver_price
+                            save_last_known_rate('GOLD_SILVER_RATIO', ratio)
+                            logger.debug(f"Соотношение золото/серебро: {ratio:.2f}:1")
         except Exception as e:
             logger.error(f"Ошибка запроса серебра: {e}")
         
@@ -332,7 +363,7 @@ async def get_commodities_data(session: aiohttp.ClientSession) -> Dict[str, Dict
             url = f"https://api.eia.gov/v2/petroleum/pri/spt/data/?api_key={EIA_API_KEY}&facets[product][]=EPCBRENT&data[0]=value&sort[0][column]=period&sort[0][direction]=desc&length=1"
             async with session.get(url, timeout=_TIMEOUT) as resp:
                 if resp.status == 200:
-                    brent_data = await resp.json()
+                    brent_data = await safe_json_response(resp)
                     if 'response' in brent_data and 'data' in brent_data['response'] and len(brent_data['response']['data']) > 0:
                         brent_price = float(brent_data['response']['data'][0]['value'])
                         commodities_data['brent'] = {
@@ -341,26 +372,48 @@ async def get_commodities_data(session: aiohttp.ClientSession) -> Dict[str, Dict
                             'currency': 'USD'
                         }
                         logger.info(f"✅ Нефть Brent получена: ${brent_price:.2f}")
+                        
+                        # Сохраняем цену Brent для расчета соотношений
+                        save_last_known_rate('BRENT_PRICE', brent_price)
         except Exception as e:
             logger.error(f"Ошибка запроса Brent из EIA: {e}")
         
-        # Fallback: Alpha Vantage для нефти WTI
+        # Fallback: Alpha Vantage для нефти через USO ETF
         if 'brent' not in commodities_data:
             logger.debug("EIA не сработал, пробуем Alpha Vantage USO ETF...")
             try:
                 url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=USO&apikey={ALPHA_VANTAGE_KEY}"
                 async with session.get(url, timeout=_TIMEOUT) as resp:
                     if resp.status == 200:
-                        oil_data = await resp.json()
+                        oil_data = await safe_json_response(resp)
                         if 'Global Quote' in oil_data and '05. price' in oil_data['Global Quote']:
-                            oil_price = float(oil_data['Global Quote']['05. price'])
-                            estimated_oil_price = oil_price * 12
+                            uso_price = float(oil_data['Global Quote']['05. price'])
+                            
+                            # Получаем последнее известное соотношение или используем константу
+                            last_multiplier = get_last_known_rate('USO_TO_BRENT', max_age_hours=24)
+                            
+                            if last_multiplier:
+                                estimated_brent = uso_price * last_multiplier
+                                logger.debug(f"Используется последнее известное соотношение USO→Brent: {last_multiplier:.3f}")
+                            else:
+                                # Используем константу из config (правильное значение ~1.3-1.5)
+                                estimated_brent = uso_price * USO_TO_BRENT_MULTIPLIER
+                                logger.debug(f"Используется константа соотношения USO→Brent: {USO_TO_BRENT_MULTIPLIER:.3f}")
+                            
                             commodities_data['brent'] = {
                                 'name': 'Нефть Brent (приблиз.)',
-                                'price': estimated_oil_price,
-                                'currency': 'USD'
+                                'price': estimated_brent,
+                                'currency': 'USD',
+                                'note': 'Рассчитано от USO ETF'
                             }
-                            logger.info(f"✅ Нефть Brent (USO fallback): ${estimated_oil_price:.2f}")
+                            logger.info(f"✅ Нефть Brent (USO fallback): ${estimated_brent:.2f}")
+                            
+                            # Сохраняем соотношение для будущего использования (если есть реальная цена Brent)
+                            if 'brent' in commodities_data and 'price' in commodities_data['brent']:
+                                actual_brent = commodities_data['brent']['price']
+                                if actual_brent > 0 and uso_price > 0:
+                                    actual_multiplier = actual_brent / uso_price
+                                    save_last_known_rate('USO_TO_BRENT', actual_multiplier)
             except Exception as e:
                 logger.error(f"Ошибка Alpha Vantage USO: {e}")
         
@@ -368,11 +421,23 @@ async def get_commodities_data(session: aiohttp.ClientSession) -> Dict[str, Dict
         if 'silver' not in commodities_data and 'gold' in commodities_data:
             logger.debug("Серебро недоступно, рассчитываем от золота...")
             gold_price = commodities_data['gold']['price']
-            silver_fallback = gold_price / 80
+            
+            # Пробуем получить последнее известное соотношение (не старше недели)
+            last_ratio = get_last_known_rate('GOLD_SILVER_RATIO', max_age_hours=168)
+            
+            if last_ratio:
+                silver_fallback = gold_price / last_ratio
+                logger.debug(f"Используется последнее известное соотношение золото/серебро: {last_ratio:.2f}:1")
+            else:
+                # Используем константу из config
+                silver_fallback = gold_price / GOLD_SILVER_RATIO
+                logger.debug(f"Используется константа соотношения золото/серебро: {GOLD_SILVER_RATIO:.2f}:1")
+            
             commodities_data['silver'] = {
                 'name': 'Серебро (расчетное)',
                 'price': silver_fallback,
-                'currency': 'USD'
+                'currency': 'USD',
+                'note': 'Рассчитано от золота'
             }
             logger.info(f"✅ Серебро рассчитано: ${silver_fallback:.2f}")
         
@@ -408,7 +473,7 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
                 timeout=_TIMEOUT
             ) as resp:
                 if resp.status == 200:
-                    data = await resp.json()
+                    data = await safe_json_response(resp)
                     
                     # Парсим IMOEX и RTS
                     if 'marketdata' in data and 'data' in data['marketdata']:
@@ -450,7 +515,7 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
                 url = f"https://financialmodelingprep.com/api/v3/quote/%5EGSPC?apikey={FMP_API_KEY}"
                 async with session.get(url, timeout=_TIMEOUT) as resp:
                     if resp.status == 200:
-                        sp500_data = await resp.json()
+                        sp500_data = await safe_json_response(resp)
                         if isinstance(sp500_data, list) and len(sp500_data) > 0:
                             sp500_info = sp500_data[0]
                             if 'price' in sp500_info:
@@ -470,7 +535,7 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
             url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=SPY&apikey={ALPHA_VANTAGE_KEY}"
             async with session.get(url, timeout=_TIMEOUT) as resp:
                 if resp.status == 200:
-                    sp500_data = await resp.json()
+                    sp500_data = await safe_json_response(resp)
                     if 'Global Quote' in sp500_data and '05. price' in sp500_data['Global Quote']:
                         spy_price = float(sp500_data['Global Quote']['05. price'])
                         # Приблизительная конвертация SPY в S&P 500
