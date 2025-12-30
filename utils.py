@@ -6,6 +6,8 @@
 """
 
 import logging
+import os
+import json
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Callable, Awaitable
 from functools import wraps
@@ -15,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 # Глобальный кэш
 api_cache: Dict[str, Dict[str, Any]] = {}
+
+# Файл для хранения последних известных значений
+from config import LAST_KNOWN_RATES_FILE
 
 
 def is_admin(user_id: int) -> bool:
@@ -189,4 +194,69 @@ def format_price(price: float, decimal_places: int = 2) -> str:
     if isinstance(price, (int, float)):
         return f"{price:,.{decimal_places}f}".replace(',', ' ')
     return str(price)
+
+
+def save_last_known_rate(asset: str, rate: float) -> None:
+    """
+    Сохранить последний известный курс
+    
+    Args:
+        asset: Название актива (например, 'USD_RUB', 'GOLD_SILVER_RATIO')
+        rate: Значение курса/соотношения
+    """
+    try:
+        if os.path.exists(LAST_KNOWN_RATES_FILE):
+            with open(LAST_KNOWN_RATES_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        else:
+            data = {}
+        
+        data[asset] = {
+            'rate': rate,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        with open(LAST_KNOWN_RATES_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        logger.debug(f"Сохранен последний известный курс {asset}: {rate:.2f}")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения последнего курса {asset}: {e}")
+
+
+def get_last_known_rate(asset: str, max_age_hours: int = 24) -> Optional[float]:
+    """
+    Получить последний известный курс (если не старше max_age_hours)
+    
+    Args:
+        asset: Название актива
+        max_age_hours: Максимальный возраст данных в часах
+    
+    Returns:
+        Значение курса или None если данных нет или они устарели
+    """
+    try:
+        if not os.path.exists(LAST_KNOWN_RATES_FILE):
+            return None
+        
+        with open(LAST_KNOWN_RATES_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        if asset not in data:
+            return None
+        
+        rate_info = data[asset]
+        timestamp = datetime.fromisoformat(rate_info['timestamp'])
+        age_hours = (datetime.now() - timestamp).total_seconds() / 3600
+        
+        if age_hours <= max_age_hours:
+            rate = rate_info['rate']
+            logger.debug(f"Загружен последний известный курс {asset}: {rate:.2f} (возраст: {age_hours:.1f}ч)")
+            return rate
+        else:
+            logger.debug(f"Последний курс {asset} устарел ({age_hours:.1f} часов)")
+            return None
+    except Exception as e:
+        logger.error(f"Ошибка загрузки последнего курса {asset}: {e}")
+        return None
 

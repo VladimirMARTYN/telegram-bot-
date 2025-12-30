@@ -18,11 +18,13 @@ from config import (
     BOT_TOKEN, ADMIN_USER_ID, DEFAULT_THRESHOLD, PRICE_CHECK_INTERVAL,
     DEFAULT_DAILY_TIME, DEFAULT_TIMEZONE, CACHE_TTL_CURRENCIES,
     CACHE_TTL_CRYPTO, CACHE_TTL_STOCKS, CACHE_TTL_COMMODITIES, CACHE_TTL_INDICES,
-    SUPPORTED_CURRENCIES, SUPPORTED_CRYPTO, SUPPORTED_STOCKS
+    SUPPORTED_CURRENCIES, SUPPORTED_CRYPTO, SUPPORTED_STOCKS,
+    FALLBACK_USD_RUB_RATE
 )
 from utils import (
     is_admin, get_cached_data, fetch_with_retry, validate_positive_number,
-    validate_asset, escape_html, format_price, clear_cache
+    validate_asset, escape_html, format_price, clear_cache,
+    save_last_known_rate, get_last_known_rate
 )
 from data_sources import (
     get_cbr_rates, get_forex_rates, get_crypto_data, get_moex_stocks,
@@ -302,6 +304,10 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             # Сохраняем курс доллара для конвертации в рубли
             usd_to_rub_rate = usd_rate if isinstance(usd_rate, (int, float)) else 0
             
+            # Сохраняем успешно полученный курс для будущего использования
+            if usd_to_rub_rate > 0:
+                save_last_known_rate('USD_RUB', usd_to_rub_rate)
+            
             # Форматируем валютные курсы индивидуально
             if isinstance(usd_rate, (int, float)):
                 usd_str = f"{format_price(usd_rate)} ₽"
@@ -358,7 +364,18 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception as e:
             logger.error(f"Ошибка получения курса FOREX: {e}")
             if usd_to_rub_rate == 0:
-                usd_to_rub_rate = 80  # Fallback значение
+                # Пробуем взять последнее известное значение (не старше 24 часов)
+                last_rate = get_last_known_rate('USD_RUB', max_age_hours=24)
+                if last_rate:
+                    usd_to_rub_rate = last_rate
+                    logger.warning(f"⚠️ Используется последний известный курс USD/RUB: {usd_to_rub_rate:.2f}")
+                else:
+                    # Только если нет последнего значения - используем fallback
+                    usd_to_rub_rate = FALLBACK_USD_RUB_RATE
+                    logger.error(f"⚠️ Все источники недоступны, используется fallback курс USD/RUB: {usd_to_rub_rate:.2f}")
+                    
+                # Сохраняем используемое значение для статистики
+                save_last_known_rate('USD_RUB', usd_to_rub_rate)
         
         # Обработка криптовалют
         if isinstance(crypto_data, Exception):
@@ -416,43 +433,6 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         if isinstance(indices_data, Exception):
             logger.error(f"Ошибка получения индексов: {indices_data}")
             indices_data = {}
-        
-        # Форматируем криптовалютные цены (доллары + рубли)
-        crypto_strings = {}
-        crypto_list = [
-            {'id': 'bitcoin', 'name': 'Bitcoin', 'decimals': 0},
-            {'id': 'ethereum', 'name': 'Ethereum', 'decimals': 0},
-            {'id': 'the-open-network', 'name': 'TON', 'decimals': 2},
-            {'id': 'ripple', 'name': 'XRP', 'decimals': 3},
-            {'id': 'cardano', 'name': 'Cardano', 'decimals': 3},
-            {'id': 'solana', 'name': 'Solana', 'decimals': 2},
-            {'id': 'dogecoin', 'name': 'Dogecoin', 'decimals': 3},
-            {'id': 'tether', 'name': 'Tether', 'decimals': 2}
-        ]
-        
-        for crypto in crypto_list:
-            crypto_id = crypto['id']
-            crypto_name = crypto['name']
-            decimals = crypto['decimals']
-            
-            if crypto_id in crypto_data:
-                price = crypto_data[crypto_id]['price']
-                change_24h = crypto_data[crypto_id]['change_24h']
-                source = crypto_data[crypto_id]['source']
-                
-                if isinstance(price, (int, float)) and usd_to_rub_rate > 0:
-                    rub_price = price * usd_to_rub_rate
-                    change_str = f" ({change_24h:+.2f}% за 24ч)" if change_24h != 0 else ""
-                    source_str = f" [{source}]" if source != 'CoinGecko' else ""
-                    crypto_strings[crypto_id] = f"{crypto_name}: ${format_price(price, decimals)} ({format_price(rub_price, decimals)} ₽){change_str}{source_str}"
-                elif isinstance(price, (int, float)):
-                    change_str = f" ({change_24h:+.2f}% за 24ч)" if change_24h != 0 else ""
-                    source_str = f" [{source}]" if source != 'CoinGecko' else ""
-                    crypto_strings[crypto_id] = f"{crypto_name}: ${format_price(price, decimals)}{change_str}{source_str}"
-                else:
-                    crypto_strings[crypto_id] = f"{crypto_name}: ❌ Н/Д"
-            else:
-                crypto_strings[crypto_id] = f"{crypto_name}: ❌ Н/Д"
         
         # Формируем итоговое сообщение с улучшенным форматированием
         message = "📊 **На сегодня курсы такие:**\n\n"
@@ -977,10 +957,10 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
                     return await get_cbr_rates(session)
                 cbr_data = await get_cached_data('cbr_rates_check', _fetch_cbr, CACHE_TTL_CURRENCIES)
                 return {
-                    'USD': cbr_data.get('Valute', {}).get('USD', {}).get('Value'),
-                    'EUR': cbr_data.get('Valute', {}).get('EUR', {}).get('Value'),
-                    'CNY': cbr_data.get('Valute', {}).get('CNY', {}).get('Value'),
-                    'GBP': cbr_data.get('Valute', {}).get('GBP', {}).get('Value')
+                'USD': cbr_data.get('Valute', {}).get('USD', {}).get('Value'),
+                'EUR': cbr_data.get('Valute', {}).get('EUR', {}).get('Value'),
+                'CNY': cbr_data.get('Valute', {}).get('CNY', {}).get('Value'),
+                'GBP': cbr_data.get('Valute', {}).get('GBP', {}).get('Value')
                 }
             except Exception as e:
                 logger.error(f"Ошибка получения курсов валют для проверки: {e}")
@@ -1000,7 +980,7 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
                     'solana': 'SOL',
                     'dogecoin': 'DOGE',
                     'tether': 'USDT'
-                }
+                    }
                 result = {}
                 for crypto_id, price_data in crypto_data.items():
                     if crypto_id in crypto_mapping:
@@ -1807,6 +1787,11 @@ def main() -> None:
     application.add_handler(CommandHandler("export_pdf", export_pdf_command))
     application.add_handler(CommandHandler("webadmin", web_admin_command))
     
+    # Команды для AI-дайджестов (только для админа)
+    application.add_handler(CommandHandler("digest_status", digest_status_command))
+    application.add_handler(CommandHandler("digest_create", digest_create_command))
+    application.add_handler(CommandHandler("digest_load", digest_load_command))
+    
     # Обработчик callback-запросов для меню настроек
     application.add_handler(CallbackQueryHandler(button_callback))
 
@@ -1878,10 +1863,82 @@ def main() -> None:
         logger.warning("⚠️ Система задач недоступна - уведомления отключены")
         logger.error("🚨 Критическая ошибка: job_queue не может быть None на этом этапе!")
 
+    # Инициализация системы AI-дайджестов (асинхронно после запуска)
+    async def init_digest_system():
+        """Асинхронная инициализация системы дайджестов"""
+        try:
+            from digest_manager import initialize_digest_system, publish_digest
+            from config import DIGEST_ENABLED, DIGEST_PUBLISH_SCHEDULE
+            
+            if DIGEST_ENABLED:
+                logger.info("🤖 Инициализация системы AI-дайджестов...")
+                digest_initialized = await initialize_digest_system()
+                
+                if digest_initialized and job_queue:
+                    # Настраиваем планировщик публикации дайджестов
+                    async def digest_publish_job(context: ContextTypes.DEFAULT_TYPE):
+                        """Задача публикации дайджеста"""
+                        try:
+                            await publish_digest(context.bot)
+                        except Exception as e:
+                            logger.error(f"❌ Ошибка публикации дайджеста: {e}")
+                    
+                    if DIGEST_PUBLISH_SCHEDULE == "hourly":
+                        job_queue.run_repeating(
+                            digest_publish_job,
+                            interval=3600,  # Каждый час
+                            first=3600,  # Первый запуск через час
+                            name="digest_publish_hourly"
+                        )
+                        logger.info("⏰ Публикация дайджестов настроена: каждый час")
+                    elif DIGEST_PUBLISH_SCHEDULE == "daily":
+                        # Используем то же время, что и ежедневная сводка
+                        settings = load_bot_settings()
+                        daily_time_str = settings.get('daily_summary_time', '09:00')
+                        hour, minute = map(int, daily_time_str.split(':'))
+                        moscow_tz = pytz.timezone(settings.get('timezone', 'Europe/Moscow'))
+                        digest_time = time(hour=hour, minute=minute, tzinfo=moscow_tz)
+                        
+                        job_queue.run_daily(
+                            digest_publish_job,
+                            time=digest_time,
+                            name="digest_publish_daily"
+                        )
+                        logger.info(f"⏰ Публикация дайджестов настроена: ежедневно в {daily_time_str}")
+                    elif DIGEST_PUBLISH_SCHEDULE == "weekly":
+                        # Для еженедельной публикации используем run_repeating с интервалом 7 дней
+                        moscow_tz = pytz.timezone('Europe/Moscow')
+                        weekly_time = time(hour=9, minute=0, tzinfo=moscow_tz)
+                        # Вычисляем время до следующего понедельника
+                        from datetime import datetime, timedelta
+                        now = datetime.now(moscow_tz)
+                        days_until_monday = (7 - now.weekday()) % 7
+                        if days_until_monday == 0 and now.hour >= 9:
+                            days_until_monday = 7
+                        first_run = timedelta(days=days_until_monday).total_seconds()
+                        
+                        job_queue.run_repeating(
+                            digest_publish_job,
+                            interval=604800,  # 7 дней в секундах
+                            first=int(first_run),
+                            name="digest_publish_weekly"
+                        )
+                        logger.info("⏰ Публикация дайджестов настроена: еженедельно по понедельникам")
+        except Exception as e:
+            logger.error(f"❌ Ошибка инициализации системы дайджестов: {e}")
+            logger.info("ℹ️ Бот продолжит работу без системы дайджестов")
+    
+    # Запускаем инициализацию дайджестов в фоне
+    from config import DIGEST_ENABLED
+    if DIGEST_ENABLED:
+        asyncio.create_task(init_digest_system())
+    
     # Запуск бота
     logger.info("✅ Бот-финансист запущен и готов к работе")
     logger.info("📊 Доступные функции: курсы валют, криптовалют, акций, товаров, индексов")
     logger.info("🔔 Уведомления: резкие изменения, пороговые алерты, ежедневная сводка")
+    if DIGEST_ENABLED:
+        logger.info("🤖 AI-дайджесты: включены")
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
@@ -2476,6 +2533,8 @@ def setup_bot_commands(application):
         BotCommand("export_pdf", "Экспорт в PDF")
     ]
     
+    # Команды для администраторов (не добавляем в список команд бота, но они доступны)
+    
     try:
         # Устанавливаем команды для бота
         application.bot.set_my_commands(commands)
@@ -2505,6 +2564,108 @@ async def web_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text(message, parse_mode='HTML', disable_web_page_preview=True)
     else:
         await update.message.reply_text("❌ У вас нет прав для доступа к веб-панели.")
+
+async def digest_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показать статус системы дайджестов (только для админа)"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("🚫 Команда доступна только администратору")
+        return
+    
+    try:
+        from config import DIGEST_ENABLED, DIGEST_SOURCE_CHANNELS, DIGEST_DEST_CHANNEL, DIGEST_PUBLISH_SCHEDULE
+        from digest_manager import news_buffer, processed_message_ids
+        
+        status_parts = ["📰 <b>Статус системы AI-дайджестов</b>\n"]
+        
+        if DIGEST_ENABLED:
+            status_parts.append("✅ Система включена")
+        else:
+            status_parts.append("❌ Система отключена")
+        
+        status_parts.append(f"\n📥 <b>Каналы для мониторинга:</b> {len(DIGEST_SOURCE_CHANNELS)}")
+        for channel in DIGEST_SOURCE_CHANNELS:
+            status_parts.append(f"  • {channel}")
+        
+        status_parts.append(f"\n📤 <b>Канал публикации:</b> {DIGEST_DEST_CHANNEL or 'Не указан'}")
+        status_parts.append(f"⏰ <b>Расписание:</b> {DIGEST_PUBLISH_SCHEDULE}")
+        status_parts.append(f"\n📊 <b>Текущий буфер:</b>")
+        status_parts.append(f"  • Новостей в буфере: {sum(len(news_list) for news_list in news_buffer.values())}")
+        status_parts.append(f"  • Тем: {len(news_buffer)}")
+        status_parts.append(f"  • Обработано сообщений: {len(processed_message_ids)}")
+        
+        await update.message.reply_text("\n".join(status_parts), parse_mode='HTML')
+    except Exception as e:
+        logger.error(f"Ошибка digest_status: {e}")
+        await update.message.reply_text(f"❌ Ошибка получения статуса: {e}")
+
+
+async def digest_create_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Создать и опубликовать дайджест вручную (только для админа)"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("🚫 Команда доступна только администратору")
+        return
+    
+    try:
+        await update.message.reply_text("🔄 Создаю дайджест...")
+        
+        from digest_manager import create_digest, publish_digest
+        
+        digest_text = await create_digest()
+        if not digest_text:
+            await update.message.reply_text("📭 Нет новостей для создания дайджеста")
+            return
+        
+        # Публикуем в канал если указан
+        from config import DIGEST_DEST_CHANNEL
+        if DIGEST_DEST_CHANNEL:
+            bot = context.bot
+            await publish_digest(bot)
+            await update.message.reply_text(f"✅ Дайджест опубликован в {DIGEST_DEST_CHANNEL}")
+        else:
+            # Показываем дайджест пользователю
+            if len(digest_text) > 4096:
+                # Разбиваем на части если слишком длинный
+                parts = [digest_text[i:i+4096] for i in range(0, len(digest_text), 4096)]
+                for part in parts:
+                    await update.message.reply_text(part, parse_mode='HTML')
+            else:
+                await update.message.reply_text(digest_text, parse_mode='HTML')
+    except Exception as e:
+        logger.error(f"Ошибка digest_create: {e}")
+        await update.message.reply_text(f"❌ Ошибка создания дайджеста: {e}")
+
+
+async def digest_load_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Загрузить последние новости из каналов (только для админа)"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("🚫 Команда доступна только администратору")
+        return
+    
+    try:
+        hours = 24
+        if context.args and len(context.args) > 0:
+            try:
+                hours = int(context.args[0])
+            except ValueError:
+                await update.message.reply_text("⚠️ Использование: /digest_load [часов]")
+                return
+        
+        await update.message.reply_text(f"🔄 Загружаю новости за последние {hours} часов...")
+        
+        from digest_manager import load_recent_news
+        
+        loaded = await load_recent_news(hours=hours)
+        await update.message.reply_text(f"✅ Загружено {loaded} новостей из каналов")
+    except Exception as e:
+        logger.error(f"Ошибка digest_load: {e}")
+        await update.message.reply_text(f"❌ Ошибка загрузки новостей: {e}")
+
 
 async def command_suggestions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывать доступные команды при вводе '/'"""
