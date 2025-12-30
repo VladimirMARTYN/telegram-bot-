@@ -87,14 +87,39 @@ async def get_http_session() -> aiohttp.ClientSession:
     
     # Проверяем, что event loop активен (в async функции он всегда активен)
     try:
-        asyncio.get_running_loop()
+        current_loop = asyncio.get_running_loop()
     except RuntimeError:
         # Если event loop не запущен, это ошибка - мы должны быть в async контексте
         raise RuntimeError("get_http_session() должна вызываться из async функции")
     
-    if _http_session is None or _http_session.closed:
+    # Проверяем, нужно ли пересоздать сессию
+    need_new_session = False
+    
+    if _http_session is None:
+        need_new_session = True
+    elif _http_session.closed:
+        need_new_session = True
+    else:
+        # Проверяем, что сессия привязана к текущему event loop
+        try:
+            session_loop = _http_session._loop
+            if session_loop is None or session_loop.is_closed() or session_loop != current_loop:
+                need_new_session = True
+        except (AttributeError, RuntimeError):
+            # Если не можем проверить loop, пересоздаем сессию
+            need_new_session = True
+    
+    if need_new_session:
+        # Закрываем старую сессию, если она есть
+        if _http_session is not None and not _http_session.closed:
+            try:
+                await _http_session.close()
+            except Exception:
+                pass
+        
         # Создаем новую сессию - она автоматически использует текущий event loop
         _http_session = aiohttp.ClientSession()
+    
     return _http_session
 
 # Функция для получения московского времени
