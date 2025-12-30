@@ -80,10 +80,20 @@ GLOBAL_JOB_QUEUE = None
 # Глобальная сессия aiohttp для переиспользования
 _http_session: aiohttp.ClientSession = None
 
-def get_http_session() -> aiohttp.ClientSession:
+async def get_http_session() -> aiohttp.ClientSession:
     """Получить или создать глобальную HTTP сессию"""
     global _http_session
+    import asyncio
+    
+    # Проверяем, что event loop активен (в async функции он всегда активен)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # Если event loop не запущен, это ошибка - мы должны быть в async контексте
+        raise RuntimeError("get_http_session() должна вызываться из async функции")
+    
     if _http_session is None or _http_session.closed:
+        # Создаем новую сессию - она автоматически использует текущий event loop
         _http_session = aiohttp.ClientSession()
     return _http_session
 
@@ -232,7 +242,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     try:
         await update.message.reply_text("📊 Получаю информацию")
         
-        session = get_http_session()
+        session = await get_http_session()
         
         # Получаем все данные параллельно с кэшированием
         async def fetch_cbr():
@@ -947,7 +957,7 @@ def validate_time_format(time_str):
 async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
     """Проверить изменения цен и отправить уведомления"""
     try:
-        session = get_http_session()
+        session = await get_http_session()
         current_prices = {}
         
         # Получаем данные параллельно с кэшированием
@@ -2232,7 +2242,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Получаем данные
         await update.message.reply_text("📡 Получаю актуальные данные...")
         
-        session = get_http_session()
+        session = await get_http_session()
         
         # Получаем все данные параллельно
         try:
