@@ -305,7 +305,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         
         # Обработка курсов валют ЦБ РФ
-        usd_str = eur_str = cny_str = gbp_str = "❌ Ошибка API"
+        usd_str = eur_str = cny_str = "❌ Ошибка API"
         usd_to_rub_rate = 0
         
         try:
@@ -330,9 +330,6 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             
             cny_info = valute.get('CNY', {})
             cny_rate = cny_info.get('Value') if isinstance(cny_info, dict) else None
-            
-            gbp_info = valute.get('GBP', {})
-            gbp_rate = gbp_info.get('Value') if isinstance(gbp_info, dict) else None
             
             # Сохраняем курс доллара для конвертации в рубли
             usd_to_rub_rate = usd_rate if isinstance(usd_rate, (int, float)) else 0
@@ -360,12 +357,6 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 cny_str = "❌ Ошибка API"
                 logger.warning(f"CNY курс не получен: {cny_rate}")
             
-            if isinstance(gbp_rate, (int, float)):
-                gbp_str = f"{format_price(gbp_rate)} ₽"
-            else:
-                gbp_str = "❌ Ошибка API"
-                logger.warning(f"GBP курс не получен: {gbp_rate}")
-                
         except Exception as e:
             logger.error(f"Ошибка получения курсов ЦБ РФ: {e}")
             import traceback
@@ -378,7 +369,8 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 raise forex_data
             
             # Получаем курс USD/RUB с FOREX
-            forex_usd_rub = forex_data.get('rates', {}).get('RUB', None)
+            forex_rates = forex_data.get('rates', {})
+            forex_usd_rub = forex_rates.get('RUB', None)
             
             if forex_usd_rub and isinstance(forex_usd_rub, (int, float)):
                 # Если ЦБ РФ недоступен, используем FOREX как основной источник
@@ -393,6 +385,27 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     diff_str = f" (FOREX: {format_price(forex_usd_rub)} ₽, разница: {diff:+.2f} ₽, {diff_pct:+.2f}%)"
                     usd_str += diff_str
                     logger.debug(f"FOREX USD/RUB: {forex_usd_rub:.2f} ₽")
+                
+                # EUR/RUB и CNY/RUB через FOREX (кросс через USD)
+                forex_eur_usd = forex_rates.get('EUR')
+                if forex_eur_usd and isinstance(forex_eur_usd, (int, float)) and forex_eur_usd != 0:
+                    forex_eur_rub = forex_usd_rub / forex_eur_usd
+                    if isinstance(eur_rate, (int, float)) and eur_rate > 0:
+                        diff = forex_eur_rub - eur_rate
+                        diff_pct = (diff / eur_rate) * 100
+                        eur_str += f" (FOREX: {format_price(forex_eur_rub)} ₽, разница: {diff:+.2f} ₽, {diff_pct:+.2f}%)"
+                    else:
+                        eur_str = f"{format_price(forex_eur_rub)} ₽ (FOREX)"
+                
+                forex_cny_usd = forex_rates.get('CNY')
+                if forex_cny_usd and isinstance(forex_cny_usd, (int, float)) and forex_cny_usd != 0:
+                    forex_cny_rub = forex_usd_rub / forex_cny_usd
+                    if isinstance(cny_rate, (int, float)) and cny_rate > 0:
+                        diff = forex_cny_rub - cny_rate
+                        diff_pct = (diff / cny_rate) * 100
+                        cny_str += f" (FOREX: {format_price(forex_cny_rub)} ₽, разница: {diff:+.2f} ₽, {diff_pct:+.2f}%)"
+                    else:
+                        cny_str = f"{format_price(forex_cny_rub)} ₽ (FOREX)"
                 
         except Exception as e:
             logger.error(f"Ошибка получения курса FOREX: {e}")
@@ -419,12 +432,8 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         crypto_strings = {}
         crypto_list = [
             {'id': 'bitcoin', 'name': 'Bitcoin', 'decimals': 0},
-            {'id': 'ethereum', 'name': 'Ethereum', 'decimals': 0},
             {'id': 'the-open-network', 'name': 'TON', 'decimals': 2},
-            {'id': 'ripple', 'name': 'XRP', 'decimals': 3},
-            {'id': 'cardano', 'name': 'Cardano', 'decimals': 3},
             {'id': 'solana', 'name': 'Solana', 'decimals': 2},
-            {'id': 'dogecoin', 'name': 'Dogecoin', 'decimals': 3},
             {'id': 'tether', 'name': 'Tether', 'decimals': 2}
         ]
         
@@ -474,12 +483,11 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         message += "🏛️ **ВАЛЮТЫ (по курсу ЦБ РФ):**\n"
         message += f"├ USD: **{usd_str}**\n"
         message += f"├ EUR: **{eur_str}**\n"
-        message += f"├ CNY: **{cny_str}**\n"
-        message += f"└ GBP: **{gbp_str}**\n\n"
+        message += f"└ CNY: **{cny_str}**\n\n"
         
         # Криптовалюты
         message += "💎 **КРИПТА:**\n"
-        crypto_items = ['bitcoin', 'ethereum', 'the-open-network', 'ripple', 'cardano', 'solana', 'dogecoin', 'tether']
+        crypto_items = ['bitcoin', 'the-open-network', 'solana', 'tether']
         for i, crypto_id in enumerate(crypto_items):
             crypto_key = crypto_id if crypto_id != 'the-open-network' else 'ton'
             if crypto_id in crypto_strings:
@@ -704,8 +712,8 @@ async def set_alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             "• <code>/set_alert BTC 115000</code> - биткоин ниже 115K$\n"
             "• <code>/set_alert SBER 200</code> - Сбер выше 200₽\n\n"
             "💡 Поддерживаемые активы:\n"
-            "• Валюты: USD, EUR, CNY, GBP\n"
-            "• Криптовалюты: BTC, ETH, TON, XRP, ADA, SOL, DOGE, USDT\n"
+            "• Валюты: USD, EUR, CNY\n"
+            "• Криптовалюты: BTC, TON, SOL, USDT\n"
             "• Акции: SBER, YDEX, VKCO, T, GAZP, GMKN, ROSN, LKOH, MTSS, MFON, PIKK, SMLT"
         )
         return
@@ -992,8 +1000,7 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
                 return {
                 'USD': cbr_data.get('Valute', {}).get('USD', {}).get('Value'),
                 'EUR': cbr_data.get('Valute', {}).get('EUR', {}).get('Value'),
-                'CNY': cbr_data.get('Valute', {}).get('CNY', {}).get('Value'),
-                'GBP': cbr_data.get('Valute', {}).get('GBP', {}).get('Value')
+                'CNY': cbr_data.get('Valute', {}).get('CNY', {}).get('Value')
                 }
             except Exception as e:
                 logger.error(f"Ошибка получения курсов валют для проверки: {e}")
@@ -1006,12 +1013,8 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
                 crypto_data = await get_cached_data('crypto_data_check', _fetch_crypto, CACHE_TTL_CRYPTO)
                 crypto_mapping = {
                     'bitcoin': 'BTC',
-                    'ethereum': 'ETH', 
                     'the-open-network': 'TON',
-                    'ripple': 'XRP',
-                    'cardano': 'ADA',
                     'solana': 'SOL',
-                    'dogecoin': 'DOGE',
                     'tether': 'USDT'
                     }
                 result = {}
@@ -2201,12 +2204,11 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             
             # Обрабатываем валюты из ЦБ РФ
             if isinstance(cbr_data, Exception):
-                usd_rate = eur_rate = cny_rate = gbp_rate = 0
+                usd_rate = eur_rate = cny_rate = 0
             else:
                 usd_rate = cbr_data.get('Valute', {}).get('USD', {}).get('Value', 0)
                 eur_rate = cbr_data.get('Valute', {}).get('EUR', {}).get('Value', 0)
                 cny_rate = cbr_data.get('Valute', {}).get('CNY', {}).get('Value', 0)
-                gbp_rate = cbr_data.get('Valute', {}).get('GBP', {}).get('Value', 0)
             
             # Обрабатываем FOREX курс
             if isinstance(forex_data, Exception):
@@ -2246,8 +2248,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         currencies = [
             ('USD', usd_rate, 'CBR'),
             ('EUR', eur_rate, 'CBR'),
-            ('CNY', cny_rate, 'CBR'),
-            ('GBP', gbp_rate, 'CBR')
+            ('CNY', cny_rate, 'CBR')
         ]
         
         for currency, rate, source in currencies:
@@ -2283,12 +2284,8 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         crypto_names = {
             'bitcoin': 'Bitcoin',
-            'ethereum': 'Ethereum', 
             'the-open-network': 'TON',
-            'ripple': 'XRP',
-            'cardano': 'Cardano',
             'solana': 'Solana',
-            'dogecoin': 'Dogecoin',
             'tether': 'Tether'
         }
         

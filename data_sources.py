@@ -90,12 +90,8 @@ async def get_crypto_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
     # Список криптовалют для мониторинга
     crypto_list = [
         {'id': 'bitcoin', 'symbol': 'BTC', 'name': 'Bitcoin'},
-        {'id': 'ethereum', 'symbol': 'ETH', 'name': 'Ethereum'},
         {'id': 'the-open-network', 'symbol': 'TON', 'name': 'TON'},
-        {'id': 'ripple', 'symbol': 'XRP', 'name': 'XRP'},
-        {'id': 'cardano', 'symbol': 'ADA', 'name': 'Cardano'},
         {'id': 'solana', 'symbol': 'SOL', 'name': 'Solana'},
-        {'id': 'dogecoin', 'symbol': 'DOGE', 'name': 'Dogecoin'},
         {'id': 'tether', 'symbol': 'USDT', 'name': 'Tether'}
     ]
     
@@ -560,4 +556,3 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
         logger.error(f"Общая ошибка получения индексов: {e}")
     
     return indices_data
-

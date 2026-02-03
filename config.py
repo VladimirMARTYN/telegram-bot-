@@ -39,8 +39,8 @@ API_RETRY_DELAY_MAX = 10  # Максимальная задержка между
 API_TIMEOUT = 10  # Таймаут запросов (секунды)
 
 # Поддерживаемые активы
-SUPPORTED_CURRENCIES = ['USD', 'EUR', 'CNY', 'GBP']
-SUPPORTED_CRYPTO = ['BTC', 'ETH', 'TON', 'XRP', 'ADA', 'SOL', 'DOGE', 'USDT']
+SUPPORTED_CURRENCIES = ['USD', 'EUR', 'CNY']
+SUPPORTED_CRYPTO = ['BTC', 'TON', 'SOL', 'USDT']
 SUPPORTED_STOCKS = ['SBER', 'YDEX', 'VKCO', 'T', 'GAZP', 'GMKN', 'ROSN', 'LKOH', 'MTSS', 'MFON', 'PIKK', 'SMLT']
 
 # Настройки сохранения данных
