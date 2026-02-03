@@ -11,7 +11,6 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 import json
 import aiohttp
 import threading
-from flask import Flask, jsonify
 
 # Импорты конфигурации и утилит
 from config import (
@@ -201,8 +200,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Создаем клавиатуру с основными кнопками
     keyboard = [
         [InlineKeyboardButton("📊 Курсы валют", callback_data="rates")],
-        [InlineKeyboardButton("🔔 Подписаться на уведомления", callback_data="subscribe")],
-        [InlineKeyboardButton("🌐 Веб-панель", url="https://telegram-bot-admin-web-production.up.railway.app")]
+        [InlineKeyboardButton("🔔 Подписаться на уведомления", callback_data="subscribe")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -1820,12 +1818,6 @@ def main() -> None:
     # Новые команды
     application.add_handler(CommandHandler("settings", settings_command))
     application.add_handler(CommandHandler("export_pdf", export_pdf_command))
-    application.add_handler(CommandHandler("webadmin", web_admin_command))
-    
-    # Команды для AI-дайджестов (только для админа)
-    application.add_handler(CommandHandler("digest_status", digest_status_command))
-    application.add_handler(CommandHandler("digest_create", digest_create_command))
-    application.add_handler(CommandHandler("digest_load", digest_load_command))
     
     # Обработчик callback-запросов для меню настроек
     application.add_handler(CallbackQueryHandler(button_callback))
@@ -1898,82 +1890,10 @@ def main() -> None:
         logger.warning("⚠️ Система задач недоступна - уведомления отключены")
         logger.error("🚨 Критическая ошибка: job_queue не может быть None на этом этапе!")
 
-    # Инициализация системы AI-дайджестов (асинхронно после запуска)
-    async def init_digest_system():
-        """Асинхронная инициализация системы дайджестов"""
-        try:
-            from digest_manager import initialize_digest_system, publish_digest
-            from config import DIGEST_ENABLED, DIGEST_PUBLISH_SCHEDULE
-            
-            if DIGEST_ENABLED:
-                logger.info("🤖 Инициализация системы AI-дайджестов...")
-                digest_initialized = await initialize_digest_system()
-                
-                if digest_initialized and job_queue:
-                    # Настраиваем планировщик публикации дайджестов
-                    async def digest_publish_job(context: ContextTypes.DEFAULT_TYPE):
-                        """Задача публикации дайджеста"""
-                        try:
-                            await publish_digest(context.bot)
-                        except Exception as e:
-                            logger.error(f"❌ Ошибка публикации дайджеста: {e}")
-                    
-                    if DIGEST_PUBLISH_SCHEDULE == "hourly":
-                        job_queue.run_repeating(
-                            digest_publish_job,
-                            interval=3600,  # Каждый час
-                            first=3600,  # Первый запуск через час
-                            name="digest_publish_hourly"
-                        )
-                        logger.info("⏰ Публикация дайджестов настроена: каждый час")
-                    elif DIGEST_PUBLISH_SCHEDULE == "daily":
-                        # Используем то же время, что и ежедневная сводка
-                        settings = load_bot_settings()
-                        daily_time_str = settings.get('daily_summary_time', '09:00')
-                        hour, minute = map(int, daily_time_str.split(':'))
-                        moscow_tz = pytz.timezone(settings.get('timezone', 'Europe/Moscow'))
-                        digest_time = time(hour=hour, minute=minute, tzinfo=moscow_tz)
-                        
-                        job_queue.run_daily(
-                            digest_publish_job,
-                            time=digest_time,
-                            name="digest_publish_daily"
-                        )
-                        logger.info(f"⏰ Публикация дайджестов настроена: ежедневно в {daily_time_str}")
-                    elif DIGEST_PUBLISH_SCHEDULE == "weekly":
-                        # Для еженедельной публикации используем run_repeating с интервалом 7 дней
-                        moscow_tz = pytz.timezone('Europe/Moscow')
-                        weekly_time = time(hour=9, minute=0, tzinfo=moscow_tz)
-                        # Вычисляем время до следующего понедельника
-                        from datetime import datetime, timedelta
-                        now = datetime.now(moscow_tz)
-                        days_until_monday = (7 - now.weekday()) % 7
-                        if days_until_monday == 0 and now.hour >= 9:
-                            days_until_monday = 7
-                        first_run = timedelta(days=days_until_monday).total_seconds()
-                        
-                        job_queue.run_repeating(
-                            digest_publish_job,
-                            interval=604800,  # 7 дней в секундах
-                            first=int(first_run),
-                            name="digest_publish_weekly"
-                        )
-                        logger.info("⏰ Публикация дайджестов настроена: еженедельно по понедельникам")
-        except Exception as e:
-            logger.error(f"❌ Ошибка инициализации системы дайджестов: {e}")
-            logger.info("ℹ️ Бот продолжит работу без системы дайджестов")
-    
-    # Запускаем инициализацию дайджестов в фоне
-    from config import DIGEST_ENABLED
-    if DIGEST_ENABLED:
-        asyncio.create_task(init_digest_system())
-    
     # Запуск бота
     logger.info("✅ Бот-финансист запущен и готов к работе")
     logger.info("📊 Доступные функции: курсы валют, криптовалют, акций, товаров, индексов")
     logger.info("🔔 Уведомления: резкие изменения, пороговые алерты, ежедневная сводка")
-    if DIGEST_ENABLED:
-        logger.info("🤖 AI-дайджесты: включены")
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
@@ -1998,7 +1918,6 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         [InlineKeyboardButton("🔔 Уведомления", callback_data="settings_notifications")],
         [InlineKeyboardButton("📊 Персональные настройки", callback_data="settings_personal")],
         [InlineKeyboardButton("📋 Текущие настройки", callback_data="settings_current")],
-        [InlineKeyboardButton("🌐 Веб-панель", url="https://telegram-bot-admin-web-production.up.railway.app")],
         [InlineKeyboardButton("❌ Закрыть", callback_data="settings_close")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2087,7 +2006,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             [InlineKeyboardButton("🔔 Уведомления", callback_data="settings_notifications")],
             [InlineKeyboardButton("📊 Персональные настройки", callback_data="settings_personal")],
             [InlineKeyboardButton("📋 Текущие настройки", callback_data="settings_current")],
-            [InlineKeyboardButton("🌐 Веб-панель", url="https://telegram-bot-admin-web-production.up.railway.app")],
             [InlineKeyboardButton("❌ Закрыть", callback_data="settings_close")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2577,131 +2495,6 @@ def setup_bot_commands(application):
     except Exception as e:
         logger.error(f"❌ Ошибка настройки команд: {e}")
 
-async def web_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда для доступа к веб-панели"""
-    user_id = update.effective_user.id
-    
-    # Проверяем права администратора
-    if is_admin(user_id):
-        web_url = os.getenv('WEB_APP_URL', 'https://telegram-bot-web-admin.railway.app')
-        
-        message = (
-            "🌐 <b>Веб-панель администратора</b>\n\n"
-            f"🔗 <a href='{web_url}'>Открыть веб-панель</a>\n\n"
-            "📊 <b>Возможности:</b>\n"
-            "• Управление пользователями\n"
-            "• Настройки бота\n"
-            "• Просмотр логов\n"
-            "• Статистика в реальном времени\n\n"
-            "⚠️ <i>Доступно только администраторам</i>"
-        )
-        
-        await update.message.reply_text(message, parse_mode='HTML', disable_web_page_preview=True)
-    else:
-        await update.message.reply_text("❌ У вас нет прав для доступа к веб-панели.")
-
-async def digest_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показать статус системы дайджестов (только для админа)"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("🚫 Команда доступна только администратору")
-        return
-    
-    try:
-        from config import DIGEST_ENABLED, DIGEST_SOURCE_CHANNELS, DIGEST_DEST_CHANNEL, DIGEST_PUBLISH_SCHEDULE
-        from digest_manager import news_buffer, processed_message_ids
-        
-        status_parts = ["📰 <b>Статус системы AI-дайджестов</b>\n"]
-        
-        if DIGEST_ENABLED:
-            status_parts.append("✅ Система включена")
-        else:
-            status_parts.append("❌ Система отключена")
-        
-        status_parts.append(f"\n📥 <b>Каналы для мониторинга:</b> {len(DIGEST_SOURCE_CHANNELS)}")
-        for channel in DIGEST_SOURCE_CHANNELS:
-            status_parts.append(f"  • {channel}")
-        
-        status_parts.append(f"\n📤 <b>Канал публикации:</b> {DIGEST_DEST_CHANNEL or 'Не указан'}")
-        status_parts.append(f"⏰ <b>Расписание:</b> {DIGEST_PUBLISH_SCHEDULE}")
-        status_parts.append(f"\n📊 <b>Текущий буфер:</b>")
-        status_parts.append(f"  • Новостей в буфере: {sum(len(news_list) for news_list in news_buffer.values())}")
-        status_parts.append(f"  • Тем: {len(news_buffer)}")
-        status_parts.append(f"  • Обработано сообщений: {len(processed_message_ids)}")
-        
-        await update.message.reply_text("\n".join(status_parts), parse_mode='HTML')
-    except Exception as e:
-        logger.error(f"Ошибка digest_status: {e}")
-        await update.message.reply_text(f"❌ Ошибка получения статуса: {e}")
-
-
-async def digest_create_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Создать и опубликовать дайджест вручную (только для админа)"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("🚫 Команда доступна только администратору")
-        return
-    
-    try:
-        await update.message.reply_text("🔄 Создаю дайджест...")
-        
-        from digest_manager import create_digest, publish_digest
-        
-        digest_text = await create_digest()
-        if not digest_text:
-            await update.message.reply_text("📭 Нет новостей для создания дайджеста")
-            return
-        
-        # Публикуем в канал если указан
-        from config import DIGEST_DEST_CHANNEL
-        if DIGEST_DEST_CHANNEL:
-            bot = context.bot
-            await publish_digest(bot)
-            await update.message.reply_text(f"✅ Дайджест опубликован в {DIGEST_DEST_CHANNEL}")
-        else:
-            # Показываем дайджест пользователю
-            if len(digest_text) > 4096:
-                # Разбиваем на части если слишком длинный
-                parts = [digest_text[i:i+4096] for i in range(0, len(digest_text), 4096)]
-                for part in parts:
-                    await update.message.reply_text(part, parse_mode='HTML')
-            else:
-                await update.message.reply_text(digest_text, parse_mode='HTML')
-    except Exception as e:
-        logger.error(f"Ошибка digest_create: {e}")
-        await update.message.reply_text(f"❌ Ошибка создания дайджеста: {e}")
-
-
-async def digest_load_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Загрузить последние новости из каналов (только для админа)"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("🚫 Команда доступна только администратору")
-        return
-    
-    try:
-        hours = 24
-        if context.args and len(context.args) > 0:
-            try:
-                hours = int(context.args[0])
-            except ValueError:
-                await update.message.reply_text("⚠️ Использование: /digest_load [часов]")
-                return
-        
-        await update.message.reply_text(f"🔄 Загружаю новости за последние {hours} часов...")
-        
-        from digest_manager import load_recent_news
-        
-        loaded = await load_recent_news(hours=hours)
-        await update.message.reply_text(f"✅ Загружено {loaded} новостей из каналов")
-    except Exception as e:
-        logger.error(f"Ошибка digest_load: {e}")
-        await update.message.reply_text(f"❌ Ошибка загрузки новостей: {e}")
-
-
 async def command_suggestions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывать доступные команды при вводе '/'"""
     user_input = update.message.text
@@ -2746,53 +2539,5 @@ async def command_suggestions(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         await update.message.reply_text(message, parse_mode='Markdown')
 
-# Flask сервер для API данных
-def create_data_api():
-    """Создает Flask сервер для API данных"""
-    app = Flask(__name__)
-    
-    @app.route('/api/users')
-    def get_users():
-        """API для получения пользователей"""
-        try:
-            with open('notifications.json', 'r', encoding='utf-8') as f:
-                users_data = json.load(f)
-                return jsonify(users_data)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return jsonify([])
-    
-    @app.route('/api/settings')
-    def get_settings():
-        """API для получения настроек"""
-        try:
-            with open('bot_settings.json', 'r', encoding='utf-8') as f:
-                settings_data = json.load(f)
-                return jsonify(settings_data)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return jsonify({})
-    
-    @app.route('/api/status')
-    def get_status():
-        """API для получения статуса бота"""
-        return jsonify({
-            'status': 'running',
-            'users_count': len(load_user_data()),
-            'timestamp': datetime.now().isoformat()
-        })
-    
-    return app
-
-def start_data_api():
-    """Запускает API сервер в отдельном потоке"""
-    app = create_data_api()
-    def run_api():
-        app.run(host='0.0.0.0', port=5002, debug=False)
-    
-    api_thread = threading.Thread(target=run_api, daemon=True)
-    api_thread.start()
-    logger.info("🌐 API сервер запущен на порту 5002")
-
 if __name__ == '__main__':
-    # Запускаем API сервер
-    start_data_api()
-    main() 
+    main()

@@ -7,9 +7,6 @@ load_dotenv()
 # Токен бота от BotFather
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 
-# OpenAI API ключ для ChatGPT
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-
 # Администратор бота
 ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '0'))
 
@@ -68,22 +65,5 @@ MAX_USO_TO_BRENT_MULTIPLIER = 2.0
 # Файл для хранения последних известных значений
 LAST_KNOWN_RATES_FILE = 'last_known_rates.json'
 
-# Настройки AI-дайджестов
-TELEGRAM_API_ID = int(os.getenv('TELEGRAM_API_ID', '0'))
-TELEGRAM_API_HASH = os.getenv('TELEGRAM_API_HASH', '')
-QDRANT_URL = os.getenv('QDRANT_URL', '')
-QDRANT_API_KEY = os.getenv('QDRANT_API_KEY', '')
-DIGEST_SOURCE_CHANNELS = [ch.strip() for ch in os.getenv('DIGEST_SOURCE_CHANNELS', '').split(',') if ch.strip()]
-DIGEST_DEST_CHANNEL = os.getenv('DIGEST_DEST_CHANNEL', '')
-DIGEST_COLLECTION_NAME = os.getenv('DIGEST_COLLECTION_NAME', 'telegram_digest')
-DIGEST_SIMILARITY_THRESHOLD = float(os.getenv('DIGEST_SIMILARITY_THRESHOLD', '0.85'))
-DIGEST_EMBEDDING_MODEL = os.getenv('DIGEST_EMBEDDING_MODEL', 'text-embedding-3-small')
-DIGEST_LLM_MODEL = os.getenv('DIGEST_LLM_MODEL', 'gpt-4o-mini')
-DIGEST_PUBLISH_SCHEDULE = os.getenv('DIGEST_PUBLISH_SCHEDULE', 'daily')  # hourly, daily, weekly
-DIGEST_ENABLED = os.getenv('DIGEST_ENABLED', 'false').lower() == 'true'
-
 if not BOT_TOKEN:
     raise ValueError("Необходимо установить BOT_TOKEN в переменных окружения или в файле .env") 
-
-if not OPENAI_API_KEY:
-    print("⚠️ ВНИМАНИЕ: OPENAI_API_KEY не установлен. ChatGPT функции будут недоступны.") 
