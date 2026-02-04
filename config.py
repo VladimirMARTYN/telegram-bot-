@@ -41,7 +41,7 @@ API_TIMEOUT = 10  # Таймаут запросов (секунды)
 # Поддерживаемые активы
 SUPPORTED_CURRENCIES = ['USD', 'EUR', 'CNY']
 SUPPORTED_CRYPTO = ['BTC', 'TON', 'SOL', 'USDT']
-SUPPORTED_STOCKS = ['SBER', 'YDEX', 'VKCO', 'T', 'GAZP', 'GMKN', 'ROSN', 'LKOH', 'MTSS', 'MFON', 'PIKK', 'SMLT']
+SUPPORTED_STOCKS = ['SBER', 'YDEX', 'VKCO', 'T', 'GAZP', 'GMKN', 'ROSN', 'LKOH', 'MTSS', 'MFON', 'PIKK', 'SMLT', 'TGLD@', 'TOFZ@', 'DOMRF']
 
 # Настройки сохранения данных
 SAVE_DEBOUNCE_DELAY = 5  # Задержка перед сохранением данных (секунды)

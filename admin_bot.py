@@ -423,6 +423,19 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 # Сохраняем используемое значение для статистики
                 save_last_known_rate('USD_RUB', usd_to_rub_rate)
         
+        # Загружаем историю цен для динамики
+        price_history = load_price_history()
+        
+        def format_delta(asset_key, current_price):
+            """Форматировать изменение относительно последней зафиксированной цены"""
+            if current_price is None:
+                return ""
+            previous_price = price_history.get(asset_key)
+            if previous_price is None or previous_price == 0:
+                return ""
+            change_pct = ((current_price - previous_price) / previous_price) * 100
+            return f" (Δ {change_pct:+.2f}% от последнего)"
+        
         # Обработка криптовалют
         if isinstance(crypto_data, Exception):
             logger.error(f"Ошибка получения криптовалют: {crypto_data}")
@@ -500,7 +513,8 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         stock_names = {
             'SBER': 'Сбер', 'YDEX': 'Яндекс', 'VKCO': 'ВК', 
             'T': 'T-Технологии', 'GAZP': 'Газпром', 'GMKN': 'Норникель',
-            'ROSN': 'Роснефть', 'LKOH': 'ЛУКОЙЛ', 'MTSS': 'МТС', 'MFON': 'Мегафон'
+            'ROSN': 'Роснефть', 'LKOH': 'ЛУКОЙЛ', 'MTSS': 'МТС', 'MFON': 'Мегафон',
+            'TGLD@': 'TGLD', 'TOFZ@': 'TOFZ', 'DOMRF': 'DOMRF'
         }
         stock_items = list(stock_names.keys())
         
@@ -522,7 +536,8 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     
                     # Добавляем изменение с открытия для российских акций
                     change_str = f" ({change_pct:+.2f}% с открытия)" if change_pct is not None and change_pct != 0 and is_live else ""
-                    message += f"{prefix} {status_icon} {name}: **{format_price(price)} ₽**{change_str}\n"
+                    delta_str = format_delta(ticker, price)
+                    message += f"{prefix} {status_icon} {name}: **{format_price(price)} ₽**{change_str}{delta_str}\n"
         else:
             message += "🔴 **Торги закрыты** (выходной день)\n"
         message += "\n"
@@ -549,7 +564,8 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     
                     # Добавляем изменение с открытия для акций недвижимости
                     change_str = f" ({change_pct:+.2f}% с открытия)" if change_pct is not None and change_pct != 0 and is_live else ""
-                    message += f"{prefix} {status_icon} {name}: **{format_price(price)} ₽**{change_str}\n"
+                    delta_str = format_delta(ticker, price)
+                    message += f"{prefix} {status_icon} {name}: **{format_price(price)} ₽**{change_str}{delta_str}\n"
         else:
             message += "🔴 **Торги закрыты** (выходной день)\n"
         message += "\n"
@@ -570,10 +586,11 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 price = commodities_data[commodity]['price']
                 rub_price = price * usd_to_rub_rate if usd_to_rub_rate > 0 else 0
                 prefix = "├" if i < len(commodity_items) - 1 else "└"
+                delta_str = format_delta(commodity, price)
                 if rub_price > 0:
-                    message += f"{prefix} {name}: **${format_price(price)}** ({format_price(rub_price)} ₽)\n"
+                    message += f"{prefix} {name}: **${format_price(price)}** ({format_price(rub_price)} ₽){delta_str}\n"
                 else:
-                    message += f"{prefix} {name}: **${format_price(price)}**\n"
+                    message += f"{prefix} {name}: **${format_price(price)}**{delta_str}\n"
         message += "\n"
         
         # Фондовые индексы
@@ -714,7 +731,7 @@ async def set_alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             "💡 Поддерживаемые активы:\n"
             "• Валюты: USD, EUR, CNY\n"
             "• Криптовалюты: BTC, TON, SOL, USDT\n"
-            "• Акции: SBER, YDEX, VKCO, T, GAZP, GMKN, ROSN, LKOH, MTSS, MFON, PIKK, SMLT"
+            "• Акции: SBER, YDEX, VKCO, T, GAZP, GMKN, ROSN, LKOH, MTSS, MFON, PIKK, SMLT, TGLD@, TOFZ@, DOMRF"
         )
         return
     
@@ -1040,9 +1057,23 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Ошибка получения акций для проверки: {e}")
                 return {}
         
+        async def fetch_commodities():
+            try:
+                async def _fetch_commodities():
+                    return await get_commodities_data(session)
+                commodities = await get_cached_data('commodities_check', _fetch_commodities, CACHE_TTL_COMMODITIES)
+                result = {}
+                for key in ['gold', 'silver', 'brent', 'urals']:
+                    if key in commodities:
+                        result[key] = commodities[key].get('price')
+                return result
+            except Exception as e:
+                logger.error(f"Ошибка получения товаров для проверки: {e}")
+                return {}
+        
         # Параллельный запрос данных
-        currencies, crypto, stocks = await asyncio.gather(
-            fetch_cbr(), fetch_crypto(), fetch_stocks(),
+        currencies, crypto, stocks, commodities = await asyncio.gather(
+            fetch_cbr(), fetch_crypto(), fetch_stocks(), fetch_commodities(),
             return_exceptions=True
         )
         
@@ -1052,6 +1083,8 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
             current_prices.update(crypto)
         if not isinstance(stocks, Exception):
             current_prices.update(stocks)
+        if not isinstance(commodities, Exception):
+            current_prices.update(commodities)
         
         # Загружаем предыдущие цены
         price_history = load_price_history()

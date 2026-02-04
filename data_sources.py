@@ -211,7 +211,10 @@ async def get_moex_stocks(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
         'MTSS': {'name': 'МТС', 'emoji': '📱'},
         'MFON': {'name': 'Мегафон', 'emoji': '📶'},
         'PIKK': {'name': 'ПИК', 'emoji': '🏗️'},
-        'SMLT': {'name': 'Самолёт', 'emoji': '✈️'}
+        'SMLT': {'name': 'Самолёт', 'emoji': '✈️'},
+        'TGLD@': {'name': 'TGLD', 'emoji': '🪙'},
+        'TOFZ@': {'name': 'TOFZ', 'emoji': '📄'},
+        'DOMRF': {'name': 'DOMRF', 'emoji': '🏛️'}
     }
     
     # Если выходной день, возвращаем пустые данные
