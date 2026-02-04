@@ -619,7 +619,8 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     change_str = f"({change:+.2f}% {change_period})" if change != 0 else ""
                     status_icon = "🟢" if is_live else "🟡"
                     note_str = f" ({note})" if note else ""
-                    message += f"{prefix} {status_icon} {name}: **{format_price(price)}** {change_str}{note_str}\n"
+                    delta_str = format_delta(index, price)
+                    message += f"{prefix} {status_icon} {name}: **{format_price(price)}** {change_str}{note_str}{delta_str}\n"
                 else:
                     # Если данных нет, но индекс был запрошен - показываем что данные временно недоступны
                     message += f"{prefix} 🔴 {name}: **Данные временно недоступны**\n"
@@ -646,6 +647,11 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     price = commodities_data[commodity].get('price')
                     if price is not None:
                         history_update[commodity] = price
+            for index in index_items:
+                if index in indices_data:
+                    price = indices_data[index].get('price')
+                    if price is not None:
+                        history_update[index] = price
             if history_update:
                 price_history.update(history_update)
                 save_price_history(price_history)
