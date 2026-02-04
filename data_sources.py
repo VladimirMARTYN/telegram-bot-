@@ -463,7 +463,7 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
     indices_data = {}
     
     try:
-        # IMOEX и RTS с MOEX (запрашиваем всегда, проверяем данные)
+        # IMOEX с MOEX (запрашиваем всегда, проверяем данные)
         logger.debug("Запрашиваю индексы MOEX...")
         try:
             async with session.get(
@@ -474,7 +474,7 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
                 if resp.status == 200:
                     data = await safe_json_response(resp)
                     
-                    # Парсим IMOEX и RTS
+                    # Парсим IMOEX
                     if 'marketdata' in data and 'data' in data['marketdata']:
                         marketdata_cols = data['marketdata']['columns']
                         for row in data['marketdata']['data']:
@@ -491,16 +491,6 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
                                         'price': price,
                                         'change_pct': row_data.get('CHANGEPRCNT', 0),
                                         'is_live': last_value is not None  # Live если есть LAST
-                                    }
-                            elif secid == 'RTSI':
-                                last_value = row_data.get('LAST')
-                                price = last_value or row_data.get('CURRENTVALUE') or row_data.get('PREVPRICE')
-                                if price:
-                                    indices_data['rts'] = {
-                                        'name': 'RTS',
-                                        'price': price,
-                                        'change_pct': row_data.get('CHANGEPRCNT', 0),
-                                        'is_live': last_value is not None
                                     }
         except Exception as e:
             logger.error(f"Ошибка получения индексов MOEX: {e}")

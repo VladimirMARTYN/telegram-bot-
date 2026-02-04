@@ -595,7 +595,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         
         # Фондовые индексы
         message += "📊 **ФОНДОВЫЕ ИНДЕКСЫ:**\n"
-        index_items = ['imoex', 'rts', 'sp500']
+        index_items = ['imoex', 'sp500']
         
         for i, index in enumerate(index_items):
             if index in indices_data:
@@ -609,7 +609,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 
                 if price is not None and price != 0:
                     # Определяем тип изменения для индекса
-                    if index in ['imoex', 'rts']:
+                    if index in ['imoex']:
                         change_period = "с открытия" if is_live else "с закрытия"
                     elif index == 'sp500':
                         change_period = "с закрытия" if not is_live else "с открытия"
@@ -625,10 +625,32 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     message += f"{prefix} 🔴 {name}: **Данные временно недоступны**\n"
             else:
                 # Если индекса вообще нет в данных
-                index_name = {'imoex': 'IMOEX', 'rts': 'RTS', 'sp500': 'S&P 500'}.get(index, index)
+                index_name = {'imoex': 'IMOEX', 'sp500': 'S&P 500'}.get(index, index)
                 prefix = "├" if i < len(index_items) - 1 else "└"
                 message += f"{prefix} 🔴 {index_name}: **Данные временно недоступны**\n"
         message += "\n"
+        
+        # Обновляем историю цен для динамики (чтобы дельты появлялись в /rates)
+        try:
+            history_update = {}
+            for ticker in stock_items:
+                price = stocks_data.get(ticker, {}).get('price')
+                if price is not None:
+                    history_update[ticker] = price
+            for ticker in real_estate_tickers:
+                price = stocks_data.get(ticker, {}).get('price')
+                if price is not None:
+                    history_update[ticker] = price
+            for commodity in commodity_items:
+                if commodity in commodities_data:
+                    price = commodities_data[commodity].get('price')
+                    if price is not None:
+                        history_update[commodity] = price
+            if history_update:
+                price_history.update(history_update)
+                save_price_history(price_history)
+        except Exception as e:
+            logger.error(f"Ошибка обновления истории цен в /rates: {e}")
         
         # Время и источники
         current_time = get_moscow_time().strftime("%d.%m.%Y %H:%M")
