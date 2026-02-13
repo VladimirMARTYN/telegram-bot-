@@ -4,7 +4,7 @@
 import logging
 import os
 import asyncio
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, JobQueue
@@ -75,6 +75,7 @@ if not SCHEDULE_AVAILABLE:
 
 # Глобальная переменная для системы задач
 GLOBAL_JOB_QUEUE = None
+_data_file_lock = threading.RLock()
 
 # Глобальная сессия aiohttp для переиспользования
 _http_session: aiohttp.ClientSession = None
@@ -135,17 +136,33 @@ bot_start_time = get_moscow_time()
 # Данные пользователей (в памяти)
 user_data = {}
 
+
+def _atomic_write_json(file_path: str, data) -> None:
+    """Атомарно записать JSON в файл через временный файл и replace()."""
+    temp_path = f"{file_path}.tmp"
+    with open(temp_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(temp_path, file_path)
+
 def load_user_data():
     """Загрузить данные пользователей из файла"""
     global user_data
     try:
-        if os.path.exists('user_data.json'):
-            with open('user_data.json', 'r', encoding='utf-8') as f:
-                user_data = json.load(f)
-            logger.info(f"📊 Загружено пользователей: {len(user_data)}")
-        else:
-            user_data = {}
-            logger.info("📊 Файл пользователей не найден, создаю новый")
+        with _data_file_lock:
+            if os.path.exists('user_data.json'):
+                with open('user_data.json', 'r', encoding='utf-8') as f:
+                    raw_data = json.load(f)
+
+                user_data = {}
+                for key, value in raw_data.items():
+                    try:
+                        user_data[int(key)] = value
+                    except (TypeError, ValueError):
+                        logger.warning(f"Пропущен некорректный user_id в user_data.json: {key}")
+                logger.info(f"📊 Загружено пользователей: {len(user_data)}")
+            else:
+                user_data = {}
+                logger.info("📊 Файл пользователей не найден, создаю новый")
     except Exception as e:
         logger.error(f"Ошибка загрузки пользователей: {e}")
         user_data = {}
@@ -153,8 +170,9 @@ def load_user_data():
 def save_user_data():
     """Сохранить данные пользователей в файл"""
     try:
-        with open('user_data.json', 'w', encoding='utf-8') as f:
-            json.dump(user_data, f, ensure_ascii=False, indent=2)
+        with _data_file_lock:
+            serializable_data = {str(k): v for k, v in user_data.items()}
+            _atomic_write_json('user_data.json', serializable_data)
     except Exception as e:
         logger.error(f"Ошибка сохранения пользователей: {e}")
 
@@ -263,7 +281,12 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Получить полные курсы валют, криптовалют, акций, товаров и индексов"""
     try:
-        await update.message.reply_text("📊 Получаю информацию")
+        reply_target = update.effective_message
+        if reply_target is None:
+            logger.error("rates_command: отсутствует message в update")
+            return
+
+        await reply_target.reply_text("📊 Получаю информацию")
         
         session = await get_http_session()
         
@@ -524,6 +547,8 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             for ticker in stock_items
         )
         
+        is_moscow_weekend = get_moscow_time().weekday() >= 5
+
         if has_live_data:
             for i, ticker in enumerate(stock_items):
                 if ticker in stocks_data and stocks_data[ticker].get('price'):
@@ -539,7 +564,10 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     delta_str = format_delta(ticker, price)
                     message += f"{prefix} {status_icon} {name}: **{format_price(price)} ₽**{change_str}{delta_str}\n"
         else:
-            message += "🔴 **Торги закрыты** (выходной день)\n"
+            if is_moscow_weekend:
+                message += "🔴 **Торги закрыты** (выходной день)\n"
+            else:
+                message += "🔴 **Данные временно недоступны**\n"
         message += "\n"
         
         # Недвижимость
@@ -567,7 +595,10 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     delta_str = format_delta(ticker, price)
                     message += f"{prefix} {status_icon} {name}: **{format_price(price)} ₽**{change_str}{delta_str}\n"
         else:
-            message += "🔴 **Торги закрыты** (выходной день)\n"
+            if is_moscow_weekend:
+                message += "🔴 **Торги закрыты** (выходной день)\n"
+            else:
+                message += "🔴 **Данные временно недоступны**\n"
         message += "\n"
         
         # Товары 
@@ -661,15 +692,15 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # Время и источники
         current_time = get_moscow_time().strftime("%d.%m.%Y %H:%M")
         message += f"🕐 **Время:** {current_time}\n"
-        message += f"📡 **Источники:** ЦБ РФ, CoinGecko/Coinbase/Binance/CryptoCompare, MOEX, Gold-API, Alpha Vantage"
+        message += f"📡 **Источники:** ЦБ РФ, CoinGecko/Coinbase/Binance/CryptoCompare, Т-Инвестиции API, MOEX, Gold-API, Alpha Vantage"
 
-        await update.message.reply_text(message, parse_mode='Markdown')
+        await reply_target.reply_text(message, parse_mode='Markdown')
         
     except Exception as e:
         logger.error(f"Общая ошибка в rates_command: {e}")
         import traceback
         logger.error(f"Трассировка ошибки: {traceback.format_exc()}")
-        await update.message.reply_text(
+        await reply_target.reply_text(
             f"❌ Ошибка получения курсов: {str(e)}\n\n"
             f"🔄 Попробуйте позже или обратитесь к администратору."
         )
@@ -754,7 +785,7 @@ async def set_alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             "⚙️ <b>Установка пороговых алертов</b>\n\n"
             "📝 Примеры использования:\n"
             "• <code>/set_alert USD 85</code> - доллар выше 85₽\n"
-            "• <code>/set_alert BTC 115000</code> - биткоин ниже 115K$\n"
+            "• <code>/set_alert BTC 115000</code> - биткоин выше 115K$\n"
             "• <code>/set_alert SBER 200</code> - Сбер выше 200₽\n\n"
             "💡 Поддерживаемые активы:\n"
             "• Валюты: USD, EUR, CNY\n"
@@ -772,7 +803,7 @@ async def set_alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # Валидация актива
     if not validate_asset(asset):
         await update.message.reply_html(
-            f"❌ <b>Неподпираемый актив:</b> {asset}\n\n"
+            f"❌ <b>Неподдерживаемый актив:</b> {asset}\n\n"
             f"💡 Поддерживаемые активы:\n"
             f"• Валюты: {', '.join(SUPPORTED_CURRENCIES)}\n"
             f"• Криптовалюты: {', '.join(SUPPORTED_CRYPTO)}\n"
@@ -946,9 +977,10 @@ SETTINGS_FILE = 'bot_settings.json'
 def load_notification_data():
     """Загрузить данные уведомлений"""
     try:
-        if os.path.exists(NOTIFICATION_DATA_FILE):
-            with open(NOTIFICATION_DATA_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+        with _data_file_lock:
+            if os.path.exists(NOTIFICATION_DATA_FILE):
+                with open(NOTIFICATION_DATA_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
         return {}
     except Exception as e:
         logger.error(f"Ошибка загрузки уведомлений: {e}")
@@ -957,17 +989,18 @@ def load_notification_data():
 def save_notification_data(data):
     """Сохранить данные уведомлений"""
     try:
-        with open(NOTIFICATION_DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        with _data_file_lock:
+            _atomic_write_json(NOTIFICATION_DATA_FILE, data)
     except Exception as e:
         logger.error(f"Ошибка сохранения уведомлений: {e}")
 
 def load_price_history():
     """Загрузить историю цен"""
     try:
-        if os.path.exists(PRICE_HISTORY_FILE):
-            with open(PRICE_HISTORY_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+        with _data_file_lock:
+            if os.path.exists(PRICE_HISTORY_FILE):
+                with open(PRICE_HISTORY_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
         return {}
     except Exception as e:
         logger.error(f"Ошибка загрузки истории: {e}")
@@ -976,17 +1009,18 @@ def load_price_history():
 def save_price_history(data):
     """Сохранить историю цен"""
     try:
-        with open(PRICE_HISTORY_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        with _data_file_lock:
+            _atomic_write_json(PRICE_HISTORY_FILE, data)
     except Exception as e:
         logger.error(f"Ошибка сохранения истории: {e}")
 
 def load_bot_settings():
     """Загрузить настройки бота"""
     try:
-        if os.path.exists(SETTINGS_FILE):
-            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+        with _data_file_lock:
+            if os.path.exists(SETTINGS_FILE):
+                with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
         # Настройки по умолчанию
         return {
             'daily_summary_time': DEFAULT_DAILY_TIME,
@@ -1002,8 +1036,8 @@ def load_bot_settings():
 def save_bot_settings(settings):
     """Сохранить настройки бота"""
     try:
-        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(settings, f, ensure_ascii=False, indent=2)
+        with _data_file_lock:
+            _atomic_write_json(SETTINGS_FILE, settings)
         logger.info(f"✅ Настройки сохранены: {settings}")
     except Exception as e:
         logger.error(f"Ошибка сохранения настроек: {e}")
@@ -1152,8 +1186,17 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
                 current_price = current_prices.get(asset)
                 if current_price is None:
                     continue
-                
-                if current_price >= alert_threshold:
+
+                # Отправляем алерт только при пересечении порога снизу вверх,
+                # чтобы избежать повторного спама в каждом цикле.
+                previous_price = price_history.get(asset)
+                crossed_up = (
+                    previous_price is not None
+                    and previous_price < alert_threshold <= current_price
+                )
+                first_seen_above = previous_price is None and current_price >= alert_threshold
+
+                if crossed_up or first_seen_above:
                     asset_name = escape_html(str(asset))
                     notifications_to_send.append(
                         f"🚨 <b>АЛЕРТ:</b> {asset_name} достиг {current_price:.2f} "
@@ -1225,16 +1268,23 @@ async def daily_summary_job(context: ContextTypes.DEFAULT_TYPE):
                     parse_mode='Markdown'
                 )
                 
-                # Создаем fake Update для вызова rates_command
-                # Поскольку rates_command нужен Update объект, создаем минимальный
+                # Создаем fake Update для вызова rates_command.
+                # rates_command использует update.effective_message.reply_text(...)
+                class FakeMessage:
+                    def __init__(self, chat_id):
+                        self.chat_id = chat_id
+
+                    async def reply_text(self, text, parse_mode=None):
+                        return await context.bot.send_message(
+                            chat_id=self.chat_id,
+                            text=text,
+                            parse_mode=parse_mode
+                        )
+
                 class FakeUpdate:
                     def __init__(self, user_id):
                         self.effective_user = type('obj', (object,), {'id': user_id})
-                        self.message = type('obj', (object,), {
-                            'reply_text': lambda text, parse_mode=None: context.bot.send_message(
-                                chat_id=user_id, text=text, parse_mode=parse_mode
-                            )
-                        })
+                        self.effective_message = FakeMessage(user_id)
                 
                 fake_update = FakeUpdate(int(user_id))
                 
@@ -1336,7 +1386,7 @@ async def set_daily_time_command(update: Update, context: ContextTypes.DEFAULT_T
             hour, minute = map(int, time_str.split(':'))
             next_run = current_moscow_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
             if current_moscow_time.hour > hour or (current_moscow_time.hour == hour and current_moscow_time.minute >= minute):
-                next_run = next_run.replace(day=next_run.day + 1)
+                next_run = next_run + timedelta(days=1)
             
             time_until = next_run - current_moscow_time
             hours_until = int(time_until.total_seconds() // 3600)
@@ -1401,7 +1451,7 @@ async def get_daily_settings_command(update: Update, context: ContextTypes.DEFAU
         next_run = current_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
         if current_time.hour > hour or (current_time.hour == hour and current_time.minute >= minute):
             # Если время уже прошло сегодня, планируем на завтра
-            next_run = next_run.replace(day=next_run.day + 1)
+            next_run = next_run + timedelta(days=1)
         
         time_until = next_run - current_time
         hours_until = int(time_until.total_seconds() // 3600)
@@ -1480,7 +1530,7 @@ async def restart_daily_job_command(update: Update, context: ContextTypes.DEFAUL
         current_moscow_time = datetime.now(moscow_tz)
         next_run = current_moscow_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
         if current_moscow_time.hour > hour or (current_moscow_time.hour == hour and current_moscow_time.minute >= minute):
-            next_run = next_run.replace(day=next_run.day + 1)
+            next_run = next_run + timedelta(days=1)
         
         time_until = next_run - current_moscow_time
         hours_until = int(time_until.total_seconds() // 3600)
@@ -1796,7 +1846,7 @@ def main() -> None:
     load_user_data()
     
     # Создаем приложение с явно включенным JobQueue
-    application = Application.builder().token(BOT_TOKEN).build()
+    application = Application.builder().token(BOT_TOKEN).post_init(setup_bot_commands).build()
     
     # Проверяем доступность JobQueue и выводим детальную диагностику
     job_queue = application.job_queue
@@ -1889,9 +1939,6 @@ def main() -> None:
     # Обработчик всех текстовых сообщений (эхо)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
     
-    # Настройка команд для автодополнения
-    setup_bot_commands(application)
-
     # Настройка периодических задач
     if job_queue:
         logger.info(f"🔧 Используется система задач: {type(job_queue).__name__}")
@@ -1931,7 +1978,7 @@ def main() -> None:
             # Показываем сколько времени до следующего запуска
             next_run = current_moscow_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
             if current_moscow_time.hour > hour or (current_moscow_time.hour == hour and current_moscow_time.minute >= minute):
-                next_run = next_run.replace(day=next_run.day + 1)
+                next_run = next_run + timedelta(days=1)
             time_until = next_run - current_moscow_time
             hours_until = int(time_until.total_seconds() // 3600)
             minutes_until = int((time_until.total_seconds() % 3600) // 60)
@@ -2020,7 +2067,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     
     # Проверяем права администратора для админских функций
-    if str(user_id) != os.getenv('ADMIN_USER_ID'):
+    if not is_admin(user_id):
         await query.edit_message_text("❌ Эта функция доступна только администратору.")
         return
     
@@ -2120,7 +2167,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 Примеры алертов:
 • `/set_alert USD 85` - доллар выше 85₽
-• `/set_alert BTC 115000` - биткоин ниже 115K$
+• `/set_alert BTC 115000` - биткоин выше 115K$
 • `/set_alert SBER 200` - Сбер выше 200₽
 """
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="settings_back")]]
@@ -2253,7 +2300,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         # Получаем все данные параллельно
         try:
-            cbr_data, forex_data, crypto_data, stocks_data, commodities_data, indices_data = await asyncio.gather(
+            cbr_data, forex_data, fetched_crypto_data, stocks_data, commodities_data, indices_data = await asyncio.gather(
                 get_cbr_rates(session),
                 get_forex_rates(session),
                 get_crypto_data(session),
@@ -2278,8 +2325,8 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 forex_usd_rub = forex_data.get('rates', {}).get('RUB', None)
             
             # Обрабатываем остальные данные
-            if isinstance(crypto_data, Exception):
-                crypto_data = {}
+            if isinstance(fetched_crypto_data, Exception):
+                fetched_crypto_data = {}
             if isinstance(stocks_data, Exception):
                 stocks_data = {}
             if isinstance(commodities_data, Exception):
@@ -2288,9 +2335,9 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 indices_data = {}
         except Exception as e:
             logger.error(f"Ошибка получения данных для PDF: {e}")
-            usd_rate = eur_rate = cny_rate = gbp_rate = 0
+            usd_rate = eur_rate = cny_rate = 0
             forex_usd_rub = None
-            crypto_data = {}
+            fetched_crypto_data = {}
             stocks_data = {}
             commodities_data = {}
             indices_data = {}
@@ -2350,12 +2397,12 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             'tether': 'Tether'
         }
         
-        crypto_data = [['Cryptocurrency', 'Price (USD)', '24h Change', 'Status']]
-        
+        crypto_table_data = [['Cryptocurrency', 'Price (USD)', '24h Change', 'Status']]
+
         for crypto_id, crypto_name in crypto_names.items():
-            if crypto_id in crypto_data:
-                price = crypto_data[crypto_id].get('usd', 0)
-                change = crypto_data[crypto_id].get('usd_24h_change', 0)
+            if crypto_id in fetched_crypto_data:
+                price = fetched_crypto_data[crypto_id].get('price', 0)
+                change = fetched_crypto_data[crypto_id].get('change_24h', 0)
                 
                 if price and price > 0:
                     change_str = f"{change:+.2f}%" if change is not None else "N/A"
@@ -2366,10 +2413,10 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     else:
                         status = "No change"
                     
-                    crypto_data.append([crypto_name, f"${format_price(price)}", change_str, status])
+                    crypto_table_data.append([crypto_name, f"${format_price(price)}", change_str, status])
         
-        if len(crypto_data) > 1:  # Есть данные
-            crypto_table = Table(crypto_data, colWidths=[1.5*inch, 1.5*inch, 1.2*inch, 1.8*inch])
+        if len(crypto_table_data) > 1:  # Есть данные
+            crypto_table = Table(crypto_table_data, colWidths=[1.5*inch, 1.5*inch, 1.2*inch, 1.8*inch])
             crypto_table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.darkgreen),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -2526,7 +2573,7 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.error(f"Ошибка создания PDF: {e}")
         await update.message.reply_text(f"❌ Ошибка создания PDF: {str(e)}")
 
-def setup_bot_commands(application):
+async def setup_bot_commands(application):
     """Настройка команд бота для автодополнения в Telegram"""
     from telegram import BotCommand
     
@@ -2548,7 +2595,7 @@ def setup_bot_commands(application):
     
     try:
         # Устанавливаем команды для бота
-        application.bot.set_my_commands(commands)
+        await application.bot.set_my_commands(commands)
         logger.info("✅ Команды бота настроены для автодополнения")
     except Exception as e:
         logger.error(f"❌ Ошибка настройки команд: {e}")
@@ -2588,7 +2635,7 @@ async def command_suggestions(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         # Проверяем права администратора
         user_id = update.effective_user.id
-        if str(user_id) == os.getenv('ADMIN_USER_ID'):
+        if is_admin(user_id):
             message += "\n🔧 **КОМАНДЫ АДМИНИСТРАТОРА:**\n\n"
             for cmd in admin_commands:
                 message += f"• {cmd}\n"

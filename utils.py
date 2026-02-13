@@ -8,12 +8,14 @@
 import logging
 import os
 import json
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Callable, Awaitable
 from functools import wraps
 import asyncio
 
 logger = logging.getLogger(__name__)
+_rates_file_lock = threading.RLock()
 
 # Глобальный кэш
 api_cache: Dict[str, Dict[str, Any]] = {}
@@ -205,19 +207,22 @@ def save_last_known_rate(asset: str, rate: float) -> None:
         rate: Значение курса/соотношения
     """
     try:
-        if os.path.exists(LAST_KNOWN_RATES_FILE):
-            with open(LAST_KNOWN_RATES_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        else:
-            data = {}
-        
-        data[asset] = {
-            'rate': rate,
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        with open(LAST_KNOWN_RATES_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        with _rates_file_lock:
+            if os.path.exists(LAST_KNOWN_RATES_FILE):
+                with open(LAST_KNOWN_RATES_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            else:
+                data = {}
+            
+            data[asset] = {
+                'rate': rate,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            temp_path = f"{LAST_KNOWN_RATES_FILE}.tmp"
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(temp_path, LAST_KNOWN_RATES_FILE)
         
         logger.debug(f"Сохранен последний известный курс {asset}: {rate:.2f}")
     except Exception as e:
@@ -236,11 +241,12 @@ def get_last_known_rate(asset: str, max_age_hours: int = 24) -> Optional[float]:
         Значение курса или None если данных нет или они устарели
     """
     try:
-        if not os.path.exists(LAST_KNOWN_RATES_FILE):
-            return None
-        
-        with open(LAST_KNOWN_RATES_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        with _rates_file_lock:
+            if not os.path.exists(LAST_KNOWN_RATES_FILE):
+                return None
+            
+            with open(LAST_KNOWN_RATES_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
         
         if asset not in data:
             return None
@@ -259,4 +265,3 @@ def get_last_known_rate(asset: str, max_age_hours: int = 24) -> Optional[float]:
     except Exception as e:
         logger.error(f"Ошибка загрузки последнего курса {asset}: {e}")
         return None
-

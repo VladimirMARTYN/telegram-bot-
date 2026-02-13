@@ -18,7 +18,7 @@ from config import (
     CACHE_TTL_COMMODITIES, CACHE_TTL_INDICES, API_TIMEOUT,
     API_RETRY_ATTEMPTS, API_RETRY_DELAY_MIN, API_RETRY_DELAY_MAX,
     URALS_DISCOUNT, EIA_API_KEY, ALPHA_VANTAGE_KEY,
-    GOLD_SILVER_RATIO, USO_TO_BRENT_MULTIPLIER
+    GOLD_SILVER_RATIO, USO_TO_BRENT_MULTIPLIER, TINVEST_API_TOKEN
 )
 from utils import get_cached_data, fetch_with_retry, save_last_known_rate, get_last_known_rate
 
@@ -26,6 +26,31 @@ logger = logging.getLogger(__name__)
 
 # Используем просто число для таймаута, чтобы избежать проблем с контекстным менеджером
 _TIMEOUT = API_TIMEOUT
+_TINVEST_REST_BASE = "https://invest-public-api.tinkoff.ru/rest"
+
+
+def _tinvest_money_to_float(value: Optional[Dict[str, Any]]) -> Optional[float]:
+    """Конвертация money value {units, nano} в float."""
+    if not isinstance(value, dict):
+        return None
+    units = value.get('units')
+    nano = value.get('nano')
+    if units is None:
+        return None
+    try:
+        return float(units) + float(nano or 0) / 1_000_000_000
+    except (TypeError, ValueError):
+        return None
+
+
+def _tinvest_is_live_status(status: Optional[str]) -> bool:
+    """Проверка, что инструмент сейчас торгуется."""
+    if not status:
+        return False
+    return status in {
+        "SECURITY_TRADING_STATUS_NORMAL_TRADING",
+        "SECURITY_TRADING_STATUS_DEALER_NORMAL_TRADING",
+    }
 
 
 async def safe_json_response(resp: aiohttp.ClientResponse) -> Any:
@@ -232,6 +257,94 @@ async def get_moex_stocks(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
             }
         return stocks_data
     
+    # Основной источник: T-Invest REST API
+    try:
+        if TINVEST_API_TOKEN:
+            tinvest_ids = {
+                'SBER': 'SBER_TQBR',
+                'YDEX': 'YDEX_TQBR',
+                'VKCO': 'VKCO_TQBR',
+                'T': 'T_TQBR',
+                'GAZP': 'GAZP_TQBR',
+                'GMKN': 'GMKN_TQBR',
+                'ROSN': 'ROSN_TQBR',
+                'LKOH': 'LKOH_TQBR',
+                'MTSS': 'MTSS_TQBR',
+                'MFON': 'MFON_TQBR',
+                'PIKK': 'PIKK_TQBR',
+                'SMLT': 'SMLT_TQBR',
+                'TGLD@': 'TGLD@_SPBRU',
+                'TOFZ@': 'TOFZ@_SPBRU',
+                'DOMRF': 'DOMRF_TQBR'
+            }
+
+            headers = {
+                "Authorization": f"Bearer {TINVEST_API_TOKEN}",
+                "Content-Type": "application/json"
+            }
+            payload = {"instrumentId": list(tinvest_ids.values())}
+
+            # Берем цены одним запросом
+            async with session.post(
+                f"{_TINVEST_REST_BASE}/tinkoff.public.invest.api.contract.v1.MarketDataService/GetLastPrices",
+                headers=headers,
+                json=payload,
+                timeout=_TIMEOUT
+            ) as resp:
+                if resp.status == 200:
+                    price_data = await safe_json_response(resp)
+                else:
+                    price_data = {}
+                    logger.warning(f"T-Invest GetLastPrices failed ({resp.status})")
+
+            # И статус торгов вторым запросом
+            async with session.post(
+                f"{_TINVEST_REST_BASE}/tinkoff.public.invest.api.contract.v1.MarketDataService/GetTradingStatuses",
+                headers=headers,
+                json=payload,
+                timeout=_TIMEOUT
+            ) as resp:
+                if resp.status == 200:
+                    statuses_data = await safe_json_response(resp)
+                else:
+                    statuses_data = {}
+                    logger.warning(f"T-Invest GetTradingStatuses failed ({resp.status})")
+
+            status_by_uid = {}
+            for item in statuses_data.get('tradingStatuses', []):
+                uid = item.get('instrumentUid')
+                if uid:
+                    status_by_uid[uid] = item.get('tradingStatus')
+
+            for item in price_data.get('lastPrices', []):
+                ticker = item.get('ticker')
+                if ticker not in stocks:
+                    continue
+                price = _tinvest_money_to_float(item.get('price'))
+                if price is None or price == 0:
+                    continue
+                uid = item.get('instrumentUid')
+                is_live = _tinvest_is_live_status(status_by_uid.get(uid))
+                stocks_data[ticker] = {
+                    'name': stocks[ticker]['name'],
+                    'emoji': stocks[ticker]['emoji'],
+                    'shortname': stocks[ticker]['name'],
+                    'price': price,
+                    'change': None,
+                    'change_pct': 0,
+                    'volume': None,
+                    'open': None,
+                    'high': None,
+                    'low': None,
+                    'is_live': is_live
+                }
+
+            if any(v.get('price') is not None for v in stocks_data.values()):
+                logger.info("✅ MOEX данные получены через T-Invest API")
+                return stocks_data
+    except Exception as e:
+        logger.error(f"Ошибка получения данных MOEX через T-Invest: {e}")
+
     try:
         trading_url = "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json"
         params = {
@@ -296,7 +409,7 @@ async def get_moex_stocks(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
     
     except Exception as e:
         logger.error(f"Ошибка получения данных MOEX: {e}")
-    
+
     return stocks_data
 
 
@@ -463,37 +576,77 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
     indices_data = {}
     
     try:
-        # IMOEX с MOEX (запрашиваем всегда, проверяем данные)
-        logger.debug("Запрашиваю индексы MOEX...")
-        try:
-            async with session.get(
-                "https://iss.moex.com/iss/engines/stock/markets/index/boards/SNDX/securities.json",
-                params={'iss.meta': 'off', 'iss.only': 'securities,marketdata'},
-                timeout=_TIMEOUT
-            ) as resp:
-                if resp.status == 200:
-                    data = await safe_json_response(resp)
-                    
-                    # Парсим IMOEX
-                    if 'marketdata' in data and 'data' in data['marketdata']:
-                        marketdata_cols = data['marketdata']['columns']
-                        for row in data['marketdata']['data']:
-                            row_data = dict(zip(marketdata_cols, row))
-                            secid = row_data.get('SECID')
-                            
-                            if secid == 'IMOEX':
-                                last_value = row_data.get('LAST')
-                                # Используем LAST, CURRENTVALUE или PREVPRICE
-                                price = last_value or row_data.get('CURRENTVALUE') or row_data.get('PREVPRICE')
-                                if price:
-                                    indices_data['imoex'] = {
-                                        'name': 'IMOEX',
-                                        'price': price,
-                                        'change_pct': row_data.get('CHANGEPRCNT', 0),
-                                        'is_live': last_value is not None  # Live если есть LAST
-                                    }
-        except Exception as e:
-            logger.error(f"Ошибка получения индексов MOEX: {e}")
+        # IMOEX через T-Invest (инструмент индекса по UID)
+        if TINVEST_API_TOKEN:
+            try:
+                headers = {
+                    "Authorization": f"Bearer {TINVEST_API_TOKEN}",
+                    "Content-Type": "application/json"
+                }
+                imoex_uid = "4821c9aa-36e8-4743-b37c-861e58581b25"
+                payload = {"instrumentId": [imoex_uid]}
+
+                async with session.post(
+                    f"{_TINVEST_REST_BASE}/tinkoff.public.invest.api.contract.v1.MarketDataService/GetLastPrices",
+                    headers=headers,
+                    json=payload,
+                    timeout=_TIMEOUT
+                ) as resp:
+                    price_data = await safe_json_response(resp) if resp.status == 200 else {}
+                    if resp.status != 200:
+                        logger.warning(f"T-Invest IMOEX GetLastPrices failed ({resp.status})")
+
+                async with session.post(
+                    f"{_TINVEST_REST_BASE}/tinkoff.public.invest.api.contract.v1.MarketDataService/GetTradingStatuses",
+                    headers=headers,
+                    json=payload,
+                    timeout=_TIMEOUT
+                ) as resp:
+                    status_data = await safe_json_response(resp) if resp.status == 200 else {}
+                    if resp.status != 200:
+                        logger.warning(f"T-Invest IMOEX GetTradingStatuses failed ({resp.status})")
+
+                price_item = (price_data.get('lastPrices') or [{}])[0]
+                status_item = (status_data.get('tradingStatuses') or [{}])[0]
+                imoex_price = _tinvest_money_to_float(price_item.get('price'))
+                if imoex_price is not None and imoex_price != 0:
+                    indices_data['imoex'] = {
+                        'name': 'IMOEX',
+                        'price': imoex_price,
+                        'change_pct': 0,
+                        'is_live': _tinvest_is_live_status(status_item.get('tradingStatus'))
+                    }
+                    logger.info("✅ IMOEX получен из T-Invest API")
+            except Exception as e:
+                logger.error(f"Ошибка получения IMOEX из T-Invest: {e}")
+
+        # Fallback IMOEX через MOEX ISS (если T-Invest не дал цену)
+        if 'imoex' not in indices_data:
+            logger.debug("Запрашиваю индексы MOEX (fallback)...")
+            try:
+                async with session.get(
+                    "https://iss.moex.com/iss/engines/stock/markets/index/boards/SNDX/securities.json",
+                    params={'iss.meta': 'off', 'iss.only': 'securities,marketdata'},
+                    timeout=_TIMEOUT
+                ) as resp:
+                    if resp.status == 200:
+                        data = await safe_json_response(resp)
+                        if 'marketdata' in data and 'data' in data['marketdata']:
+                            marketdata_cols = data['marketdata']['columns']
+                            for row in data['marketdata']['data']:
+                                row_data = dict(zip(marketdata_cols, row))
+                                if row_data.get('SECID') == 'IMOEX':
+                                    last_value = row_data.get('LAST')
+                                    price = last_value or row_data.get('CURRENTVALUE') or row_data.get('PREVPRICE')
+                                    if price:
+                                        indices_data['imoex'] = {
+                                            'name': 'IMOEX',
+                                            'price': price,
+                                            'change_pct': row_data.get('CHANGEPRCNT', 0),
+                                            'is_live': last_value is not None
+                                        }
+            except Exception as e:
+                logger.error(f"Ошибка получения индексов MOEX: {e}")
         
         # S&P 500 через FMP (основной источник) или Alpha Vantage
         logger.debug("Запрашиваю S&P 500...")
@@ -519,32 +672,33 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
         except Exception as e:
             logger.debug(f"Ошибка получения S&P 500 из FMP: {e}")
         
-        # Fallback: Alpha Vantage SPY
-        try:
-            url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=SPY&apikey={ALPHA_VANTAGE_KEY}"
-            async with session.get(url, timeout=_TIMEOUT) as resp:
-                if resp.status == 200:
-                    sp500_data = await safe_json_response(resp)
-                    if 'Global Quote' in sp500_data and '05. price' in sp500_data['Global Quote']:
-                        spy_price = float(sp500_data['Global Quote']['05. price'])
-                        # Приблизительная конвертация SPY в S&P 500
-                        sp500_price = spy_price * 10
-                        change_pct = float(sp500_data['Global Quote'].get('10. change percent', '0%').replace('%', ''))
-                        
-                        # Проверяем, открыт ли рынок (если есть время торговли в данных)
-                        trading_status = sp500_data['Global Quote'].get('07. latest trading day', '')
-                        is_live = bool(trading_status)  # Если есть дата торговли, считаем что это актуальные данные
-                        
-                        indices_data['sp500'] = {
-                            'name': 'S&P 500',
-                            'price': sp500_price,
-                            'change_pct': change_pct,
-                            'is_live': is_live
-                        }
-                        logger.info(f"✅ S&P 500 получен из Alpha Vantage: {sp500_price:.2f}")
-        except Exception as e:
-            logger.error(f"Ошибка получения S&P 500: {e}")
-    
+        # Fallback: Alpha Vantage SPY (только если FMP не дал данные)
+        if 'sp500' not in indices_data:
+            try:
+                url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=SPY&apikey={ALPHA_VANTAGE_KEY}"
+                async with session.get(url, timeout=_TIMEOUT) as resp:
+                    if resp.status == 200:
+                        sp500_data = await safe_json_response(resp)
+                        if 'Global Quote' in sp500_data and '05. price' in sp500_data['Global Quote']:
+                            spy_price = float(sp500_data['Global Quote']['05. price'])
+                            # Приблизительная конвертация SPY в S&P 500
+                            sp500_price = spy_price * 10
+                            change_pct = float(sp500_data['Global Quote'].get('10. change percent', '0%').replace('%', ''))
+                            
+                            # Проверяем, открыт ли рынок (если есть время торговли в данных)
+                            trading_status = sp500_data['Global Quote'].get('07. latest trading day', '')
+                            is_live = bool(trading_status)  # Если есть дата торговли, считаем что это актуальные данные
+                            
+                            indices_data['sp500'] = {
+                                'name': 'S&P 500',
+                                'price': sp500_price,
+                                'change_pct': change_pct,
+                                'is_live': is_live
+                            }
+                            logger.info(f"✅ S&P 500 получен из Alpha Vantage: {sp500_price:.2f}")
+            except Exception as e:
+                logger.error(f"Ошибка получения S&P 500: {e}")
+
     except Exception as e:
         logger.error(f"Общая ошибка получения индексов: {e}")
     
