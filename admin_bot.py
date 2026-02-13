@@ -1069,6 +1069,7 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
     try:
         session = await get_http_session()
         current_prices = {}
+        estimated_assets = set()
         
         # Получаем данные параллельно с кэшированием
         async def fetch_cbr():
@@ -1127,7 +1128,21 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
                 result = {}
                 for key in ['gold', 'silver', 'brent', 'urals']:
                     if key in commodities:
-                        result[key] = commodities[key].get('price')
+                        commodity_info = commodities[key]
+                        result[key] = commodity_info.get('price')
+                        # Уведомления не отправляем, если цена расчетная.
+                        # Для Urals цена всегда расчетная.
+                        note = str(commodity_info.get('note', '')).lower()
+                        name = str(commodity_info.get('name', '')).lower()
+                        is_estimated = (
+                            key == 'urals'
+                            or 'расчет' in note
+                            or 'calculated' in note
+                            or 'расчет' in name
+                            or 'calculated' in name
+                        )
+                        if is_estimated:
+                            estimated_assets.add(key)
                 return result
             except Exception as e:
                 logger.error(f"Ошибка получения товаров для проверки: {e}")
@@ -1166,6 +1181,8 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
             for asset, current_price in current_prices.items():
                 if current_price is None:
                     continue
+                if asset in estimated_assets:
+                    continue
                 
                 previous_price = price_history.get(asset)
                 if previous_price is None:
@@ -1185,6 +1202,8 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
             for asset, alert_threshold in alerts.items():
                 current_price = current_prices.get(asset)
                 if current_price is None:
+                    continue
+                if asset in estimated_assets:
                     continue
 
                 # Отправляем алерт только при пересечении порога снизу вверх,
