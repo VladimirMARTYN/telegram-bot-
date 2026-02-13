@@ -16,6 +16,9 @@ API_NINJAS_KEY = os.getenv('API_NINJAS_KEY', 'demo')
 FMP_API_KEY = os.getenv('FMP_API_KEY', 'demo')
 ALPHA_VANTAGE_KEY = os.getenv('ALPHA_VANTAGE_KEY', 'demo')
 EIA_API_KEY = os.getenv('EIA_API_KEY', 'demo')
+TINVEST_API_TOKEN = os.getenv('TINVEST_API_TOKEN', '')
+FINNHUB_API_KEY = os.getenv('FINNHUB_API_KEY', 'demo')
+TINVEST_API_TOKEN = os.getenv('TINVEST_API_TOKEN', '')
 
 # Константы для настроек бота
 DEFAULT_THRESHOLD = 2.0  # Порог изменений по умолчанию (%)
