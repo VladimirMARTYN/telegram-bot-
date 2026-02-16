@@ -159,6 +159,25 @@ async def _safe_json(resp: aiohttp.ClientResponse) -> Dict[str, Any]:
         return json.loads(text)
 
 
+def _money_to_float(value: Any) -> Optional[float]:
+    if not isinstance(value, dict):
+        return None
+    units = value.get("units")
+    nano = value.get("nano")
+    if units is None:
+        return None
+    try:
+        return float(units) + float(nano or 0) / 1_000_000_000
+    except Exception:
+        return None
+
+
+def _format_rub(value: Optional[float]) -> str:
+    if value is None:
+        return "н/д"
+    return f"{value:,.2f} ₽".replace(",", " ")
+
+
 async def _get_primary_account_id(session: aiohttp.ClientSession, headers: Dict[str, str]) -> str:
     async with session.post(
         f"{_TINVEST_REST_BASE}/tinkoff.public.invest.api.contract.v1.UsersService/GetAccounts",
@@ -185,6 +204,57 @@ async def _get_primary_account_id(session: aiohttp.ClientSession, headers: Dict[
     if not account_id:
         raise RuntimeError("Не удалось определить ID счета")
     return account_id
+
+
+async def _get_account_snapshot(
+    session: aiohttp.ClientSession,
+    headers: Dict[str, str],
+    account_id: str,
+) -> Dict[str, Optional[float]]:
+    """Вернуть стоимость портфеля и денежный остаток счета."""
+    portfolio_total: Optional[float] = None
+    cash_total: Optional[float] = None
+
+    # Общая стоимость портфеля.
+    try:
+        async with session.post(
+            f"{_TINVEST_REST_BASE}/tinkoff.public.invest.api.contract.v1.OperationsService/GetPortfolio",
+            headers=headers,
+            json={"accountId": account_id},
+            timeout=API_TIMEOUT,
+        ) as resp:
+            if resp.status == 200:
+                data = await _safe_json(resp)
+                portfolio = data.get("totalAmountPortfolio") or {}
+                portfolio_total = _money_to_float(portfolio)
+    except Exception as e:
+        logger.warning(f"Не удалось получить портфель: {e}")
+
+    # Денежные остатки по счету.
+    try:
+        async with session.post(
+            f"{_TINVEST_REST_BASE}/tinkoff.public.invest.api.contract.v1.OperationsService/GetPositions",
+            headers=headers,
+            json={"accountId": account_id},
+            timeout=API_TIMEOUT,
+        ) as resp:
+            if resp.status == 200:
+                data = await _safe_json(resp)
+                money_items = data.get("money", [])
+                cash_total = 0.0
+                has_any = False
+                for money in money_items:
+                    if str(money.get("currency", "")).upper() == "RUB":
+                        val = _money_to_float(money)
+                        if val is not None:
+                            cash_total += val
+                            has_any = True
+                if not has_any:
+                    cash_total = None
+    except Exception as e:
+        logger.warning(f"Не удалось получить денежные остатки: {e}")
+
+    return {"portfolio_total": portfolio_total, "cash_total": cash_total}
 
 
 async def _resolve_share_by_ticker(
@@ -474,12 +544,30 @@ async def autobuy_status_command(update: Update, context: ContextTypes.DEFAULT_T
 
     settings = load_autobuy_settings()
     status = "🟢 Включена" if settings.get("enabled") else "🔴 Выключена"
+    portfolio_str = "н/д"
+    cash_str = "н/д"
+
+    if TINVEST_API_TOKEN:
+        headers = {
+            "Authorization": f"Bearer {TINVEST_API_TOKEN}",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                account_id = await _get_primary_account_id(session, headers)
+                snapshot = await _get_account_snapshot(session, headers, account_id)
+                portfolio_str = _format_rub(snapshot.get("portfolio_total"))
+                cash_str = _format_rub(snapshot.get("cash_total"))
+        except Exception as e:
+            logger.warning(f"Не удалось получить snapshot счета в autobuy_status: {e}")
 
     lines = [
         "📋 Статус автопокупки",
         f"Статус: {status}",
         f"Время: {settings.get('daily_time', DEFAULT_AUTOBUY_TIME)} ({settings.get('timezone', DEFAULT_TIMEZONE_NAME)})",
         f"Последний запуск: {settings.get('last_run_date') or 'не выполнялся'}",
+        f"Портфель (оценка): {portfolio_str}",
+        f"Денежный остаток (RUB): {cash_str}",
         "",
         "Позиции:",
     ]
