@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-Отдельный модуль автопокупки SBER через T-Invest API.
-Можно отключить/откатить модуль, убрав его импорт и команды из admin_bot.py.
+Отдельный модуль автопокупки акций через T-Invest API.
+Все настройки меняются командами бота, без новых деплоев.
 """
 
 import json
@@ -11,7 +11,7 @@ import logging
 import os
 import threading
 from datetime import datetime, time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 import aiohttp
@@ -25,10 +25,9 @@ from utils import is_admin
 logger = logging.getLogger(__name__)
 
 AUTOBUY_SETTINGS_FILE = "autobuy_settings.json"
-AUTOBUY_JOB_NAME = "autobuy_sber_daily"
-SBER_FIGI = "BBG004730N88"
+AUTOBUY_JOB_NAME = "autobuy_daily"
 DEFAULT_AUTOBUY_TIME = "10:00"
-DEFAULT_QUANTITY = 1
+DEFAULT_TIMEZONE_NAME = DEFAULT_TIMEZONE
 _TINVEST_REST_BASE = "https://invest-public-api.tinkoff.ru/rest"
 
 _settings_lock = threading.RLock()
@@ -51,14 +50,63 @@ def _atomic_write_json(file_path: str, data: Dict[str, Any]) -> None:
 def _default_settings() -> Dict[str, Any]:
     return {
         "enabled": False,
-        "ticker": "SBER",
-        "figi": SBER_FIGI,
-        "quantity": DEFAULT_QUANTITY,
+        "positions": [{"ticker": "SBER", "qty": 1}],
         "daily_time": DEFAULT_AUTOBUY_TIME,
-        "timezone": DEFAULT_TIMEZONE,
+        "timezone": DEFAULT_TIMEZONE_NAME,
         "last_run_date": None,
-        "last_order_id": None,
+        "last_results": [],
     }
+
+
+def _normalize_settings(raw: Any) -> Dict[str, Any]:
+    settings = _default_settings()
+    if isinstance(raw, dict):
+        settings.update(raw)
+
+    # Миграция со старого формата (ticker/quantity).
+    positions: List[Dict[str, Any]] = []
+
+    if isinstance(settings.get("positions"), list):
+        for item in settings["positions"]:
+            if not isinstance(item, dict):
+                continue
+            ticker = str(item.get("ticker", "")).upper().strip()
+            qty_raw = item.get("qty", item.get("quantity", 1))
+            try:
+                qty = int(qty_raw)
+            except Exception:
+                continue
+            if ticker and qty > 0:
+                positions.append({"ticker": ticker, "qty": qty})
+
+    if not positions:
+        legacy_ticker = str(settings.get("ticker", "")).upper().strip()
+        if legacy_ticker:
+            try:
+                legacy_qty = int(settings.get("quantity", 1))
+            except Exception:
+                legacy_qty = 1
+            positions.append({"ticker": legacy_ticker, "qty": max(1, legacy_qty)})
+
+    # Удаляем дубликаты по тикеру, оставляя последнее значение qty.
+    dedup: Dict[str, int] = {}
+    for pos in positions:
+        dedup[pos["ticker"]] = pos["qty"]
+    settings["positions"] = [{"ticker": t, "qty": q} for t, q in dedup.items()]
+
+    # Валидация времени.
+    time_str = str(settings.get("daily_time", DEFAULT_AUTOBUY_TIME))
+    if not _validate_time_format(time_str):
+        settings["daily_time"] = DEFAULT_AUTOBUY_TIME
+
+    tz_name = str(settings.get("timezone", DEFAULT_TIMEZONE_NAME))
+    try:
+        pytz.timezone(tz_name)
+        settings["timezone"] = tz_name
+    except Exception:
+        settings["timezone"] = DEFAULT_TIMEZONE_NAME
+
+    return settings
 
 
 def initialize_autobuy_settings() -> None:
@@ -72,19 +120,17 @@ def load_autobuy_settings() -> Dict[str, Any]:
             return _default_settings()
         try:
             with open(AUTOBUY_SETTINGS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
+                raw = json.load(f)
         except Exception as e:
             logger.error(f"Ошибка чтения {AUTOBUY_SETTINGS_FILE}: {e}")
             return _default_settings()
-
-    settings = _default_settings()
-    settings.update(data if isinstance(data, dict) else {})
-    return settings
+    return _normalize_settings(raw)
 
 
 def save_autobuy_settings(settings: Dict[str, Any]) -> None:
     with _settings_lock:
-        _atomic_write_json(AUTOBUY_SETTINGS_FILE, settings)
+        normalized = _normalize_settings(settings)
+        _atomic_write_json(AUTOBUY_SETTINGS_FILE, normalized)
 
 
 def _validate_time_format(time_str: str) -> bool:
@@ -129,48 +175,93 @@ async def _get_primary_account_id(session: aiohttp.ClientSession, headers: Dict[
     if not accounts:
         raise RuntimeError("У брокера не найдено доступных счетов")
 
-    # Предпочитаем открытый аккаунт.
     for account in accounts:
-        status = str(account.get("status", ""))
-        if status == "ACCOUNT_STATUS_OPEN":
-            return account.get("id")
+        if str(account.get("status", "")) == "ACCOUNT_STATUS_OPEN":
+            account_id = account.get("id")
+            if account_id:
+                return account_id
 
-    return accounts[0].get("id")
+    account_id = accounts[0].get("id")
+    if not account_id:
+        raise RuntimeError("Не удалось определить ID счета")
+    return account_id
 
 
-async def place_market_buy_sber(quantity: int) -> Dict[str, Any]:
-    if not TINVEST_API_TOKEN:
-        raise RuntimeError("TINVEST_API_TOKEN не задан")
+async def _resolve_share_by_ticker(
+    session: aiohttp.ClientSession,
+    headers: Dict[str, str],
+    ticker: str,
+) -> Dict[str, str]:
+    payload = {"query": ticker}
+    async with session.post(
+        f"{_TINVEST_REST_BASE}/tinkoff.public.invest.api.contract.v1.InstrumentsService/FindInstrument",
+        headers=headers,
+        json=payload,
+        timeout=API_TIMEOUT,
+    ) as resp:
+        if resp.status != 200:
+            body = await resp.text()
+            raise RuntimeError(f"FindInstrument failed ({resp.status}): {body[:300]}")
+        data = await _safe_json(resp)
 
-    qty = max(1, int(quantity))
-    headers = {
-        "Authorization": f"Bearer {TINVEST_API_TOKEN}",
-        "Content-Type": "application/json",
+    instruments = data.get("instruments", [])
+    if not instruments:
+        raise RuntimeError(f"Инструмент {ticker} не найден")
+
+    ticker_upper = ticker.upper()
+
+    def is_share(item: Dict[str, Any]) -> bool:
+        instrument_type = str(item.get("instrumentType", "")).lower()
+        return "share" in instrument_type or "акц" in instrument_type
+
+    exact = [i for i in instruments if str(i.get("ticker", "")).upper() == ticker_upper]
+    candidates = exact if exact else instruments
+    shares = [i for i in candidates if is_share(i)]
+    if shares:
+        candidates = shares
+
+    tradable = [i for i in candidates if i.get("apiTradeAvailableFlag", True)]
+    if tradable:
+        candidates = tradable
+
+    for item in candidates:
+        figi = item.get("figi")
+        if figi:
+            return {
+                "ticker": ticker_upper,
+                "figi": figi,
+                "name": item.get("name", ticker_upper),
+            }
+
+    raise RuntimeError(f"Для {ticker_upper} не найден FIGI для торгов")
+
+
+async def _place_market_buy(
+    session: aiohttp.ClientSession,
+    headers: Dict[str, str],
+    account_id: str,
+    figi: str,
+    qty: int,
+) -> Dict[str, Any]:
+    payload = {
+        "instrumentId": figi,
+        "quantity": str(max(1, int(qty))),
+        "direction": "ORDER_DIRECTION_BUY",
+        "accountId": account_id,
+        "orderType": "ORDER_TYPE_MARKET",
+        "orderId": str(uuid4()),
     }
-
-    async with aiohttp.ClientSession() as session:
-        account_id = await _get_primary_account_id(session, headers)
-        payload = {
-            "instrumentId": SBER_FIGI,
-            "quantity": str(qty),
-            "direction": "ORDER_DIRECTION_BUY",
-            "accountId": account_id,
-            "orderType": "ORDER_TYPE_MARKET",
-            "orderId": str(uuid4()),
-        }
-
-        async with session.post(
-            f"{_TINVEST_REST_BASE}/tinkoff.public.invest.api.contract.v1.OrdersService/PostOrder",
-            headers=headers,
-            json=payload,
-            timeout=API_TIMEOUT,
-        ) as resp:
-            body = await _safe_json(resp)
-            if resp.status != 200:
-                raise RuntimeError(f"PostOrder failed ({resp.status}): {str(body)[:500]}")
+    async with session.post(
+        f"{_TINVEST_REST_BASE}/tinkoff.public.invest.api.contract.v1.OrdersService/PostOrder",
+        headers=headers,
+        json=payload,
+        timeout=API_TIMEOUT,
+    ) as resp:
+        body = await _safe_json(resp)
+        if resp.status != 200:
+            raise RuntimeError(f"PostOrder failed ({resp.status}): {str(body)[:500]}")
 
     return {
-        "account_id": account_id,
         "request_order_id": payload["orderId"],
         "response_order_id": body.get("orderId"),
         "execution_report_status": body.get("executionReportStatus"),
@@ -188,12 +279,16 @@ def ensure_autobuy_job(job_queue) -> None:
     if not settings.get("enabled", False):
         return
 
+    if not settings.get("positions"):
+        logger.warning("⚠️ Автопокупка включена, но список инструментов пуст")
+        return
+
     time_str = settings.get("daily_time", DEFAULT_AUTOBUY_TIME)
     if not _validate_time_format(time_str):
         logger.error(f"Некорректное время автопокупки: {time_str}")
         return
 
-    tz_name = settings.get("timezone", DEFAULT_TIMEZONE)
+    tz_name = settings.get("timezone", DEFAULT_TIMEZONE_NAME)
     tz = pytz.timezone(tz_name)
     hour, minute = map(int, time_str.split(":"))
     run_time = time(hour=hour, minute=minute, tzinfo=tz)
@@ -203,7 +298,7 @@ def ensure_autobuy_job(job_queue) -> None:
         time=run_time,
         name=AUTOBUY_JOB_NAME,
     )
-    logger.info(f"✅ Автопокупка SBER запланирована на {time_str} ({tz_name})")
+    logger.info(f"✅ Автопокупка запланирована на {time_str} ({tz_name})")
 
 
 async def autobuy_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -211,36 +306,114 @@ async def autobuy_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not settings.get("enabled", False):
         return
 
-    tz = pytz.timezone(settings.get("timezone", DEFAULT_TIMEZONE))
+    positions = settings.get("positions", [])
+    if not positions:
+        logger.info("⏭️ Автопокупка включена, но нет инструментов")
+        return
+
+    tz = pytz.timezone(settings.get("timezone", DEFAULT_TIMEZONE_NAME))
     today_str = datetime.now(tz).date().isoformat()
     if settings.get("last_run_date") == today_str:
         logger.info("⏭️ Автопокупка уже выполнена сегодня, пропуск")
         return
 
+    if not TINVEST_API_TOKEN:
+        err = "TINVEST_API_TOKEN не задан"
+        logger.error(err)
+        await context.bot.send_message(chat_id=ADMIN_USER_ID, text=f"❌ Ошибка автопокупки: {err}")
+        return
+
+    headers = {
+        "Authorization": f"Bearer {TINVEST_API_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    results: List[Dict[str, Any]] = []
+
     try:
-        result = await place_market_buy_sber(settings.get("quantity", DEFAULT_QUANTITY))
+        async with aiohttp.ClientSession() as session:
+            account_id = await _get_primary_account_id(session, headers)
+
+            for pos in positions:
+                ticker = str(pos.get("ticker", "")).upper().strip()
+                qty = int(pos.get("qty", 1))
+                if not ticker or qty <= 0:
+                    continue
+
+                try:
+                    instrument = await _resolve_share_by_ticker(session, headers, ticker)
+                    order_result = await _place_market_buy(
+                        session=session,
+                        headers=headers,
+                        account_id=account_id,
+                        figi=instrument["figi"],
+                        qty=qty,
+                    )
+                    results.append(
+                        {
+                            "ticker": ticker,
+                            "qty": qty,
+                            "ok": True,
+                            "order_id": order_result.get("response_order_id") or order_result.get("request_order_id"),
+                            "status": order_result.get("execution_report_status"),
+                        }
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка покупки {ticker}: {e}")
+                    results.append({"ticker": ticker, "qty": qty, "ok": False, "error": str(e)})
+
         settings["last_run_date"] = today_str
-        settings["last_order_id"] = result.get("response_order_id") or result.get("request_order_id")
+        settings["last_results"] = results
         save_autobuy_settings(settings)
 
-        await context.bot.send_message(
-            chat_id=ADMIN_USER_ID,
-            text=(
-                "✅ Автопокупка SBER выполнена\n"
-                f"Количество: {settings.get('quantity', DEFAULT_QUANTITY)} шт\n"
-                f"Order ID: {settings.get('last_order_id')}\n"
-                f"Статус: {result.get('execution_report_status', 'N/A')}"
-            ),
-        )
+        success = [r for r in results if r.get("ok")]
+        failed = [r for r in results if not r.get("ok")]
+
+        lines = [
+            "📈 Автопокупка выполнена",
+            f"Дата: {today_str}",
+            f"Успешно: {len(success)}",
+            f"Ошибок: {len(failed)}",
+            "",
+        ]
+        for r in success:
+            lines.append(f"✅ {r['ticker']} x{r['qty']} | order_id: {r.get('order_id')}")
+        for r in failed:
+            lines.append(f"❌ {r['ticker']} x{r['qty']} | {r.get('error')}")
+
+        await context.bot.send_message(chat_id=ADMIN_USER_ID, text="\n".join(lines))
+
     except Exception as e:
-        logger.error(f"Ошибка автопокупки SBER: {e}")
-        try:
-            await context.bot.send_message(
-                chat_id=ADMIN_USER_ID,
-                text=f"❌ Ошибка автопокупки SBER: {e}",
-            )
-        except Exception:
-            pass
+        logger.error(f"Критическая ошибка автопокупки: {e}")
+        await context.bot.send_message(chat_id=ADMIN_USER_ID, text=f"❌ Критическая ошибка автопокупки: {e}")
+
+
+def _parse_qty(value: str) -> int:
+    qty = int(value)
+    if qty <= 0:
+        raise ValueError
+    return qty
+
+
+def _upsert_position(settings: Dict[str, Any], ticker: str, qty: int) -> None:
+    positions = settings.get("positions", [])
+    updated = False
+    for item in positions:
+        if str(item.get("ticker", "")).upper() == ticker:
+            item["qty"] = qty
+            updated = True
+            break
+    if not updated:
+        positions.append({"ticker": ticker, "qty": qty})
+    settings["positions"] = positions
+
+
+def _remove_position(settings: Dict[str, Any], ticker: str) -> bool:
+    positions = settings.get("positions", [])
+    original_len = len(positions)
+    positions = [p for p in positions if str(p.get("ticker", "")).upper() != ticker]
+    settings["positions"] = positions
+    return len(positions) != original_len
 
 
 async def autobuy_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -255,12 +428,13 @@ async def autobuy_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("❌ Неверный формат времени. Используйте HH:MM")
         return
 
+    if not settings.get("positions"):
+        await update.message.reply_text("❌ Список автопокупки пуст. Добавьте тикер: /autobuy_add SBER 1")
+        return
+
     settings["enabled"] = True
     settings["daily_time"] = time_str
-    settings["timezone"] = DEFAULT_TIMEZONE
-    settings["ticker"] = "SBER"
-    settings["figi"] = SBER_FIGI
-    settings["quantity"] = DEFAULT_QUANTITY
+    settings["timezone"] = DEFAULT_TIMEZONE_NAME
     save_autobuy_settings(settings)
 
     job_queue = _resolve_job_queue(context)
@@ -269,9 +443,8 @@ async def autobuy_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await update.message.reply_text(
         "✅ Автопокупка включена\n"
-        f"Инструмент: SBER\n"
-        f"Количество: {DEFAULT_QUANTITY} шт ежедневно\n"
-        f"Время: {time_str} (Europe/Moscow)"
+        f"Время: {time_str} ({DEFAULT_TIMEZONE_NAME})\n"
+        f"Позиций: {len(settings.get('positions', []))}"
     )
 
 
@@ -290,7 +463,7 @@ async def autobuy_off_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         for job in job_queue.get_jobs_by_name(AUTOBUY_JOB_NAME):
             job.schedule_removal()
 
-    await update.message.reply_text("🛑 Автопокупка SBER отключена")
+    await update.message.reply_text("🛑 Автопокупка отключена")
 
 
 async def autobuy_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -301,11 +474,114 @@ async def autobuy_status_command(update: Update, context: ContextTypes.DEFAULT_T
 
     settings = load_autobuy_settings()
     status = "🟢 Включена" if settings.get("enabled") else "🔴 Выключена"
-    await update.message.reply_text(
-        "📋 Статус автопокупки SBER\n"
-        f"Статус: {status}\n"
-        f"Время: {settings.get('daily_time', DEFAULT_AUTOBUY_TIME)} ({settings.get('timezone', DEFAULT_TIMEZONE)})\n"
-        f"Количество: {settings.get('quantity', DEFAULT_QUANTITY)} шт\n"
-        f"Последний запуск: {settings.get('last_run_date') or 'не выполнялся'}\n"
-        f"Последний order_id: {settings.get('last_order_id') or 'нет'}"
-    )
+
+    lines = [
+        "📋 Статус автопокупки",
+        f"Статус: {status}",
+        f"Время: {settings.get('daily_time', DEFAULT_AUTOBUY_TIME)} ({settings.get('timezone', DEFAULT_TIMEZONE_NAME)})",
+        f"Последний запуск: {settings.get('last_run_date') or 'не выполнялся'}",
+        "",
+        "Позиции:",
+    ]
+    positions = settings.get("positions", [])
+    if positions:
+        for p in positions:
+            lines.append(f"• {p.get('ticker')} x{p.get('qty')}")
+    else:
+        lines.append("• нет")
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def autobuy_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("🚫 Команда доступна только администратору")
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Использование: /autobuy_add <TICKER> <QTY>")
+        return
+
+    ticker = str(context.args[0]).upper().strip()
+    if not ticker.isalnum():
+        await update.message.reply_text("❌ Некорректный тикер")
+        return
+
+    try:
+        qty = _parse_qty(context.args[1])
+    except Exception:
+        await update.message.reply_text("❌ QTY должно быть целым числом > 0")
+        return
+
+    settings = load_autobuy_settings()
+    _upsert_position(settings, ticker, qty)
+    save_autobuy_settings(settings)
+
+    await update.message.reply_text(f"✅ Добавлено в автопокупку: {ticker} x{qty}")
+
+
+async def autobuy_remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("🚫 Команда доступна только администратору")
+        return
+
+    if not context.args:
+        await update.message.reply_text("❌ Использование: /autobuy_remove <TICKER>")
+        return
+
+    ticker = str(context.args[0]).upper().strip()
+    settings = load_autobuy_settings()
+    removed = _remove_position(settings, ticker)
+    save_autobuy_settings(settings)
+
+    if removed:
+        await update.message.reply_text(f"🗑️ Удалено из автопокупки: {ticker}")
+    else:
+        await update.message.reply_text(f"ℹ️ {ticker} не найден в списке автопокупки")
+
+
+async def autobuy_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("🚫 Команда доступна только администратору")
+        return
+
+    settings = load_autobuy_settings()
+    positions = settings.get("positions", [])
+
+    lines = ["🧾 Список автопокупки:"]
+    if not positions:
+        lines.append("• пусто")
+    else:
+        for p in positions:
+            lines.append(f"• {p.get('ticker')} x{p.get('qty')}")
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def autobuy_set_time_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("🚫 Команда доступна только администратору")
+        return
+
+    if not context.args:
+        await update.message.reply_text("❌ Использование: /autobuy_set_time <HH:MM>")
+        return
+
+    time_str = context.args[0].strip()
+    if not _validate_time_format(time_str):
+        await update.message.reply_text("❌ Неверный формат времени. Используйте HH:MM")
+        return
+
+    settings = load_autobuy_settings()
+    settings["daily_time"] = time_str
+    save_autobuy_settings(settings)
+
+    job_queue = _resolve_job_queue(context)
+    if job_queue and settings.get("enabled"):
+        ensure_autobuy_job(job_queue)
+
+    await update.message.reply_text(f"⏰ Время автопокупки обновлено: {time_str} ({DEFAULT_TIMEZONE_NAME})")

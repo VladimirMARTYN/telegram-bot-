@@ -31,7 +31,9 @@ from data_sources import (
 )
 from autobuy_module import (
     configure_autobuy, initialize_autobuy_settings, ensure_autobuy_job,
-    autobuy_on_command, autobuy_off_command, autobuy_status_command
+    autobuy_on_command, autobuy_off_command, autobuy_status_command,
+    autobuy_add_command, autobuy_remove_command, autobuy_list_command,
+    autobuy_set_time_command
 )
 
 # Настройка логирования (должна быть перед импортом reportlab)
@@ -262,9 +264,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/set_daily_time HH:MM - Настроить время сводки\n"
             "/get_daily_settings - Посмотреть настройки\n"
             "/restart_daily_job - Перезапустить задачу сводки\n"
-            "/autobuy_on [HH:MM] - Включить автопокупку SBER (1 шт/день)\n"
-            "/autobuy_off - Выключить автопокупку SBER\n"
-            "/autobuy_status - Статус автопокупки\n\n"
+            "/autobuy_on [HH:MM] - Включить автопокупку\n"
+            "/autobuy_off - Выключить автопокупку\n"
+            "/autobuy_status - Статус автопокупки\n"
+            "/autobuy_add <TICKER> <QTY> - Добавить/обновить позицию\n"
+            "/autobuy_remove <TICKER> - Удалить позицию\n"
+            "/autobuy_list - Список позиций\n"
+            "/autobuy_set_time <HH:MM> - Общее время автопокупки\n\n"
         )
     
     help_text += (
@@ -1965,6 +1971,10 @@ def main() -> None:
     application.add_handler(CommandHandler("autobuy_on", autobuy_on_command))
     application.add_handler(CommandHandler("autobuy_off", autobuy_off_command))
     application.add_handler(CommandHandler("autobuy_status", autobuy_status_command))
+    application.add_handler(CommandHandler("autobuy_add", autobuy_add_command))
+    application.add_handler(CommandHandler("autobuy_remove", autobuy_remove_command))
+    application.add_handler(CommandHandler("autobuy_list", autobuy_list_command))
+    application.add_handler(CommandHandler("autobuy_set_time", autobuy_set_time_command))
     
     # Обработчик callback-запросов для меню настроек
     application.add_handler(CallbackQueryHandler(button_callback))
@@ -2624,7 +2634,8 @@ async def setup_bot_commands(application):
         BotCommand("view_alerts", "Просмотр алертов"),
         BotCommand("settings", "Меню настроек"),
         BotCommand("export_pdf", "Экспорт в PDF"),
-        BotCommand("autobuy_status", "Статус автопокупки SBER")
+        BotCommand("autobuy_status", "Статус автопокупки"),
+        BotCommand("autobuy_list", "Список автопокупки")
     ]
     
     # Команды для администраторов (не добавляем в список команд бота, но они доступны)
@@ -2662,9 +2673,13 @@ async def command_suggestions(update: Update, context: ContextTypes.DEFAULT_TYPE
             "/restart_daily_job - Перезапустить сводку",
             "/test_daily - Тест сводки",
             "/check_subscribers - Проверить подписчиков",
-            "/autobuy_on [HH:MM] - Включить автопокупку SBER",
+            "/autobuy_on [HH:MM] - Включить автопокупку",
             "/autobuy_off - Выключить автопокупку SBER",
-            "/autobuy_status - Статус автопокупки"
+            "/autobuy_status - Статус автопокупки",
+            "/autobuy_add <TICKER> <QTY> - Добавить/обновить позицию",
+            "/autobuy_remove <TICKER> - Удалить позицию",
+            "/autobuy_list - Список позиций",
+            "/autobuy_set_time <HH:MM> - Время автопокупки"
         ]
         
         message = "📋 **ДОСТУПНЫЕ КОМАНДЫ:**\n\n"
