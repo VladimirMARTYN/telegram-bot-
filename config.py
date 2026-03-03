@@ -45,6 +45,13 @@ SUPPORTED_CURRENCIES = ['USD', 'EUR', 'CNY']
 SUPPORTED_CRYPTO = ['BTC', 'TON', 'SOL', 'USDT']
 SUPPORTED_STOCKS = ['SBER', 'YDEX', 'VKCO', 'T', 'GAZP', 'GMKN', 'ROSN', 'LKOH', 'MTSS', 'MFON', 'PIKK', 'SMLT', 'TGLD@', 'TOFZ@', 'DOMRF']
 
+# Серверы для проверки доступности/задержки командой /ping
+PING_TARGETS = [
+    ip.strip()
+    for ip in os.getenv('PING_TARGETS', '1.1.1.1,8.8.8.8,9.9.9.9').split(',')
+    if ip.strip()
+]
+
 # Настройки сохранения данных
 SAVE_DEBOUNCE_DELAY = 5  # Задержка перед сохранением данных (секунды)
 

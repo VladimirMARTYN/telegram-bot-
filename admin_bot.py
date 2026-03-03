@@ -4,6 +4,8 @@
 import logging
 import os
 import asyncio
+import ipaddress
+import re
 from datetime import datetime, time, timedelta
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -18,7 +20,7 @@ from config import (
     DEFAULT_DAILY_TIME, DEFAULT_TIMEZONE, CACHE_TTL_CURRENCIES,
     CACHE_TTL_CRYPTO, CACHE_TTL_STOCKS, CACHE_TTL_COMMODITIES, CACHE_TTL_INDICES,
     SUPPORTED_CURRENCIES, SUPPORTED_CRYPTO, SUPPORTED_STOCKS,
-    FALLBACK_USD_RUB_RATE
+    FALLBACK_USD_RUB_RATE, PING_TARGETS
 )
 from utils import (
     is_admin, get_cached_data, fetch_with_retry, validate_positive_number,
@@ -210,7 +212,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"📋 <b>Основные команды:</b>\n"
         f"/start - Главное меню\n"
         f"/help - Справка\n"
-        f"/ping - Проверка работы\n"
+        f"/ping [IP ...] - Проверка задержки до серверов\n"
         f"/rates - Курсы валют, криптовалют и акций\n\n"
         f"🔔 <b>Уведомления:</b>\n"
         f"/subscribe - Подписаться на уведомления о резких изменениях\n"
@@ -244,7 +246,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "📋 <b>Команды:</b>\n"
         "/start - Главное меню\n"
         "/help - Эта справка\n"
-        "/ping - Проверка работы\n"
+        "/ping [IP ...] - Проверка задержки до серверов\n"
         "/rates - Показать все курсы\n\n"
         "🔔 <b>Уведомления:</b>\n"
         "/subscribe - Подписаться на уведомления\n"
@@ -288,8 +290,98 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда /ping"""
+    async def ping_host(host: str, count: int = 4, timeout_seconds: int = 2) -> dict:
+        cmd = [
+            "ping",
+            "-c", str(count),
+            "-W", str(timeout_seconds),
+            host
+        ]
+
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        output = (stdout or b"").decode("utf-8", errors="ignore")
+        error_text = (stderr or b"").decode("utf-8", errors="ignore").strip()
+
+        packet_loss_match = re.search(r"([0-9]+(?:\\.[0-9]+)?)% packet loss", output)
+        rtt_match = re.search(
+            r"(?:rtt|round-trip) min/avg/max(?:/(?:mdev|stddev))? = "
+            r"([0-9]+(?:\\.[0-9]+)?)/([0-9]+(?:\\.[0-9]+)?)/([0-9]+(?:\\.[0-9]+)?)/([0-9]+(?:\\.[0-9]+)?) ms",
+            output
+        )
+
+        result = {
+            "host": host,
+            "ok": process.returncode == 0,
+            "packet_loss": packet_loss_match.group(1) if packet_loss_match else "100",
+            "min_ms": None,
+            "avg_ms": None,
+            "max_ms": None,
+            "raw_error": error_text
+        }
+
+        if rtt_match:
+            result["min_ms"] = rtt_match.group(1)
+            result["avg_ms"] = rtt_match.group(2)
+            result["max_ms"] = rtt_match.group(3)
+
+        return result
+
     current_time = get_moscow_time().strftime("%d.%m.%Y %H:%M:%S")
-    await update.message.reply_text(f"🏓 Понг! Время: {current_time}")
+    requested_hosts = [arg.strip() for arg in context.args if arg.strip()]
+    hosts = requested_hosts if requested_hosts else PING_TARGETS
+
+    if not hosts:
+        await update.message.reply_text("❌ Не задано ни одного сервера для проверки (/ping <IP1> <IP2> ...).")
+        return
+
+    if len(hosts) > 10:
+        await update.message.reply_text("❌ Можно проверить не более 10 серверов за один вызов.")
+        return
+
+    invalid_hosts = []
+    valid_hosts = []
+    for host in hosts:
+        try:
+            ipaddress.ip_address(host)
+            valid_hosts.append(host)
+        except ValueError:
+            invalid_hosts.append(host)
+
+    if invalid_hosts:
+        await update.message.reply_text(
+            "❌ Невалидные IP: " + ", ".join(invalid_hosts) + "\n"
+            "Использование: /ping 1.1.1.1 8.8.8.8"
+        )
+        return
+
+    await update.message.reply_text(f"📡 Проверяю {len(valid_hosts)} сервер(а)...")
+
+    ping_results = await asyncio.gather(*(ping_host(host) for host in valid_hosts), return_exceptions=True)
+
+    lines = [f"🏓 <b>Ping report</b> ({current_time})"]
+    for host, item in zip(valid_hosts, ping_results):
+        if isinstance(item, Exception):
+            lines.append(f"• <code>{host}</code>: ❌ ошибка ({escape_html(str(item))})")
+            continue
+
+        loss = item["packet_loss"]
+        if item["avg_ms"] is not None:
+            status = "✅" if float(loss) < 100 else "⚠️"
+            lines.append(
+                f"• <code>{host}</code>: {status} avg {item['avg_ms']} ms "
+                f"(min {item['min_ms']}, max {item['max_ms']}), loss {loss}%"
+            )
+        else:
+            err = escape_html(item["raw_error"] or "таймаут/недоступен")
+            lines.append(f"• <code>{host}</code>: ❌ недоступен, loss {loss}% ({err})")
+
+    lines.append("\n💡 Использование: <code>/ping 1.1.1.1 8.8.8.8</code>")
+    await update.message.reply_html("\n".join(lines))
 
 async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Получить полные курсы валют, криптовалют, акций, товаров и индексов"""
@@ -2627,7 +2719,7 @@ async def setup_bot_commands(application):
         BotCommand("start", "Запустить бота"),
         BotCommand("help", "Справка по командам"),
         BotCommand("rates", "Курсы валют и индексы"),
-        BotCommand("ping", "Проверка работы бота"),
+        BotCommand("ping", "Ping по IP (avg/min/max)"),
         BotCommand("subscribe", "Подписаться на уведомления"),
         BotCommand("unsubscribe", "Отписаться от уведомлений"),
         BotCommand("set_alert", "Установить алерт"),
@@ -2657,7 +2749,7 @@ async def command_suggestions(update: Update, context: ContextTypes.DEFAULT_TYPE
             "/start - Запустить бота",
             "/help - Справка по командам",
             "/rates - Курсы валют и индексы",
-            "/ping - Проверка работы бота",
+            "/ping [IP ...] - Ping до серверов",
             "/subscribe - Подписаться на уведомления",
             "/unsubscribe - Отписаться от уведомлений",
             "/set_alert - Установить алерт",
