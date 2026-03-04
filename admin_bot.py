@@ -7,7 +7,7 @@ import asyncio
 import ipaddress
 import re
 import shutil
-import time
+import time as time_module
 from datetime import datetime, time, timedelta
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -299,11 +299,11 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         last_error = ""
 
         for port in ports_to_try:
-            started = time.perf_counter()
+            started = time_module.perf_counter()
             try:
                 open_conn = asyncio.open_connection(host, port)
                 reader, writer = await asyncio.wait_for(open_conn, timeout=timeout_seconds)
-                latency_ms = (time.perf_counter() - started) * 1000
+                latency_ms = (time_module.perf_counter() - started) * 1000
                 writer.close()
                 await writer.wait_closed()
                 return latency_ms, port, ""
