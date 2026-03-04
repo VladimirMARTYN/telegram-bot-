@@ -214,7 +214,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"📋 <b>Основные команды:</b>\n"
         f"/start - Главное меню\n"
         f"/help - Справка\n"
-        f"/ping [IP ...] - Проверка задержки до серверов\n"
+        f"/ping [IP[:PORT] ...] - Проверка задержки до серверов\n"
         f"/rates - Курсы валют, криптовалют и акций\n\n"
         f"🔔 <b>Уведомления:</b>\n"
         f"/subscribe - Подписаться на уведомления о резких изменениях\n"
@@ -248,7 +248,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "📋 <b>Команды:</b>\n"
         "/start - Главное меню\n"
         "/help - Эта справка\n"
-        "/ping [IP ...] - Проверка задержки до серверов\n"
+        "/ping [IP[:PORT] ...] - Проверка задержки до серверов\n"
         "/rates - Показать все курсы\n\n"
         "🔔 <b>Уведомления:</b>\n"
         "/subscribe - Подписаться на уведомления\n"
@@ -293,26 +293,72 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда /ping"""
     ping_binary = shutil.which("ping")
+    default_tcp_ports = (443, 80, 53)
 
-    async def tcp_probe_once(host: str, timeout_seconds: int = 2):
-        ports_to_try = (443, 80, 53)
-        last_error = ""
+    def parse_host_specs(args):
+        """Парсит аргументы /ping в список {'host': ip, 'port': optional_int}."""
+        if not args:
+            return [{"host": host, "port": None} for host in PING_TARGETS], []
 
-        for port in ports_to_try:
-            started = time_module.perf_counter()
+        normalized_args = [arg.strip() for arg in args if arg.strip()]
+        specs = []
+        errors = []
+
+        # Спец-случай: /ping <IP> <PORT>
+        if len(normalized_args) == 2:
+            first, second = normalized_args
+            if second.isdigit():
+                try:
+                    ipaddress.ip_address(first)
+                    port_value = int(second)
+                    if not 1 <= port_value <= 65535:
+                        errors.append(f"{first}:{second} (порт вне диапазона 1-65535)")
+                    else:
+                        return [{"host": first, "port": port_value}], []
+                except ValueError:
+                    pass
+
+        for raw_item in normalized_args:
+            if ":" in raw_item:
+                host_part, port_part = raw_item.rsplit(":", 1)
+                host_part = host_part.strip()
+                port_part = port_part.strip()
+                try:
+                    ipaddress.ip_address(host_part)
+                except ValueError:
+                    errors.append(f"{raw_item} (невалидный IP)")
+                    continue
+                if not port_part.isdigit():
+                    errors.append(f"{raw_item} (порт должен быть числом)")
+                    continue
+                port_value = int(port_part)
+                if not 1 <= port_value <= 65535:
+                    errors.append(f"{raw_item} (порт вне диапазона 1-65535)")
+                    continue
+                specs.append({"host": host_part, "port": port_value})
+                continue
+
             try:
-                open_conn = asyncio.open_connection(host, port)
-                reader, writer = await asyncio.wait_for(open_conn, timeout=timeout_seconds)
-                latency_ms = (time_module.perf_counter() - started) * 1000
-                writer.close()
-                await writer.wait_closed()
-                return latency_ms, port, ""
-            except Exception as exc:
-                last_error = f"{type(exc).__name__}: {exc}"
+                ipaddress.ip_address(raw_item)
+                specs.append({"host": raw_item, "port": None})
+            except ValueError:
+                errors.append(f"{raw_item} (невалидный IP)")
 
-        return None, None, last_error
+        return specs, errors
 
-    async def ping_host(host: str, count: int = 4, timeout_seconds: int = 2) -> dict:
+    async def tcp_probe_port_once(host: str, port: int, timeout_seconds: int = 2):
+        started = time_module.perf_counter()
+        try:
+            open_conn = asyncio.open_connection(host, port)
+            _, writer = await asyncio.wait_for(open_conn, timeout=timeout_seconds)
+            latency_ms = (time_module.perf_counter() - started) * 1000
+            writer.close()
+            await writer.wait_closed()
+            return latency_ms, ""
+        except Exception as exc:
+            return None, f"{type(exc).__name__}: {exc}"
+
+    async def ping_host(host: str, port: int | None, count: int = 4, timeout_seconds: int = 2) -> dict:
         result = {
             "host": host,
             "ok": False,
@@ -321,7 +367,9 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "avg_ms": None,
             "max_ms": None,
             "raw_error": "",
-            "mode": "tcp_fallback"
+            "mode": "tcp_fallback",
+            "probe_port": port,
+            "checked_ports": []
         }
 
         if ping_binary:
@@ -359,21 +407,33 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 result["max_ms"] = rtt_match.group(3)
             return result
 
+        ports_to_try = [port] if port is not None else list(default_tcp_ports)
+        result["checked_ports"] = ports_to_try
         latencies = []
         failures = 0
-        used_port = None
+        used_port = port
         last_error = ""
 
         for _ in range(count):
-            latency_ms, port, err = await tcp_probe_once(host, timeout_seconds=timeout_seconds)
-            if latency_ms is None:
-                failures += 1
+            sample_latency = None
+            for candidate_port in ports_to_try:
+                latency_ms, err = await tcp_probe_port_once(
+                    host=host,
+                    port=candidate_port,
+                    timeout_seconds=timeout_seconds
+                )
+                if latency_ms is not None:
+                    sample_latency = latency_ms
+                    if used_port is None:
+                        used_port = candidate_port
+                    break
                 if err:
                     last_error = err
-                continue
-            latencies.append(latency_ms)
-            if used_port is None:
-                used_port = port
+
+            if sample_latency is None:
+                failures += 1
+            else:
+                latencies.append(sample_latency)
 
         loss = (failures / count) * 100
         result["packet_loss"] = f"{loss:.1f}".rstrip("0").rstrip(".")
@@ -390,57 +450,63 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return result
 
     current_time = get_moscow_time().strftime("%d.%m.%Y %H:%M:%S")
-    requested_hosts = [arg.strip() for arg in context.args if arg.strip()]
-    hosts = requested_hosts if requested_hosts else PING_TARGETS
+    host_specs, parse_errors = parse_host_specs(context.args)
 
-    if not hosts:
-        await update.message.reply_text("❌ Не задано ни одного сервера для проверки (/ping <IP1> <IP2> ...).")
-        return
-
-    if len(hosts) > 10:
-        await update.message.reply_text("❌ Можно проверить не более 10 серверов за один вызов.")
-        return
-
-    invalid_hosts = []
-    valid_hosts = []
-    for host in hosts:
-        try:
-            ipaddress.ip_address(host)
-            valid_hosts.append(host)
-        except ValueError:
-            invalid_hosts.append(host)
-
-    if invalid_hosts:
+    if parse_errors:
         await update.message.reply_text(
-            "❌ Невалидные IP: " + ", ".join(invalid_hosts) + "\n"
-            "Использование: /ping 1.1.1.1 8.8.8.8"
+            "❌ Ошибки в аргументах:\n" + "\n".join(f"• {err}" for err in parse_errors) + "\n\n"
+            "Использование:\n"
+            "/ping\n"
+            "/ping 1.1.1.1 8.8.8.8\n"
+            "/ping 77.221.148.155:22\n"
+            "/ping 77.221.148.155 22"
         )
         return
 
-    await update.message.reply_text(f"📡 Проверяю {len(valid_hosts)} сервер(а)...")
+    if not host_specs:
+        await update.message.reply_text("❌ Не задано ни одного сервера для проверки.")
+        return
 
-    ping_results = await asyncio.gather(*(ping_host(host) for host in valid_hosts), return_exceptions=True)
+    if len(host_specs) > 10:
+        await update.message.reply_text("❌ Можно проверить не более 10 серверов за один вызов.")
+        return
+
+    await update.message.reply_text(f"📡 Проверяю {len(host_specs)} сервер(а)...")
+    ping_results = await asyncio.gather(
+        *(ping_host(item["host"], item["port"]) for item in host_specs),
+        return_exceptions=True
+    )
 
     lines = [f"🏓 <b>Ping report</b> ({current_time})"]
     if not ping_binary:
-        lines.append("ℹ️ Системный ping недоступен, использую TCP‑проверку (порты 443/80/53).")
-    for host, item in zip(valid_hosts, ping_results):
+        lines.append("ℹ️ Системный ping недоступен, использую TCP‑проверку.")
+
+    for spec, item in zip(host_specs, ping_results):
+        host = spec["host"]
         if isinstance(item, Exception):
             lines.append(f"• <code>{host}</code>: ❌ ошибка ({escape_html(str(item))})")
             continue
 
         loss = item["packet_loss"]
+        port_hint = ""
+        if item.get("probe_port") is not None and item["mode"] != "icmp":
+            port_hint = f", port {item['probe_port']}"
+        elif item.get("checked_ports") and item["mode"] != "icmp":
+            checked = ",".join(str(p) for p in item["checked_ports"])
+            port_hint = f", ports {checked}"
+
         if item["avg_ms"] is not None:
             status = "✅" if float(loss) < 100 else "⚠️"
             lines.append(
                 f"• <code>{host}</code>: {status} avg {item['avg_ms']} ms "
-                f"(min {item['min_ms']}, max {item['max_ms']}), loss {loss}%"
+                f"(min {item['min_ms']}, max {item['max_ms']}), loss {loss}%{port_hint}"
             )
         else:
             err = escape_html(item["raw_error"] or "таймаут/недоступен")
-            lines.append(f"• <code>{host}</code>: ❌ недоступен, loss {loss}% ({err})")
+            lines.append(f"• <code>{host}</code>: ❌ недоступен, loss {loss}%{port_hint} ({err})")
 
     lines.append("\n💡 Использование: <code>/ping 1.1.1.1 8.8.8.8</code>")
+    lines.append("💡 С портом: <code>/ping 77.221.148.155:22</code> или <code>/ping 77.221.148.155 22</code>")
     await update.message.reply_html("\n".join(lines))
 
 async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2779,7 +2845,7 @@ async def setup_bot_commands(application):
         BotCommand("start", "Запустить бота"),
         BotCommand("help", "Справка по командам"),
         BotCommand("rates", "Курсы валют и индексы"),
-        BotCommand("ping", "Ping по IP (avg/min/max)"),
+        BotCommand("ping", "Ping по IP/порту (avg/min/max)"),
         BotCommand("subscribe", "Подписаться на уведомления"),
         BotCommand("unsubscribe", "Отписаться от уведомлений"),
         BotCommand("set_alert", "Установить алерт"),
@@ -2809,7 +2875,7 @@ async def command_suggestions(update: Update, context: ContextTypes.DEFAULT_TYPE
             "/start - Запустить бота",
             "/help - Справка по командам",
             "/rates - Курсы валют и индексы",
-            "/ping [IP ...] - Ping до серверов",
+            "/ping [IP[:PORT] ...] - Ping до серверов",
             "/subscribe - Подписаться на уведомления",
             "/unsubscribe - Отписаться от уведомлений",
             "/set_alert - Установить алерт",
