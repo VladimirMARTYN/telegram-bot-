@@ -6,6 +6,8 @@ import os
 import asyncio
 import ipaddress
 import re
+import shutil
+import time
 from datetime import datetime, time, timedelta
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -290,44 +292,100 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда /ping"""
+    ping_binary = shutil.which("ping")
+
+    async def tcp_probe_once(host: str, timeout_seconds: int = 2):
+        ports_to_try = (443, 80, 53)
+        last_error = ""
+
+        for port in ports_to_try:
+            started = time.perf_counter()
+            try:
+                open_conn = asyncio.open_connection(host, port)
+                reader, writer = await asyncio.wait_for(open_conn, timeout=timeout_seconds)
+                latency_ms = (time.perf_counter() - started) * 1000
+                writer.close()
+                await writer.wait_closed()
+                return latency_ms, port, ""
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+
+        return None, None, last_error
+
     async def ping_host(host: str, count: int = 4, timeout_seconds: int = 2) -> dict:
-        cmd = [
-            "ping",
-            "-c", str(count),
-            "-W", str(timeout_seconds),
-            host
-        ]
-
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
-        output = (stdout or b"").decode("utf-8", errors="ignore")
-        error_text = (stderr or b"").decode("utf-8", errors="ignore").strip()
-
-        packet_loss_match = re.search(r"([0-9]+(?:\\.[0-9]+)?)% packet loss", output)
-        rtt_match = re.search(
-            r"(?:rtt|round-trip) min/avg/max(?:/(?:mdev|stddev))? = "
-            r"([0-9]+(?:\\.[0-9]+)?)/([0-9]+(?:\\.[0-9]+)?)/([0-9]+(?:\\.[0-9]+)?)/([0-9]+(?:\\.[0-9]+)?) ms",
-            output
-        )
-
         result = {
             "host": host,
-            "ok": process.returncode == 0,
-            "packet_loss": packet_loss_match.group(1) if packet_loss_match else "100",
+            "ok": False,
+            "packet_loss": "100",
             "min_ms": None,
             "avg_ms": None,
             "max_ms": None,
-            "raw_error": error_text
+            "raw_error": "",
+            "mode": "tcp_fallback"
         }
 
-        if rtt_match:
-            result["min_ms"] = rtt_match.group(1)
-            result["avg_ms"] = rtt_match.group(2)
-            result["max_ms"] = rtt_match.group(3)
+        if ping_binary:
+            cmd = [
+                ping_binary,
+                "-c", str(count),
+                "-W", str(timeout_seconds),
+                host
+            ]
+
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+            output = (stdout or b"").decode("utf-8", errors="ignore")
+            error_text = (stderr or b"").decode("utf-8", errors="ignore").strip()
+
+            packet_loss_match = re.search(r"([0-9]+(?:\.[0-9]+)?)% packet loss", output)
+            rtt_match = re.search(
+                r"(?:rtt|round-trip) min/avg/max(?:/(?:mdev|stddev))? = "
+                r"([0-9]+(?:\.[0-9]+)?)/([0-9]+(?:\.[0-9]+)?)/([0-9]+(?:\.[0-9]+)?)/([0-9]+(?:\.[0-9]+)?) ms",
+                output
+            )
+
+            result["mode"] = "icmp"
+            result["ok"] = process.returncode == 0
+            result["packet_loss"] = packet_loss_match.group(1) if packet_loss_match else "100"
+            result["raw_error"] = error_text
+
+            if rtt_match:
+                result["min_ms"] = rtt_match.group(1)
+                result["avg_ms"] = rtt_match.group(2)
+                result["max_ms"] = rtt_match.group(3)
+            return result
+
+        latencies = []
+        failures = 0
+        used_port = None
+        last_error = ""
+
+        for _ in range(count):
+            latency_ms, port, err = await tcp_probe_once(host, timeout_seconds=timeout_seconds)
+            if latency_ms is None:
+                failures += 1
+                if err:
+                    last_error = err
+                continue
+            latencies.append(latency_ms)
+            if used_port is None:
+                used_port = port
+
+        loss = (failures / count) * 100
+        result["packet_loss"] = f"{loss:.1f}".rstrip("0").rstrip(".")
+        result["ok"] = len(latencies) > 0
+        result["raw_error"] = last_error
+        if used_port is not None:
+            result["probe_port"] = used_port
+
+        if latencies:
+            result["min_ms"] = f"{min(latencies):.2f}"
+            result["avg_ms"] = f"{(sum(latencies) / len(latencies)):.2f}"
+            result["max_ms"] = f"{max(latencies):.2f}"
 
         return result
 
@@ -364,6 +422,8 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     ping_results = await asyncio.gather(*(ping_host(host) for host in valid_hosts), return_exceptions=True)
 
     lines = [f"🏓 <b>Ping report</b> ({current_time})"]
+    if not ping_binary:
+        lines.append("ℹ️ Системный ping недоступен, использую TCP‑проверку (порты 443/80/53).")
     for host, item in zip(valid_hosts, ping_results):
         if isinstance(item, Exception):
             lines.append(f"• <code>{host}</code>: ❌ ошибка ({escape_html(str(item))})")
