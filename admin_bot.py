@@ -37,7 +37,8 @@ from autobuy_module import (
     configure_autobuy, initialize_autobuy_settings, ensure_autobuy_job,
     autobuy_on_command, autobuy_off_command, autobuy_status_command,
     autobuy_add_command, autobuy_remove_command, autobuy_list_command,
-    autobuy_set_time_command
+    autobuy_set_time_command, autobuy_setup_command,
+    autobuy_set_token_command, autobuy_clear_token_command
 )
 
 # Настройка логирования (должна быть перед импортом reportlab)
@@ -142,6 +143,29 @@ def get_moscow_time():
 
 # Время запуска бота
 bot_start_time = get_moscow_time()
+
+LTI_SBER_QUANTITY = 12_344
+STOCK_NAMES = {
+    'SBER': 'Сбер', 'YDEX': 'Яндекс', 'VKCO': 'ВК',
+    'T': 'Т-Технологии', 'GAZP': 'Газпром', 'GMKN': 'Норникель',
+    'ROSN': 'Роснефть', 'LKOH': 'ЛУКОЙЛ', 'MTSS': 'МТС', 'MFON': 'Мегафон',
+    'PIKK': 'ПИК', 'SMLT': 'Самолёт', 'TGLD@': 'TGLD',
+    'TOFZ@': 'TOFZ', 'DOMRF': 'ДОМ.РФ'
+}
+DAILY_STOCK_TICKERS = ['SBER', 'VKCO', 'DOMRF', 'T']
+DETAIL_STOCK_TICKERS = [
+    'YDEX', 'GAZP', 'GMKN', 'ROSN', 'LKOH', 'MTSS', 'MFON',
+    'TGLD@', 'TOFZ@'
+]
+REAL_ESTATE_TICKERS = ['PIKK', 'SMLT']
+COMMODITY_ITEMS = ['gold', 'silver', 'brent', 'urals']
+COMMODITY_NAMES = {
+    'gold': 'Золото',
+    'silver': 'Серебро',
+    'brent': 'Нефть Brent',
+    'urals': 'Нефть Urals',
+}
+INDEX_NAMES = {'imoex': 'IMOEX', 'sp500': 'S&P 500'}
 
 # Данные пользователей (в памяти)
 user_data = {}
@@ -268,10 +292,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/set_daily_time HH:MM - Настроить время сводки\n"
             "/get_daily_settings - Посмотреть настройки\n"
             "/restart_daily_job - Перезапустить задачу сводки\n"
+            "/autobuy_setup - Пошаговая настройка автопокупки\n"
+            "/autobuy_set_token <TOKEN> - Задать T-Invest токен\n"
+            "/autobuy_clear_token - Удалить токен, заданный через бота\n"
             "/autobuy_on [HH:MM] - Включить автопокупку\n"
             "/autobuy_off - Выключить автопокупку\n"
             "/autobuy_status - Статус автопокупки\n"
-            "/autobuy_add <TICKER> <QTY> - Добавить/обновить позицию\n"
+            "/autobuy_add <TICKER> <LOTS> - Добавить/обновить позицию\n"
             "/autobuy_remove <TICKER> - Удалить позицию\n"
             "/autobuy_list - Список позиций\n"
             "/autobuy_set_time <HH:MM> - Общее время автопокупки\n\n"
@@ -509,15 +536,181 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     lines.append("💡 С портом: <code>/ping 77.221.148.155:22</code> или <code>/ping 77.221.148.155 22</code>")
     await update.message.reply_html("\n".join(lines))
 
+
+def _format_delta_html(price_history, asset_key, current_price):
+    """Форматировать изменение относительно последней сохраненной цены."""
+    if not isinstance(current_price, (int, float)):
+        return ""
+    previous_price = price_history.get(asset_key)
+    if not isinstance(previous_price, (int, float)) or previous_price == 0:
+        return ""
+    change_pct = ((current_price - previous_price) / previous_price) * 100
+    return f" (Δ {change_pct:+.2f}% от последнего)"
+
+
+def _format_stock_html(ticker, stocks_data, price_history):
+    name = STOCK_NAMES[ticker]
+    stock = stocks_data.get(ticker, {})
+    price = stock.get('price')
+    if not isinstance(price, (int, float)) or price <= 0:
+        note = stock.get('note') or "Данные временно недоступны"
+        return f"• 🔴 {escape_html(name)}: <b>{escape_html(note)}</b>"
+
+    change_pct = stock.get('change_pct')
+    is_live = stock.get('is_live', True)
+    status_icon = "🟢" if is_live else "🟡"
+    change_str = ""
+    if isinstance(change_pct, (int, float)) and change_pct != 0 and is_live:
+        change_str = f" ({change_pct:+.2f}% с открытия)"
+    delta_str = _format_delta_html(price_history, ticker, price)
+    return (
+        f"• {status_icon} {escape_html(name)}: <b>{format_price(price)} ₽</b>"
+        f"{change_str}{delta_str}"
+    )
+
+
+def _format_commodity_html(commodity, commodities_data, usd_to_rub_rate, price_history):
+    name = COMMODITY_NAMES[commodity]
+    item = commodities_data.get(commodity, {})
+    price = item.get('price')
+    if not isinstance(price, (int, float)) or price <= 0:
+        return f"• {escape_html(name)}: <b>Н/Д</b>"
+
+    rub_price = price * usd_to_rub_rate if usd_to_rub_rate > 0 else None
+    delta_str = _format_delta_html(price_history, commodity, price)
+    if rub_price is not None:
+        return (
+            f"• {escape_html(name)}: <b>${format_price(price)}</b> "
+            f"({format_price(rub_price)} ₽){delta_str}"
+        )
+    return f"• {escape_html(name)}: <b>${format_price(price)}</b>{delta_str}"
+
+
+def _format_index_html(index, indices_data, price_history):
+    item = indices_data.get(index, {})
+    name = item.get('name') or INDEX_NAMES[index]
+    price = item.get('price')
+    if not isinstance(price, (int, float)) or price == 0:
+        return f"• 🔴 {escape_html(name)}: <b>Данные временно недоступны</b>"
+
+    is_live = item.get('is_live', True)
+    change = item.get('change_pct')
+    change_period = "с открытия" if is_live else "с закрытия"
+    change_str = ""
+    if isinstance(change, (int, float)) and change != 0:
+        change_str = f" ({change:+.2f}% {change_period})"
+    note = item.get('note')
+    note_str = f" ({escape_html(note)})" if note else ""
+    delta_str = _format_delta_html(price_history, index, price)
+    status_icon = "🟢" if is_live else "🟡"
+    return (
+        f"• {status_icon} {escape_html(name)}: <b>{format_price(price)}</b>"
+        f"{change_str}{note_str}{delta_str}"
+    )
+
+
+def build_rates_message(
+    usd_str,
+    eur_str,
+    cny_str,
+    usd_to_rub_rate,
+    crypto_strings,
+    stocks_data,
+    commodities_data,
+    indices_data,
+    price_history,
+    current_time,
+):
+    """Собрать компактный DAILY и нативный сворачиваемый блок Telegram."""
+    daily_lines = [
+        "📊 <b>DAILY</b>",
+        "",
+        "🏛️ <b>ВАЛЮТЫ</b>",
+        f"• USD: <b>{escape_html(usd_str)}</b>",
+        f"• EUR: <b>{escape_html(eur_str)}</b>",
+        "",
+        "💎 <b>КРИПТОВАЛЮТЫ</b>",
+        f"• {escape_html(crypto_strings.get('bitcoin', 'Bitcoin: Н/Д'))}",
+        f"• {escape_html(crypto_strings.get('the-open-network', 'TON: Н/Д'))}",
+        f"• {escape_html(crypto_strings.get('tether', 'USDT: Н/Д'))}",
+        "",
+        "📈 <b>РОССИЙСКИЕ АКЦИИ</b>",
+    ]
+    daily_lines.extend(
+        _format_stock_html(ticker, stocks_data, price_history)
+        for ticker in DAILY_STOCK_TICKERS
+    )
+
+    sber_price = stocks_data.get('SBER', {}).get('price')
+    daily_lines.extend(["", "💼 <b>ПОРТФЕЛЬ LTI</b>"])
+    if isinstance(sber_price, (int, float)) and sber_price > 0:
+        lti_value = sber_price * LTI_SBER_QUANTITY
+        daily_lines.append(
+            f"• {LTI_SBER_QUANTITY:,} акций Сбера: <b>{format_price(lti_value)} ₽</b>"
+            .replace(",", " ")
+        )
+        daily_lines.append(f"  <i>Цена акции: {format_price(sber_price)} ₽</i>")
+    else:
+        daily_lines.append(f"• {LTI_SBER_QUANTITY:,} акций Сбера: <b>Н/Д</b>".replace(",", " "))
+
+    daily_lines.extend(["", "🛠️ <b>ТОВАРЫ</b>"])
+    daily_lines.extend(
+        _format_commodity_html(
+            commodity, commodities_data, usd_to_rub_rate, price_history
+        )
+        for commodity in COMMODITY_ITEMS
+    )
+    daily_lines.extend([
+        "",
+        "📊 <b>ИНДЕКСЫ</b>",
+        _format_index_html('imoex', indices_data, price_history),
+    ])
+
+    detail_lines = [
+        "🏛️ <b>ДРУГИЕ ВАЛЮТЫ</b>",
+        f"• CNY: <b>{escape_html(cny_str)}</b>",
+        "",
+        "💎 <b>ДРУГИЕ КРИПТОВАЛЮТЫ</b>",
+        f"• {escape_html(crypto_strings.get('solana', 'Solana: Н/Д'))}",
+        "",
+        "📈 <b>ДРУГИЕ РОССИЙСКИЕ АКЦИИ</b>",
+    ]
+    detail_lines.extend(
+        _format_stock_html(ticker, stocks_data, price_history)
+        for ticker in DETAIL_STOCK_TICKERS
+    )
+    detail_lines.extend(["", "🏠 <b>НЕДВИЖИМОСТЬ</b>"])
+    detail_lines.extend(
+        _format_stock_html(ticker, stocks_data, price_history)
+        for ticker in REAL_ESTATE_TICKERS
+    )
+    detail_lines.extend([
+        "",
+        "📊 <b>ДРУГИЕ ИНДЕКСЫ</b>",
+        _format_index_html('sp500', indices_data, price_history),
+    ])
+
+    detail_text = "\n".join(detail_lines)
+    message = "\n".join(daily_lines)
+    message += "\n\n🔎 <b>ПОДРОБНЕЕ</b>\n"
+    message += f"<blockquote expandable>{detail_text}</blockquote>"
+    message += f"\n\n🕐 <b>Время:</b> {escape_html(current_time)}"
+    message += (
+        "\n📡 <b>Источники:</b> ЦБ РФ, CoinGecko/Coinbase/Binance, "
+        "Т-Инвестиции API, MOEX, Gold-API, EIA, Alpha Vantage"
+    )
+    return message
+
 async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Получить полные курсы валют, криптовалют, акций, товаров и индексов"""
-    try:
-        reply_target = update.effective_message
-        if reply_target is None:
-            logger.error("rates_command: отсутствует message в update")
-            return
+    reply_target = update.effective_message
+    status_message = None
+    if reply_target is None:
+        logger.error("rates_command: отсутствует message в update")
+        return
 
-        await reply_target.reply_text("📊 Получаю информацию")
+    try:
+        status_message = await reply_target.reply_text("📊 Получаю информацию")
         
         session = await get_http_session()
         
@@ -680,16 +873,6 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # Загружаем историю цен для динамики
         price_history = load_price_history()
         
-        def format_delta(asset_key, current_price):
-            """Форматировать изменение относительно последней зафиксированной цены"""
-            if current_price is None:
-                return ""
-            previous_price = price_history.get(asset_key)
-            if previous_price is None or previous_price == 0:
-                return ""
-            change_pct = ((current_price - previous_price) / previous_price) * 100
-            return f" (Δ {change_pct:+.2f}% от последнего)"
-        
         # Обработка криптовалют
         if isinstance(crypto_data, Exception):
             logger.error(f"Ошибка получения криптовалют: {crypto_data}")
@@ -701,7 +884,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             {'id': 'bitcoin', 'name': 'Bitcoin', 'decimals': 0},
             {'id': 'the-open-network', 'name': 'TON', 'decimals': 2},
             {'id': 'solana', 'name': 'Solana', 'decimals': 2},
-            {'id': 'tether', 'name': 'Tether', 'decimals': 2}
+            {'id': 'tether', 'name': 'USDT', 'decimals': 2}
         ]
         
         for crypto in crypto_list:
@@ -743,164 +926,28 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             logger.error(f"Ошибка получения индексов: {indices_data}")
             indices_data = {}
         
-        # Формируем итоговое сообщение с улучшенным форматированием
-        message = "📊 **На сегодня курсы такие:**\n\n"
-        
-        # Валюты ЦБ РФ
-        message += "🏛️ **ВАЛЮТЫ (по курсу ЦБ РФ):**\n"
-        message += f"├ USD: **{usd_str}**\n"
-        message += f"├ EUR: **{eur_str}**\n"
-        message += f"└ CNY: **{cny_str}**\n\n"
-        
-        # Криптовалюты
-        message += "💎 **КРИПТА:**\n"
-        crypto_items = ['bitcoin', 'the-open-network', 'solana', 'tether']
-        for i, crypto_id in enumerate(crypto_items):
-            crypto_key = crypto_id if crypto_id != 'the-open-network' else 'ton'
-            if crypto_id in crypto_strings:
-                prefix = "├" if i < len(crypto_items) - 1 else "└"
-                message += f"{prefix} {crypto_strings[crypto_id]}\n"
-        message += "\n"
-        
-        # Российские акции
-        message += "📈 **РОССИЙСКИЕ АКЦИИ (MOEX):**\n"
-        stock_names = {
-            'SBER': 'Сбер', 'YDEX': 'Яндекс', 'VKCO': 'ВК', 
-            'T': 'T-Технологии', 'GAZP': 'Газпром', 'GMKN': 'Норникель',
-            'ROSN': 'Роснефть', 'LKOH': 'ЛУКОЙЛ', 'MTSS': 'МТС', 'MFON': 'Мегафон',
-            'TGLD@': 'TGLD', 'TOFZ@': 'TOFZ', 'DOMRF': 'DOMRF'
-        }
-        stock_items = list(stock_names.keys())
-        
-        # Проверяем, есть ли живые данные
-        has_live_data = any(
-            stocks_data.get(ticker, {}).get('price') is not None 
-            for ticker in stock_items
-        )
-        
-        is_moscow_weekend = get_moscow_time().weekday() >= 5
-
-        if has_live_data:
-            for i, ticker in enumerate(stock_items):
-                if ticker in stocks_data and stocks_data[ticker].get('price'):
-                    name = stock_names[ticker]
-                    price = stocks_data[ticker]['price']
-                    change_pct = stocks_data[ticker].get('change_pct', 0)
-                    is_live = stocks_data[ticker].get('is_live', True)
-                    status_icon = "🟢" if is_live else "🟡"
-                    prefix = "├" if i < len(stock_items) - 1 else "└"
-                    
-                    # Добавляем изменение с открытия для российских акций
-                    change_str = f" ({change_pct:+.2f}% с открытия)" if change_pct is not None and change_pct != 0 and is_live else ""
-                    delta_str = format_delta(ticker, price)
-                    message += f"{prefix} {status_icon} {name}: **{format_price(price)} ₽**{change_str}{delta_str}\n"
-        else:
-            if is_moscow_weekend:
-                message += "🔴 **Торги закрыты** (выходной день)\n"
-            else:
-                message += "🔴 **Данные временно недоступны**\n"
-        message += "\n"
-        
-        # Недвижимость
-        message += "🏠 **НЕДВИЖИМОСТЬ:**\n"
-        real_estate_tickers = ['PIKK', 'SMLT']
-        real_estate_names = {'PIKK': 'ПИК', 'SMLT': 'Самолёт'}
-        
-        has_real_estate_data = any(
-            stocks_data.get(ticker, {}).get('price') is not None 
-            for ticker in real_estate_tickers
-        )
-        
-        if has_real_estate_data:
-            for i, ticker in enumerate(real_estate_tickers):
-                if ticker in stocks_data and stocks_data[ticker].get('price'):
-                    name = real_estate_names[ticker]
-                    price = stocks_data[ticker]['price']
-                    change_pct = stocks_data[ticker].get('change_pct', 0)
-                    is_live = stocks_data[ticker].get('is_live', True)
-                    status_icon = "🟢" if is_live else "🟡"
-                    prefix = "├" if i < len(real_estate_tickers) - 1 else "└"
-                    
-                    # Добавляем изменение с открытия для акций недвижимости
-                    change_str = f" ({change_pct:+.2f}% с открытия)" if change_pct is not None and change_pct != 0 and is_live else ""
-                    delta_str = format_delta(ticker, price)
-                    message += f"{prefix} {status_icon} {name}: **{format_price(price)} ₽**{change_str}{delta_str}\n"
-        else:
-            if is_moscow_weekend:
-                message += "🔴 **Торги закрыты** (выходной день)\n"
-            else:
-                message += "🔴 **Данные временно недоступны**\n"
-        message += "\n"
-        
-        # Товары 
-        message += "🛠️ **ЗОЛОТО, НЕФТЬ:**\n"
-        commodity_items = ['gold', 'silver', 'brent', 'urals']
-        commodity_names = {
-            'gold': 'Золото', 
-            'silver': 'Серебро', 
-            'brent': 'Нефть Brent',
-            'urals': 'Нефть Urals'
-        }
-        
-        for i, commodity in enumerate(commodity_items):
-            if commodity in commodities_data:
-                name = commodity_names[commodity]
-                price = commodities_data[commodity]['price']
-                rub_price = price * usd_to_rub_rate if usd_to_rub_rate > 0 else 0
-                prefix = "├" if i < len(commodity_items) - 1 else "└"
-                delta_str = format_delta(commodity, price)
-                if rub_price > 0:
-                    message += f"{prefix} {name}: **${format_price(price)}** ({format_price(rub_price)} ₽){delta_str}\n"
-                else:
-                    message += f"{prefix} {name}: **${format_price(price)}**{delta_str}\n"
-        message += "\n"
-        
-        # Фондовые индексы
-        message += "📊 **ФОНДОВЫЕ ИНДЕКСЫ:**\n"
+        stock_items = list(STOCK_NAMES.keys())
+        commodity_items = COMMODITY_ITEMS
         index_items = ['imoex', 'sp500']
-        
-        for i, index in enumerate(index_items):
-            if index in indices_data:
-                name = indices_data[index]['name']
-                price = indices_data[index].get('price')
-                change = indices_data[index].get('change_pct', 0)
-                is_live = indices_data[index].get('is_live', True)
-                note = indices_data[index].get('note', '')
-                
-                prefix = "├" if i < len(index_items) - 1 else "└"
-                
-                if price is not None and price != 0:
-                    # Определяем тип изменения для индекса
-                    if index in ['imoex']:
-                        change_period = "с открытия" if is_live else "с закрытия"
-                    elif index == 'sp500':
-                        change_period = "с закрытия" if not is_live else "с открытия"
-                    else:
-                        change_period = ""
-                    
-                    change_str = f"({change:+.2f}% {change_period})" if change != 0 else ""
-                    status_icon = "🟢" if is_live else "🟡"
-                    note_str = f" ({note})" if note else ""
-                    delta_str = format_delta(index, price)
-                    message += f"{prefix} {status_icon} {name}: **{format_price(price)}** {change_str}{note_str}{delta_str}\n"
-                else:
-                    # Если данных нет, но индекс был запрошен - показываем что данные временно недоступны
-                    message += f"{prefix} 🔴 {name}: **Данные временно недоступны**\n"
-            else:
-                # Если индекса вообще нет в данных
-                index_name = {'imoex': 'IMOEX', 'sp500': 'S&P 500'}.get(index, index)
-                prefix = "├" if i < len(index_items) - 1 else "└"
-                message += f"{prefix} 🔴 {index_name}: **Данные временно недоступны**\n"
-        message += "\n"
+
+        current_time = get_moscow_time().strftime("%d.%m.%Y %H:%M")
+        message = build_rates_message(
+            usd_str=usd_str,
+            eur_str=eur_str,
+            cny_str=cny_str,
+            usd_to_rub_rate=usd_to_rub_rate,
+            crypto_strings=crypto_strings,
+            stocks_data=stocks_data,
+            commodities_data=commodities_data,
+            indices_data=indices_data,
+            price_history=price_history,
+            current_time=current_time,
+        )
         
         # Обновляем историю цен для динамики (чтобы дельты появлялись в /rates)
         try:
             history_update = {}
             for ticker in stock_items:
-                price = stocks_data.get(ticker, {}).get('price')
-                if price is not None:
-                    history_update[ticker] = price
-            for ticker in real_estate_tickers:
                 price = stocks_data.get(ticker, {}).get('price')
                 if price is not None:
                     history_update[ticker] = price
@@ -920,21 +967,20 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception as e:
             logger.error(f"Ошибка обновления истории цен в /rates: {e}")
         
-        # Время и источники
-        current_time = get_moscow_time().strftime("%d.%m.%Y %H:%M")
-        message += f"🕐 **Время:** {current_time}\n"
-        message += f"📡 **Источники:** ЦБ РФ, CoinGecko/Coinbase/Binance/CryptoCompare, Т-Инвестиции API, MOEX, Gold-API, Alpha Vantage"
-
-        await reply_target.reply_text(message, parse_mode='Markdown')
+        await status_message.edit_text(message, parse_mode='HTML')
         
     except Exception as e:
         logger.error(f"Общая ошибка в rates_command: {e}")
         import traceback
         logger.error(f"Трассировка ошибки: {traceback.format_exc()}")
-        await reply_target.reply_text(
+        error_message = (
             f"❌ Ошибка получения курсов: {str(e)}\n\n"
-            f"🔄 Попробуйте позже или обратитесь к администратору."
+            "🔄 Попробуйте позже или обратитесь к администратору."
         )
+        if status_message is not None:
+            await status_message.edit_text(error_message)
+        else:
+            await reply_target.reply_text(error_message)
 
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка всех остальных сообщений"""
@@ -2186,6 +2232,9 @@ def main() -> None:
     # Новые команды
     application.add_handler(CommandHandler("settings", settings_command))
     application.add_handler(CommandHandler("export_pdf", export_pdf_command))
+    application.add_handler(CommandHandler("autobuy_setup", autobuy_setup_command))
+    application.add_handler(CommandHandler("autobuy_set_token", autobuy_set_token_command))
+    application.add_handler(CommandHandler("autobuy_clear_token", autobuy_clear_token_command))
     application.add_handler(CommandHandler("autobuy_on", autobuy_on_command))
     application.add_handler(CommandHandler("autobuy_off", autobuy_off_command))
     application.add_handler(CommandHandler("autobuy_status", autobuy_status_command))
@@ -2838,10 +2887,9 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def setup_bot_commands(application):
     """Настройка команд бота для автодополнения в Telegram"""
-    from telegram import BotCommand
+    from telegram import BotCommand, BotCommandScopeChat
     
-    # Список команд для обычных пользователей
-    commands = [
+    user_commands = [
         BotCommand("start", "Запустить бота"),
         BotCommand("help", "Справка по командам"),
         BotCommand("rates", "Курсы валют и индексы"),
@@ -2850,17 +2898,32 @@ async def setup_bot_commands(application):
         BotCommand("unsubscribe", "Отписаться от уведомлений"),
         BotCommand("set_alert", "Установить алерт"),
         BotCommand("view_alerts", "Просмотр алертов"),
+    ]
+    admin_commands = user_commands + [
         BotCommand("settings", "Меню настроек"),
         BotCommand("export_pdf", "Экспорт в PDF"),
+        BotCommand("set_daily_time", "Изменить время сводки"),
+        BotCommand("get_daily_settings", "Настройки сводки"),
+        BotCommand("restart_daily_job", "Перезапустить сводку"),
+        BotCommand("autobuy_setup", "Настроить автопокупку"),
+        BotCommand("autobuy_set_token", "Задать T-Invest токен"),
+        BotCommand("autobuy_clear_token", "Удалить T-Invest токен"),
+        BotCommand("autobuy_on", "Включить автопокупку"),
+        BotCommand("autobuy_off", "Выключить автопокупку"),
         BotCommand("autobuy_status", "Статус автопокупки"),
-        BotCommand("autobuy_list", "Список автопокупки")
+        BotCommand("autobuy_add", "Добавить акцию и лоты"),
+        BotCommand("autobuy_remove", "Удалить акцию"),
+        BotCommand("autobuy_list", "Список автопокупки"),
+        BotCommand("autobuy_set_time", "Время автопокупки"),
     ]
-    
-    # Команды для администраторов (не добавляем в список команд бота, но они доступны)
-    
+
     try:
-        # Устанавливаем команды для бота
-        await application.bot.set_my_commands(commands)
+        await application.bot.set_my_commands(user_commands)
+        if ADMIN_USER_ID:
+            await application.bot.set_my_commands(
+                admin_commands,
+                scope=BotCommandScopeChat(chat_id=ADMIN_USER_ID),
+            )
         logger.info("✅ Команды бота настроены для автодополнения")
     except Exception as e:
         logger.error(f"❌ Ошибка настройки команд: {e}")
@@ -2891,10 +2954,13 @@ async def command_suggestions(update: Update, context: ContextTypes.DEFAULT_TYPE
             "/restart_daily_job - Перезапустить сводку",
             "/test_daily - Тест сводки",
             "/check_subscribers - Проверить подписчиков",
+            "/autobuy_setup - Настроить автопокупку",
+            "/autobuy_set_token <TOKEN> - Задать T-Invest токен",
+            "/autobuy_clear_token - Удалить токен из настроек бота",
             "/autobuy_on [HH:MM] - Включить автопокупку",
-            "/autobuy_off - Выключить автопокупку SBER",
+            "/autobuy_off - Выключить автопокупку",
             "/autobuy_status - Статус автопокупки",
-            "/autobuy_add <TICKER> <QTY> - Добавить/обновить позицию",
+            "/autobuy_add <TICKER> <LOTS> - Добавить/обновить позицию",
             "/autobuy_remove <TICKER> - Удалить позицию",
             "/autobuy_list - Список позиций",
             "/autobuy_set_time <HH:MM> - Время автопокупки"

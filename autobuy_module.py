@@ -25,6 +25,7 @@ from utils import is_admin
 logger = logging.getLogger(__name__)
 
 AUTOBUY_SETTINGS_FILE = "autobuy_settings.json"
+AUTOBUY_SECRETS_FILE = "autobuy_secrets.json"
 AUTOBUY_JOB_NAME = "autobuy_daily"
 DEFAULT_AUTOBUY_TIME = "10:00"
 DEFAULT_TIMEZONE_NAME = DEFAULT_TIMEZONE
@@ -45,6 +46,61 @@ def _atomic_write_json(file_path: str, data: Dict[str, Any]) -> None:
     with open(temp_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     os.replace(temp_path, file_path)
+
+
+def _atomic_write_secret(file_path: str, data: Dict[str, Any]) -> None:
+    """Записать секрет с правами только для владельца процесса."""
+    temp_path = f"{file_path}.tmp"
+    file_descriptor = os.open(
+        temp_path,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        0o600,
+    )
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(temp_path, file_path)
+        os.chmod(file_path, 0o600)
+    except Exception:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+        raise
+
+
+def load_autobuy_token() -> str:
+    """Получить токен, заданный через бота, либо fallback из окружения."""
+    with _settings_lock:
+        if os.path.exists(AUTOBUY_SECRETS_FILE):
+            try:
+                with open(AUTOBUY_SECRETS_FILE, "r", encoding="utf-8") as f:
+                    token = str(json.load(f).get("api_token", "")).strip()
+                if token:
+                    return token
+            except Exception as e:
+                logger.error(f"Ошибка чтения {AUTOBUY_SECRETS_FILE}: {e}")
+    return str(TINVEST_API_TOKEN or "").strip()
+
+
+def save_autobuy_token(token: str) -> None:
+    token = str(token).strip()
+    if not token:
+        raise ValueError("Токен не может быть пустым")
+    with _settings_lock:
+        _atomic_write_secret(AUTOBUY_SECRETS_FILE, {"api_token": token})
+
+
+def clear_autobuy_token_override() -> None:
+    with _settings_lock:
+        if os.path.exists(AUTOBUY_SECRETS_FILE):
+            os.unlink(AUTOBUY_SECRETS_FILE)
+
+
+def _autobuy_token_source() -> str:
+    if os.path.exists(AUTOBUY_SECRETS_FILE):
+        return "через бота"
+    if TINVEST_API_TOKEN:
+        return "из окружения"
+    return "не задан"
 
 
 def _default_settings() -> Dict[str, Any]:
@@ -261,7 +317,7 @@ async def _resolve_share_by_ticker(
     session: aiohttp.ClientSession,
     headers: Dict[str, str],
     ticker: str,
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     payload = {"query": ticker}
     async with session.post(
         f"{_TINVEST_REST_BASE}/tinkoff.public.invest.api.contract.v1.InstrumentsService/FindInstrument",
@@ -301,6 +357,7 @@ async def _resolve_share_by_ticker(
                 "ticker": ticker_upper,
                 "figi": figi,
                 "name": item.get("name", ticker_upper),
+                "lot": max(1, int(item.get("lot") or 1)),
             }
 
     raise RuntimeError(f"Для {ticker_upper} не найден FIGI для торгов")
@@ -387,14 +444,15 @@ async def autobuy_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.info("⏭️ Автопокупка уже выполнена сегодня, пропуск")
         return
 
-    if not TINVEST_API_TOKEN:
+    api_token = load_autobuy_token()
+    if not api_token:
         err = "TINVEST_API_TOKEN не задан"
         logger.error(err)
         await context.bot.send_message(chat_id=ADMIN_USER_ID, text=f"❌ Ошибка автопокупки: {err}")
         return
 
     headers = {
-        "Authorization": f"Bearer {TINVEST_API_TOKEN}",
+        "Authorization": f"Bearer {api_token}",
         "Content-Type": "application/json",
     }
 
@@ -447,9 +505,9 @@ async def autobuy_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             "",
         ]
         for r in success:
-            lines.append(f"✅ {r['ticker']} x{r['qty']} | order_id: {r.get('order_id')}")
+            lines.append(f"✅ {r['ticker']}: {r['qty']} лот(а) | order_id: {r.get('order_id')}")
         for r in failed:
-            lines.append(f"❌ {r['ticker']} x{r['qty']} | {r.get('error')}")
+            lines.append(f"❌ {r['ticker']}: {r['qty']} лот(а) | {r.get('error')}")
 
         await context.bot.send_message(chat_id=ADMIN_USER_ID, text="\n".join(lines))
 
@@ -486,6 +544,107 @@ def _remove_position(settings: Dict[str, Any], ticker: str) -> bool:
     return len(positions) != original_len
 
 
+async def autobuy_setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показать администратору весь сценарий настройки автопокупки."""
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("🚫 Команда доступна только администратору")
+        return
+
+    settings = load_autobuy_settings()
+    positions = settings.get("positions", [])
+    token_status = "✅ настроен" if load_autobuy_token() else "❌ не задан"
+    lines = [
+        "⚙️ Настройка автопокупки",
+        "",
+        f"Токен: {token_status} ({_autobuy_token_source()})",
+        f"Время: {settings.get('daily_time', DEFAULT_AUTOBUY_TIME)} ({settings.get('timezone', DEFAULT_TIMEZONE_NAME)})",
+        f"Статус: {'включена' if settings.get('enabled') else 'выключена'}",
+        "",
+        "Позиции:",
+    ]
+    if positions:
+        for position in positions:
+            lines.append(f"• {position.get('ticker')}: {position.get('qty')} лот(а)")
+    else:
+        lines.append("• список пуст")
+
+    lines.extend([
+        "",
+        "Порядок настройки:",
+        "1. /autobuy_set_token <TOKEN>",
+        "2. /autobuy_add <TICKER> <LOTS> — повторите для каждой акции",
+        "3. /autobuy_set_time <HH:MM>",
+        "4. /autobuy_on",
+        "",
+        "Важно: количество задается в лотах, как требует T-Invest API.",
+        "Сообщение с токеном бот постарается удалить сразу после получения.",
+    ])
+    await update.message.reply_text("\n".join(lines))
+
+
+async def autobuy_set_token_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Проверить и сохранить T-Invest токен, не выводя его обратно в чат."""
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("🚫 Команда доступна только администратору")
+        return
+
+    if not context.args:
+        await update.message.reply_text("❌ Использование: /autobuy_set_token <TOKEN>")
+        return
+
+    token = "".join(context.args).strip()
+    chat_id = update.effective_chat.id
+    try:
+        await update.effective_message.delete()
+    except Exception as e:
+        logger.warning(f"Не удалось удалить сообщение с T-Invest токеном: {e}")
+
+    if update.effective_chat.type != "private":
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="❌ Токен не сохранен. Задавайте T-Invest токен только в личном чате с ботом.",
+        )
+        return
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            await _get_primary_account_id(session, headers)
+        save_autobuy_token(token)
+    except Exception as e:
+        logger.warning(f"T-Invest отклонил новый токен: {type(e).__name__}")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="❌ T-Invest не подтвердил токен. Токен не сохранен.",
+        )
+        return
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="✅ T-Invest токен проверен и сохранен. В сообщениях он отображаться не будет.",
+    )
+
+
+async def autobuy_clear_token_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("🚫 Команда доступна только администратору")
+        return
+
+    clear_autobuy_token_override()
+    fallback_active = bool(TINVEST_API_TOKEN)
+    if fallback_active:
+        message = "✅ Токен, заданный через бота, удален. Используется токен из окружения."
+    else:
+        message = "✅ T-Invest токен удален. Автопокупка не сможет выполняться до задания нового токена."
+    await update.message.reply_text(message)
+
+
 async def autobuy_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if not is_admin(user_id):
@@ -500,6 +659,12 @@ async def autobuy_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if not settings.get("positions"):
         await update.message.reply_text("❌ Список автопокупки пуст. Добавьте тикер: /autobuy_add SBER 1")
+        return
+
+    if not load_autobuy_token():
+        await update.message.reply_text(
+            "❌ Сначала задайте T-Invest токен: /autobuy_set_token <TOKEN>"
+        )
         return
 
     settings["enabled"] = True
@@ -546,10 +711,12 @@ async def autobuy_status_command(update: Update, context: ContextTypes.DEFAULT_T
     status = "🟢 Включена" if settings.get("enabled") else "🔴 Выключена"
     portfolio_str = "н/д"
     cash_str = "н/д"
+    api_token = load_autobuy_token()
+    token_status = f"✅ настроен ({_autobuy_token_source()})" if api_token else "❌ не задан"
 
-    if TINVEST_API_TOKEN:
+    if api_token:
         headers = {
-            "Authorization": f"Bearer {TINVEST_API_TOKEN}",
+            "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json",
         }
         try:
@@ -564,6 +731,7 @@ async def autobuy_status_command(update: Update, context: ContextTypes.DEFAULT_T
     lines = [
         "📋 Статус автопокупки",
         f"Статус: {status}",
+        f"Токен: {token_status}",
         f"Время: {settings.get('daily_time', DEFAULT_AUTOBUY_TIME)} ({settings.get('timezone', DEFAULT_TIMEZONE_NAME)})",
         f"Последний запуск: {settings.get('last_run_date') or 'не выполнялся'}",
         f"Портфель (оценка): {portfolio_str}",
@@ -574,7 +742,7 @@ async def autobuy_status_command(update: Update, context: ContextTypes.DEFAULT_T
     positions = settings.get("positions", [])
     if positions:
         for p in positions:
-            lines.append(f"• {p.get('ticker')} x{p.get('qty')}")
+            lines.append(f"• {p.get('ticker')}: {p.get('qty')} лот(а)")
     else:
         lines.append("• нет")
 
@@ -588,7 +756,7 @@ async def autobuy_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     if len(context.args) < 2:
-        await update.message.reply_text("❌ Использование: /autobuy_add <TICKER> <QTY>")
+        await update.message.reply_text("❌ Использование: /autobuy_add <TICKER> <LOTS>")
         return
 
     ticker = str(context.args[0]).upper().strip()
@@ -599,14 +767,36 @@ async def autobuy_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         qty = _parse_qty(context.args[1])
     except Exception:
-        await update.message.reply_text("❌ QTY должно быть целым числом > 0")
+        await update.message.reply_text("❌ LOTS должно быть целым числом > 0")
         return
+
+    lot_size = None
+    api_token = load_autobuy_token()
+    if api_token:
+        headers = {
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                instrument = await _resolve_share_by_ticker(session, headers, ticker)
+            lot_size = instrument.get("lot")
+        except Exception:
+            await update.message.reply_text(
+                f"❌ Акция {ticker} не найдена или недоступна для торговли через этот токен"
+            )
+            return
 
     settings = load_autobuy_settings()
     _upsert_position(settings, ticker, qty)
     save_autobuy_settings(settings)
 
-    await update.message.reply_text(f"✅ Добавлено в автопокупку: {ticker} x{qty}")
+    message = f"✅ Добавлено в автопокупку: {ticker}, {qty} лот(а)"
+    if isinstance(lot_size, int):
+        message += f"\nРазмер лота: {lot_size} акций, всего: {qty * lot_size} акций"
+    else:
+        message += "\n⚠️ Тикер не проверен: T-Invest токен пока не задан"
+    await update.message.reply_text(message)
 
 
 async def autobuy_remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -644,7 +834,7 @@ async def autobuy_list_command(update: Update, context: ContextTypes.DEFAULT_TYP
         lines.append("• пусто")
     else:
         for p in positions:
-            lines.append(f"• {p.get('ticker')} x{p.get('qty')}")
+            lines.append(f"• {p.get('ticker')}: {p.get('qty')} лот(а)")
 
     await update.message.reply_text("\n".join(lines))
 

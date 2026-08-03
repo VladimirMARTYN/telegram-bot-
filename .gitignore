@@ -142,6 +142,10 @@ Thumbs.db
 notifications.json
 bot_settings.json
 price_history.json
+last_known_rates.json
+user_data.json
+autobuy_settings.json
+autobuy_secrets.json
 
 # Railway
 .railway/
