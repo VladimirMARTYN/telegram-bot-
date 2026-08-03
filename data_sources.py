@@ -234,11 +234,10 @@ async def get_moex_stocks(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
         'ROSN': {'name': 'Роснефть', 'emoji': '🛢️'},
         'LKOH': {'name': 'ЛУКОЙЛ', 'emoji': '⛽'},
         'MTSS': {'name': 'МТС', 'emoji': '📱'},
-        'MFON': {'name': 'Мегафон', 'emoji': '📶'},
         'PIKK': {'name': 'ПИК', 'emoji': '🏗️'},
         'SMLT': {'name': 'Самолёт', 'emoji': '✈️'},
-        'TGLD@': {'name': 'TGLD', 'emoji': '🪙'},
-        'TOFZ@': {'name': 'TOFZ', 'emoji': '📄'},
+        'TGLD': {'name': 'TGLD', 'emoji': '🪙'},
+        'TOFZ': {'name': 'TOFZ', 'emoji': '📄'},
         'DOMRF': {'name': 'DOMRF', 'emoji': '🏛️'}
     }
     
@@ -270,11 +269,10 @@ async def get_moex_stocks(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
                 'ROSN': 'ROSN_TQBR',
                 'LKOH': 'LKOH_TQBR',
                 'MTSS': 'MTSS_TQBR',
-                'MFON': 'MFON_TQBR',
                 'PIKK': 'PIKK_TQBR',
                 'SMLT': 'SMLT_TQBR',
-                'TGLD@': 'TGLD@_SPBRU',
-                'TOFZ@': 'TOFZ@_SPBRU',
+                'TGLD': 'TGLD_TQBR',
+                'TOFZ': 'TOFZ_TQBR',
                 'DOMRF': 'DOMRF_TQBR'
             }
 

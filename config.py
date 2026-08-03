@@ -43,7 +43,7 @@ API_TIMEOUT = 10  # Таймаут запросов (секунды)
 # Поддерживаемые активы
 SUPPORTED_CURRENCIES = ['USD', 'EUR', 'CNY']
 SUPPORTED_CRYPTO = ['BTC', 'TON', 'SOL', 'USDT']
-SUPPORTED_STOCKS = ['SBER', 'YDEX', 'VKCO', 'T', 'GAZP', 'GMKN', 'ROSN', 'LKOH', 'MTSS', 'MFON', 'PIKK', 'SMLT', 'TGLD@', 'TOFZ@', 'DOMRF']
+SUPPORTED_STOCKS = ['SBER', 'YDEX', 'VKCO', 'T', 'GAZP', 'GMKN', 'ROSN', 'LKOH', 'MTSS', 'PIKK', 'SMLT', 'TGLD', 'TOFZ', 'DOMRF']
 
 # Серверы для проверки доступности/задержки командой /ping
 PING_TARGETS = [

@@ -127,6 +127,7 @@ def _normalize_settings(raw: Any) -> Dict[str, Any]:
             if not isinstance(item, dict):
                 continue
             ticker = str(item.get("ticker", "")).upper().strip()
+            ticker = {"TGLD@": "TGLD", "TOFZ@": "TOFZ"}.get(ticker, ticker)
             qty_raw = item.get("qty", item.get("quantity", 1))
             try:
                 qty = int(qty_raw)

@@ -77,8 +77,21 @@ class RatesMessageTests(unittest.TestCase):
     def test_lti_uses_current_sber_price(self):
         message = self.build_message()
         expected_value = self.stocks["SBER"]["price"] * admin_bot.LTI_SBER_QUANTITY
+        initial_value = admin_bot.LTI_SBER_INITIAL_PRICE * admin_bot.LTI_SBER_QUANTITY
+        expected_change = expected_value - initial_value
+        expected_change_pct = expected_change / initial_value * 100
         self.assertIn(admin_bot.format_price(expected_value), message)
         self.assertIn("12 344 акций Сбера", message)
+        self.assertIn(f"{expected_change:+,.2f}".replace(",", " "), message)
+        self.assertIn(f"{expected_change_pct:+.2f}%", message)
+        self.assertIn(admin_bot.format_price(initial_value), message)
+
+    def test_tradable_funds_use_moex_tickers(self):
+        self.assertIn("TGLD", admin_bot.STOCK_NAMES)
+        self.assertIn("TOFZ", admin_bot.STOCK_NAMES)
+        self.assertNotIn("TGLD@", admin_bot.STOCK_NAMES)
+        self.assertNotIn("TOFZ@", admin_bot.STOCK_NAMES)
+        self.assertNotIn("MFON", admin_bot.STOCK_NAMES)
 
     def test_missing_daily_commodities_are_visible(self):
         message = self.build_message(commodities={})

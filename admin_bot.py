@@ -145,17 +145,17 @@ def get_moscow_time():
 bot_start_time = get_moscow_time()
 
 LTI_SBER_QUANTITY = 12_344
+LTI_SBER_INITIAL_PRICE = 273.40
 STOCK_NAMES = {
     'SBER': 'Сбер', 'YDEX': 'Яндекс', 'VKCO': 'ВК',
     'T': 'Т-Технологии', 'GAZP': 'Газпром', 'GMKN': 'Норникель',
-    'ROSN': 'Роснефть', 'LKOH': 'ЛУКОЙЛ', 'MTSS': 'МТС', 'MFON': 'Мегафон',
-    'PIKK': 'ПИК', 'SMLT': 'Самолёт', 'TGLD@': 'TGLD',
-    'TOFZ@': 'TOFZ', 'DOMRF': 'ДОМ.РФ'
+    'ROSN': 'Роснефть', 'LKOH': 'ЛУКОЙЛ', 'MTSS': 'МТС',
+    'PIKK': 'ПИК', 'SMLT': 'Самолёт', 'TGLD': 'TGLD',
+    'TOFZ': 'TOFZ', 'DOMRF': 'ДОМ.РФ'
 }
 DAILY_STOCK_TICKERS = ['SBER', 'VKCO', 'DOMRF', 'T']
 DETAIL_STOCK_TICKERS = [
-    'YDEX', 'GAZP', 'GMKN', 'ROSN', 'LKOH', 'MTSS', 'MFON',
-    'TGLD@', 'TOFZ@'
+    'YDEX', 'GAZP', 'GMKN', 'ROSN', 'LKOH', 'MTSS', 'TGLD', 'TOFZ'
 ]
 REAL_ESTATE_TICKERS = ['PIKK', 'SMLT']
 COMMODITY_ITEMS = ['gold', 'silver', 'brent', 'urals']
@@ -645,11 +645,22 @@ def build_rates_message(
     daily_lines.extend(["", "💼 <b>ПОРТФЕЛЬ LTI</b>"])
     if isinstance(sber_price, (int, float)) and sber_price > 0:
         lti_value = sber_price * LTI_SBER_QUANTITY
+        lti_initial_value = LTI_SBER_INITIAL_PRICE * LTI_SBER_QUANTITY
+        lti_change = lti_value - lti_initial_value
+        lti_change_pct = (lti_change / lti_initial_value) * 100
+        signed_change = f"{lti_change:+,.2f}".replace(",", " ")
         daily_lines.append(
             f"• {LTI_SBER_QUANTITY:,} акций Сбера: <b>{format_price(lti_value)} ₽</b>"
             .replace(",", " ")
         )
-        daily_lines.append(f"  <i>Цена акции: {format_price(sber_price)} ₽</i>")
+        daily_lines.append(
+            f"• Изменение: <b>{signed_change} ₽ ({lti_change_pct:+.2f}%)</b>"
+        )
+        daily_lines.append(
+            f"  <i>Цена акции: {format_price(sber_price)} ₽; "
+            f"база: {format_price(LTI_SBER_INITIAL_PRICE)} ₽ "
+            f"({format_price(lti_initial_value)} ₽)</i>"
+        )
     else:
         daily_lines.append(f"• {LTI_SBER_QUANTITY:,} акций Сбера: <b>Н/Д</b>".replace(",", " "))
 
@@ -1067,7 +1078,7 @@ async def set_alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             "💡 Поддерживаемые активы:\n"
             "• Валюты: USD, EUR, CNY\n"
             "• Криптовалюты: BTC, TON, SOL, USDT\n"
-            "• Акции: SBER, YDEX, VKCO, T, GAZP, GMKN, ROSN, LKOH, MTSS, MFON, PIKK, SMLT, TGLD@, TOFZ@, DOMRF"
+            "• Акции: SBER, YDEX, VKCO, T, GAZP, GMKN, ROSN, LKOH, MTSS, PIKK, SMLT, TGLD, TOFZ, DOMRF"
         )
         return
     
