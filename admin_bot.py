@@ -145,7 +145,7 @@ def get_moscow_time():
 bot_start_time = get_moscow_time()
 
 LTI_SBER_QUANTITY = 12_344
-LTI_SBER_INITIAL_PRICE = 273.40
+LTI_SBER_INITIAL_PRICE = 275.40
 STOCK_NAMES = {
     'SBER': 'Сбер', 'YDEX': 'Яндекс', 'VKCO': 'ВК',
     'T': 'Т-Технологии', 'GAZP': 'Газпром', 'GMKN': 'Норникель',
