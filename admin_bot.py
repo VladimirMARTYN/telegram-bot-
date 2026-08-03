@@ -2140,7 +2140,7 @@ def main() -> None:
     # Проверяем доступность JobQueue и выводим детальную диагностику
     job_queue = application.job_queue
     logger.info(f"🔍 Диагностика JobQueue:")
-    logger.info(f"   application.job_queue: {job_queue}")
+    logger.info(f"   application.job_queue: {type(job_queue).__name__}")
     logger.info(f"   type: {type(job_queue)}")
     logger.info(f"   bool(job_queue): {bool(job_queue)}")
     
