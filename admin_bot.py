@@ -33,13 +33,6 @@ from data_sources import (
     get_cbr_rates, get_forex_rates, get_crypto_data, get_moex_stocks,
     get_commodities_data, get_indices_data
 )
-from autobuy_module import (
-    configure_autobuy, initialize_autobuy_settings, ensure_autobuy_job,
-    autobuy_on_command, autobuy_off_command, autobuy_status_command,
-    autobuy_add_command, autobuy_remove_command, autobuy_list_command,
-    autobuy_set_time_command, autobuy_setup_command,
-    autobuy_set_token_command, autobuy_clear_token_command
-)
 
 # Настройка логирования (должна быть перед импортом reportlab)
 logging.basicConfig(
@@ -291,17 +284,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/check_subscribers - Статус подписчиков\n"
             "/set_daily_time HH:MM - Настроить время сводки\n"
             "/get_daily_settings - Посмотреть настройки\n"
-            "/restart_daily_job - Перезапустить задачу сводки\n"
-            "/autobuy_setup - Пошаговая настройка автопокупки\n"
-            "/autobuy_set_token <TOKEN> - Задать T-Invest токен\n"
-            "/autobuy_clear_token - Удалить токен, заданный через бота\n"
-            "/autobuy_on [HH:MM] - Включить автопокупку\n"
-            "/autobuy_off - Выключить автопокупку\n"
-            "/autobuy_status - Статус автопокупки\n"
-            "/autobuy_add <TICKER> <LOTS> - Добавить/обновить позицию\n"
-            "/autobuy_remove <TICKER> - Удалить позицию\n"
-            "/autobuy_list - Список позиций\n"
-            "/autobuy_set_time <HH:MM> - Общее время автопокупки\n\n"
+            "/restart_daily_job - Перезапустить задачу сводки\n\n"
         )
     
     help_text += (
@@ -2148,8 +2131,6 @@ def main() -> None:
     
     # Инициализируем файлы данных при первом запуске
     initialize_data_files()
-    initialize_autobuy_settings()
-    
     # Загружаем данные пользователей при старте
     load_user_data()
     
@@ -2218,9 +2199,6 @@ def main() -> None:
         # Сохраняем успешную JobQueue в глобальную переменную
         GLOBAL_JOB_QUEUE = job_queue
 
-    # Даем модулю автопокупки доступ к общей очереди задач.
-    configure_autobuy(get_job_queue)
-
     # JobQueue уже получен выше в диагностике
 
     # Основные команды
@@ -2243,17 +2221,6 @@ def main() -> None:
     # Новые команды
     application.add_handler(CommandHandler("settings", settings_command))
     application.add_handler(CommandHandler("export_pdf", export_pdf_command))
-    application.add_handler(CommandHandler("autobuy_setup", autobuy_setup_command))
-    application.add_handler(CommandHandler("autobuy_set_token", autobuy_set_token_command))
-    application.add_handler(CommandHandler("autobuy_clear_token", autobuy_clear_token_command))
-    application.add_handler(CommandHandler("autobuy_on", autobuy_on_command))
-    application.add_handler(CommandHandler("autobuy_off", autobuy_off_command))
-    application.add_handler(CommandHandler("autobuy_status", autobuy_status_command))
-    application.add_handler(CommandHandler("autobuy_add", autobuy_add_command))
-    application.add_handler(CommandHandler("autobuy_remove", autobuy_remove_command))
-    application.add_handler(CommandHandler("autobuy_list", autobuy_list_command))
-    application.add_handler(CommandHandler("autobuy_set_time", autobuy_set_time_command))
-    
     # Обработчик callback-запросов для меню настроек
     application.add_handler(CallbackQueryHandler(button_callback))
 
@@ -2295,8 +2262,6 @@ def main() -> None:
                 name="daily_summary"
             )
             logger.info(f"✅ Ежедневная сводка в {daily_time_str} МСК настроена успешно")
-            ensure_autobuy_job(job_queue)
-            
             # Показываем сколько времени до следующего запуска
             next_run = current_moscow_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
             if current_moscow_time.hour > hour or (current_moscow_time.hour == hour and current_moscow_time.minute >= minute):
@@ -2319,7 +2284,6 @@ def main() -> None:
                 name="daily_summary"
             )
             logger.info("✅ Ежедневная сводка в 09:00 МСК настроена (fallback)")
-            ensure_autobuy_job(job_queue)
     else:
         logger.warning("⚠️ Система задач недоступна - уведомления отключены")
         logger.error("🚨 Критическая ошибка: job_queue не может быть None на этом этапе!")
@@ -2899,40 +2863,19 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def setup_bot_commands(application):
     """Настройка команд бота для автодополнения в Telegram"""
     from telegram import BotCommand, BotCommandScopeChat
-    
-    user_commands = [
+
+    commands = [
         BotCommand("start", "Запустить бота"),
         BotCommand("help", "Справка по командам"),
         BotCommand("rates", "Курсы валют и индексы"),
-        BotCommand("ping", "Ping по IP/порту (avg/min/max)"),
-        BotCommand("subscribe", "Подписаться на уведомления"),
-        BotCommand("unsubscribe", "Отписаться от уведомлений"),
-        BotCommand("set_alert", "Установить алерт"),
-        BotCommand("view_alerts", "Просмотр алертов"),
-    ]
-    admin_commands = user_commands + [
-        BotCommand("settings", "Меню настроек"),
-        BotCommand("export_pdf", "Экспорт в PDF"),
-        BotCommand("set_daily_time", "Изменить время сводки"),
-        BotCommand("get_daily_settings", "Настройки сводки"),
-        BotCommand("restart_daily_job", "Перезапустить сводку"),
-        BotCommand("autobuy_setup", "Настроить автопокупку"),
-        BotCommand("autobuy_set_token", "Задать T-Invest токен"),
-        BotCommand("autobuy_clear_token", "Удалить T-Invest токен"),
-        BotCommand("autobuy_on", "Включить автопокупку"),
-        BotCommand("autobuy_off", "Выключить автопокупку"),
-        BotCommand("autobuy_status", "Статус автопокупки"),
-        BotCommand("autobuy_add", "Добавить акцию и лоты"),
-        BotCommand("autobuy_remove", "Удалить акцию"),
-        BotCommand("autobuy_list", "Список автопокупки"),
-        BotCommand("autobuy_set_time", "Время автопокупки"),
     ]
 
     try:
-        await application.bot.set_my_commands(user_commands)
+        await application.bot.set_my_commands(commands)
         if ADMIN_USER_ID:
+            # Перезаписываем ранее созданное админское меню теми же тремя командами.
             await application.bot.set_my_commands(
-                admin_commands,
+                commands,
                 scope=BotCommandScopeChat(chat_id=ADMIN_USER_ID),
             )
         logger.info("✅ Команды бота настроены для автодополнения")
@@ -2964,17 +2907,7 @@ async def command_suggestions(update: Update, context: ContextTypes.DEFAULT_TYPE
             "/get_daily_settings - Настройки сводки",
             "/restart_daily_job - Перезапустить сводку",
             "/test_daily - Тест сводки",
-            "/check_subscribers - Проверить подписчиков",
-            "/autobuy_setup - Настроить автопокупку",
-            "/autobuy_set_token <TOKEN> - Задать T-Invest токен",
-            "/autobuy_clear_token - Удалить токен из настроек бота",
-            "/autobuy_on [HH:MM] - Включить автопокупку",
-            "/autobuy_off - Выключить автопокупку",
-            "/autobuy_status - Статус автопокупки",
-            "/autobuy_add <TICKER> <LOTS> - Добавить/обновить позицию",
-            "/autobuy_remove <TICKER> - Удалить позицию",
-            "/autobuy_list - Список позиций",
-            "/autobuy_set_time <HH:MM> - Время автопокупки"
+            "/check_subscribers - Проверить подписчиков"
         ]
         
         message = "📋 **ДОСТУПНЫЕ КОМАНДЫ:**\n\n"

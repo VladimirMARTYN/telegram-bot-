@@ -1,14 +1,10 @@
 import os
-import stat
-import tempfile
 import unittest
-from unittest.mock import patch
 
 os.environ.setdefault("BOT_TOKEN", "000000000:TESTTOKEN")
 os.environ.setdefault("ADMIN_USER_ID", "1")
 
 import admin_bot
-import autobuy_module
 
 
 class RatesMessageTests(unittest.TestCase):
@@ -99,22 +95,27 @@ class RatesMessageTests(unittest.TestCase):
             self.assertIn(f"{name}: <b>Н/Д</b>", message)
 
 
-class AutobuySecretTests(unittest.TestCase):
-    def test_token_is_saved_with_owner_only_permissions(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            secret_file = os.path.join(temp_dir, "autobuy_secrets.json")
-            with patch.object(autobuy_module, "AUTOBUY_SECRETS_FILE", secret_file), patch.object(
-                autobuy_module, "TINVEST_API_TOKEN", ""
-            ):
-                autobuy_module.save_autobuy_token("secret-token")
+class BotCommandMenuTests(unittest.IsolatedAsyncioTestCase):
+    async def test_menu_contains_only_primary_commands_in_all_scopes(self):
+        class FakeBot:
+            def __init__(self):
+                self.calls = []
 
-                self.assertEqual(autobuy_module.load_autobuy_token(), "secret-token")
-                mode = stat.S_IMODE(os.stat(secret_file).st_mode)
-                self.assertEqual(mode, 0o600)
+            async def set_my_commands(self, commands, scope=None):
+                self.calls.append((commands, scope))
 
-                autobuy_module.clear_autobuy_token_override()
-                self.assertFalse(os.path.exists(secret_file))
-                self.assertEqual(autobuy_module.load_autobuy_token(), "")
+        application = type("FakeApplication", (), {"bot": FakeBot()})()
+
+        await admin_bot.setup_bot_commands(application)
+
+        self.assertEqual(len(application.bot.calls), 2)
+        for commands, _scope in application.bot.calls:
+            self.assertEqual(
+                [command.command for command in commands],
+                ["start", "help", "rates"],
+            )
+        self.assertIsNone(application.bot.calls[0][1])
+        self.assertEqual(application.bot.calls[1][1].chat_id, admin_bot.ADMIN_USER_ID)
 
 
 if __name__ == "__main__":
