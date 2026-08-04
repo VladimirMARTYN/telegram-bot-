@@ -1,4 +1,5 @@
 import os
+import logging
 import ssl
 import unittest
 
@@ -195,6 +196,28 @@ class TInvestTlsTests(unittest.TestCase):
             if key == "commonName"
         }
         self.assertIn("Russian Trusted Root CA", common_names)
+
+
+class LoggingSecurityTests(unittest.TestCase):
+    def test_api_tokens_are_redacted_from_log_messages(self):
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg="Telegram URL contains %s",
+            args=(admin_bot.BOT_TOKEN,),
+            exc_info=None,
+        )
+
+        admin_bot._SecretRedactionFilter().filter(record)
+
+        self.assertNotIn(admin_bot.BOT_TOKEN, record.getMessage())
+        self.assertIn("[REDACTED]", record.getMessage())
+
+    def test_http_request_loggers_do_not_emit_info(self):
+        self.assertGreaterEqual(logging.getLogger("httpx").level, logging.WARNING)
+        self.assertGreaterEqual(logging.getLogger("httpcore").level, logging.WARNING)
 
 
 if __name__ == "__main__":

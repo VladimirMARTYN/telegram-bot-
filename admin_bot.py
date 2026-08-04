@@ -25,7 +25,7 @@ from config import (
     DEFAULT_DAILY_TIME, DEFAULT_TIMEZONE, CACHE_TTL_CURRENCIES,
     CACHE_TTL_CRYPTO, CACHE_TTL_STOCKS, CACHE_TTL_COMMODITIES, CACHE_TTL_INDICES,
     SUPPORTED_CURRENCIES, SUPPORTED_CRYPTO, SUPPORTED_STOCKS,
-    FALLBACK_USD_RUB_RATE, PING_TARGETS
+    FALLBACK_USD_RUB_RATE, PING_TARGETS, TINVEST_API_TOKEN,
 )
 from utils import (
     is_admin, get_cached_data, fetch_with_retry, validate_positive_number,
@@ -42,6 +42,29 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+
+
+class _SecretRedactionFilter(logging.Filter):
+    """Не допускать попадания API-токенов в логи."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        redacted = message
+        for secret in (BOT_TOKEN, TINVEST_API_TOKEN):
+            if secret:
+                redacted = redacted.replace(secret, "[REDACTED]")
+        if redacted != message:
+            record.msg = redacted
+            record.args = ()
+        return True
+
+
+for log_handler in logging.getLogger().handlers:
+    log_handler.addFilter(_SecretRedactionFilter())
+
+# HTTP request URLs Telegram содержат токен бота в path.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Безопасный импорт reportlab (может отсутствовать)
