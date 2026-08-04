@@ -1,10 +1,12 @@
 import os
+import ssl
 import unittest
 
 os.environ.setdefault("BOT_TOKEN", "000000000:TESTTOKEN")
 os.environ.setdefault("ADMIN_USER_ID", "1")
 
 import admin_bot
+import data_sources
 from telegram.ext import ApplicationHandlerStop
 
 
@@ -174,6 +176,25 @@ class PrivateAccessTests(unittest.IsolatedAsyncioTestCase):
     def test_stored_admin_id_is_accepted_as_string(self):
         self.assertTrue(admin_bot.is_admin(str(admin_bot.ADMIN_USER_ID)))
         self.assertFalse(admin_bot.is_admin(str(admin_bot.ADMIN_USER_ID + 1)))
+
+
+class TInvestTlsTests(unittest.TestCase):
+    def test_official_endpoint_and_russian_root_ca_are_configured(self):
+        self.assertEqual(
+            data_sources._TINVEST_REST_BASE,
+            "https://invest-public-api.tbank.ru/rest",
+        )
+
+        context = data_sources._create_tinvest_ssl_context()
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        common_names = {
+            value
+            for certificate in context.get_ca_certs()
+            for subject_group in certificate.get("subject", ())
+            for key, value in subject_group
+            if key == "commonName"
+        }
+        self.assertIn("Russian Trusted Root CA", common_names)
 
 
 if __name__ == "__main__":

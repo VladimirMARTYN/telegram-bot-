@@ -9,6 +9,8 @@
 import logging
 import aiohttp
 import json
+import ssl
+from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import datetime
 import pytz
@@ -26,7 +28,18 @@ logger = logging.getLogger(__name__)
 
 # Используем просто число для таймаута, чтобы избежать проблем с контекстным менеджером
 _TIMEOUT = API_TIMEOUT
-_TINVEST_REST_BASE = "https://invest-public-api.tinkoff.ru/rest"
+_TINVEST_REST_BASE = "https://invest-public-api.tbank.ru/rest"
+_TINVEST_CA_FILE = Path(__file__).resolve().parent / "certs" / "RussianTrustedRootCA.pem"
+
+
+def _create_tinvest_ssl_context() -> ssl.SSLContext:
+    """Создать TLS-контекст T-Invest с официальным корневым CA Минцифры."""
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=str(_TINVEST_CA_FILE))
+    return context
+
+
+_TINVEST_SSL_CONTEXT = _create_tinvest_ssl_context()
 
 
 def _tinvest_money_to_float(value: Optional[Dict[str, Any]]) -> Optional[float]:
@@ -287,7 +300,8 @@ async def get_moex_stocks(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
                 f"{_TINVEST_REST_BASE}/tinkoff.public.invest.api.contract.v1.MarketDataService/GetLastPrices",
                 headers=headers,
                 json=payload,
-                timeout=_TIMEOUT
+                timeout=_TIMEOUT,
+                ssl=_TINVEST_SSL_CONTEXT,
             ) as resp:
                 if resp.status == 200:
                     price_data = await safe_json_response(resp)
@@ -300,7 +314,8 @@ async def get_moex_stocks(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
                 f"{_TINVEST_REST_BASE}/tinkoff.public.invest.api.contract.v1.MarketDataService/GetTradingStatuses",
                 headers=headers,
                 json=payload,
-                timeout=_TIMEOUT
+                timeout=_TIMEOUT,
+                ssl=_TINVEST_SSL_CONTEXT,
             ) as resp:
                 if resp.status == 200:
                     statuses_data = await safe_json_response(resp)
@@ -588,7 +603,8 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
                     f"{_TINVEST_REST_BASE}/tinkoff.public.invest.api.contract.v1.MarketDataService/GetLastPrices",
                     headers=headers,
                     json=payload,
-                    timeout=_TIMEOUT
+                    timeout=_TIMEOUT,
+                    ssl=_TINVEST_SSL_CONTEXT,
                 ) as resp:
                     price_data = await safe_json_response(resp) if resp.status == 200 else {}
                     if resp.status != 200:
@@ -598,7 +614,8 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
                     f"{_TINVEST_REST_BASE}/tinkoff.public.invest.api.contract.v1.MarketDataService/GetTradingStatuses",
                     headers=headers,
                     json=payload,
-                    timeout=_TIMEOUT
+                    timeout=_TIMEOUT,
+                    ssl=_TINVEST_SSL_CONTEXT,
                 ) as resp:
                     status_data = await safe_json_response(resp) if resp.status == 200 else {}
                     if resp.status != 200:
