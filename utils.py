@@ -27,7 +27,10 @@ from config import LAST_KNOWN_RATES_FILE
 def is_admin(user_id: int) -> bool:
     """Проверка прав администратора"""
     from config import ADMIN_USER_ID
-    return user_id == ADMIN_USER_ID
+    try:
+        return int(user_id) == ADMIN_USER_ID
+    except (TypeError, ValueError):
+        return False
 
 
 async def get_cached_data(

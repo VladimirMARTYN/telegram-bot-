@@ -5,6 +5,7 @@ os.environ.setdefault("BOT_TOKEN", "000000000:TESTTOKEN")
 os.environ.setdefault("ADMIN_USER_ID", "1")
 
 import admin_bot
+from telegram.ext import ApplicationHandlerStop
 
 
 class RatesMessageTests(unittest.TestCase):
@@ -128,22 +129,51 @@ class BotCommandMenuTests(unittest.IsolatedAsyncioTestCase):
         class FakeBot:
             def __init__(self):
                 self.calls = []
+                self.deleted_scopes = []
 
             async def set_my_commands(self, commands, scope=None):
                 self.calls.append((commands, scope))
+
+            async def delete_my_commands(self, scope=None):
+                self.deleted_scopes.append(scope)
 
         application = type("FakeApplication", (), {"bot": FakeBot()})()
 
         await admin_bot.setup_bot_commands(application)
 
-        self.assertEqual(len(application.bot.calls), 2)
-        for commands, _scope in application.bot.calls:
-            self.assertEqual(
-                [command.command for command in commands],
-                ["start", "help", "rates"],
-            )
-        self.assertIsNone(application.bot.calls[0][1])
-        self.assertEqual(application.bot.calls[1][1].chat_id, admin_bot.ADMIN_USER_ID)
+        self.assertEqual(application.bot.deleted_scopes, [None])
+        self.assertEqual(len(application.bot.calls), 1)
+        commands, scope = application.bot.calls[0]
+        self.assertEqual(
+            [command.command for command in commands],
+            ["start", "help", "rates"],
+        )
+        self.assertEqual(scope.chat_id, admin_bot.ADMIN_USER_ID)
+
+
+class PrivateAccessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_admin_update_is_allowed(self):
+        update = type(
+            "FakeUpdate",
+            (),
+            {"effective_user": type("FakeUser", (), {"id": admin_bot.ADMIN_USER_ID})()},
+        )()
+
+        await admin_bot.private_access_guard(update, None)
+
+    async def test_non_admin_update_stops_all_handlers(self):
+        update = type(
+            "FakeUpdate",
+            (),
+            {"effective_user": type("FakeUser", (), {"id": admin_bot.ADMIN_USER_ID + 1})()},
+        )()
+
+        with self.assertRaises(ApplicationHandlerStop):
+            await admin_bot.private_access_guard(update, None)
+
+    def test_stored_admin_id_is_accepted_as_string(self):
+        self.assertTrue(admin_bot.is_admin(str(admin_bot.ADMIN_USER_ID)))
+        self.assertFalse(admin_bot.is_admin(str(admin_bot.ADMIN_USER_ID + 1)))
 
 
 if __name__ == "__main__":

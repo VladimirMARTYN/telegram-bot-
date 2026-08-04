@@ -11,7 +11,10 @@ import time as time_module
 from datetime import datetime, time, timedelta
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, JobQueue
+from telegram.ext import (
+    Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler,
+    ContextTypes, JobQueue, MessageHandler, TypeHandler, filters,
+)
 import json
 import aiohttp
 import threading
@@ -209,6 +212,20 @@ def save_user_data():
             _atomic_write_json('user_data.json', serializable_data)
     except Exception as e:
         logger.error(f"Ошибка сохранения пользователей: {e}")
+
+
+async def private_access_guard(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Остановить обработку любых updates не от владельца бота."""
+    user = update.effective_user
+    if user is not None and is_admin(user.id):
+        return
+
+    user_id = getattr(user, 'id', None)
+    logger.warning("Заблокирован update от пользователя %s", user_id)
+    raise ApplicationHandlerStop
+
 
 # Команды бота
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1467,6 +1484,8 @@ async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
         
         # Проверяем изменения и отправляем уведомления
         for user_id, user_notifications in notifications.items():
+            if not is_admin(user_id):
+                continue
             if not user_notifications.get('subscribed', False):
                 continue
             
@@ -1554,6 +1573,8 @@ async def daily_summary_job(context: ContextTypes.DEFAULT_TYPE):
         # Подсчитываем активных подписчиков
         active_subscribers = 0
         for user_id, user_notifications in notifications.items():
+            if not is_admin(user_id):
+                continue
             if not user_notifications.get('subscribed', False):
                 continue
             if not user_notifications.get('daily_summary', True):
@@ -1570,6 +1591,8 @@ async def daily_summary_job(context: ContextTypes.DEFAULT_TYPE):
         logger.info("📡 Получаю данные для ежедневной сводки...")
         
         for user_id, user_notifications in notifications.items():
+            if not is_admin(user_id):
+                continue
             if not user_notifications.get('subscribed', False):
                 continue
             if not user_notifications.get('daily_summary', True):
@@ -2227,6 +2250,9 @@ def main() -> None:
         GLOBAL_JOB_QUEUE = job_queue
 
     # JobQueue уже получен выше в диагностике
+
+    # Глобальная проверка выполняется раньше обработчиков всех команд и кнопок.
+    application.add_handler(TypeHandler(Update, private_access_guard), group=-1)
 
     # Основные команды
     application.add_handler(CommandHandler("start", start))
@@ -2898,9 +2924,9 @@ async def setup_bot_commands(application):
     ]
 
     try:
-        await application.bot.set_my_commands(commands)
+        # У посторонних пользователей меню команд не отображается вообще.
+        await application.bot.delete_my_commands()
         if ADMIN_USER_ID:
-            # Перезаписываем ранее созданное админское меню теми же тремя командами.
             await application.bot.set_my_commands(
                 commands,
                 scope=BotCommandScopeChat(chat_id=ADMIN_USER_ID),

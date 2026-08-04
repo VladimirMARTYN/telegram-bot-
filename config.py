@@ -9,6 +9,8 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 
 # Администратор бота
 ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '0'))
+if ADMIN_USER_ID <= 0:
+    raise ValueError("Необходимо установить положительный ADMIN_USER_ID")
 
 # API ключи для внешних сервисов
 METALPRICEAPI_KEY = os.getenv('METALPRICEAPI_KEY', 'demo')
