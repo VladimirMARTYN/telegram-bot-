@@ -139,6 +139,13 @@ bot_start_time = get_moscow_time()
 
 LTI_SBER_QUANTITY = 12_344
 LTI_SBER_INITIAL_PRICE = 275.40
+LTI_FIXATION_DATE = "31.07.2026"
+LTI_FIXATION_VALUE = 3_400_000
+LTI_PAYMENT_SCHEDULE = (
+    ("31.07.2027", 3_086),
+    ("31.07.2028", 3_086),
+    ("31.07.2029", 6_172),
+)
 STOCK_NAMES = {
     'SBER': 'Сбер', 'YDEX': 'Яндекс', 'VKCO': 'ВК',
     'T': 'Т-Технологии', 'GAZP': 'Газпром', 'GMKN': 'Норникель',
@@ -625,27 +632,47 @@ def build_rates_message(
     )
 
     sber_price = stocks_data.get('SBER', {}).get('price')
-    daily_lines.extend(["", "💼 <b>ПОРТФЕЛЬ LTI</b>"])
+    lti_quantity = f"{LTI_SBER_QUANTITY:,}".replace(",", " ")
+    daily_lines.extend([
+        "",
+        "💼 <b>Портфель LTI</b>",
+        (
+            f"Фиксация {LTI_FIXATION_DATE}: "
+            f"{lti_quantity} акций, "
+            f"{format_price(LTI_SBER_INITIAL_PRICE)} рублей/акция, "
+            f"{format_price(LTI_FIXATION_VALUE, 0)} рублей"
+        ),
+    ])
     if isinstance(sber_price, (int, float)) and sber_price > 0:
         lti_value = sber_price * LTI_SBER_QUANTITY
-        lti_initial_value = LTI_SBER_INITIAL_PRICE * LTI_SBER_QUANTITY
-        lti_change = lti_value - lti_initial_value
-        lti_change_pct = (lti_change / lti_initial_value) * 100
+        lti_change = lti_value - LTI_FIXATION_VALUE
+        lti_change_pct = (lti_change / LTI_FIXATION_VALUE) * 100
         signed_change = f"{lti_change:+,.2f}".replace(",", " ")
-        daily_lines.append(
-            f"• {LTI_SBER_QUANTITY:,} акций Сбера: <b>{format_price(lti_value)} ₽</b>"
-            .replace(",", " ")
+        daily_lines.extend(
+            f"Выплата {payment_date}: "
+            f"{format_price(quantity * sber_price)} рублей"
+            for payment_date, quantity in LTI_PAYMENT_SCHEDULE
         )
-        daily_lines.append(
-            f"• Изменение: <b>{signed_change} ₽ ({lti_change_pct:+.2f}%)</b>"
-        )
-        daily_lines.append(
-            f"  <i>Цена акции: {format_price(sber_price)} ₽; "
-            f"база: {format_price(LTI_SBER_INITIAL_PRICE)} ₽ "
-            f"({format_price(lti_initial_value)} ₽)</i>"
-        )
+        daily_lines.extend([
+            "",
+            f"Текущая цена акции: <b><i>{format_price(sber_price)} рублей</i></b>",
+            f"Текущий общий объём: {format_price(lti_value)} рублей",
+            (
+                f"Изменение: <b><i>{signed_change} рублей "
+                f"({lti_change_pct:+.2f}%)</i></b>"
+            ),
+        ])
     else:
-        daily_lines.append(f"• {LTI_SBER_QUANTITY:,} акций Сбера: <b>Н/Д</b>".replace(",", " "))
+        daily_lines.extend(
+            f"Выплата {payment_date}: <b>Н/Д</b>"
+            for payment_date, _quantity in LTI_PAYMENT_SCHEDULE
+        )
+        daily_lines.extend([
+            "",
+            "Текущая цена акции: <b><i>Н/Д</i></b>",
+            "Текущий общий объём: <b>Н/Д</b>",
+            "Изменение: <b><i>Н/Д</i></b>",
+        ])
 
     daily_lines.extend(["", "🛠️ <b>ТОВАРЫ</b>"])
     daily_lines.extend(

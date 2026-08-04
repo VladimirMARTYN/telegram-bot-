@@ -72,15 +72,43 @@ class RatesMessageTests(unittest.TestCase):
 
     def test_lti_uses_current_sber_price(self):
         message = self.build_message()
-        expected_value = self.stocks["SBER"]["price"] * admin_bot.LTI_SBER_QUANTITY
-        initial_value = admin_bot.LTI_SBER_INITIAL_PRICE * admin_bot.LTI_SBER_QUANTITY
-        expected_change = expected_value - initial_value
-        expected_change_pct = expected_change / initial_value * 100
-        self.assertIn(admin_bot.format_price(expected_value), message)
-        self.assertIn("12 344 акций Сбера", message)
-        self.assertIn(f"{expected_change:+,.2f}".replace(",", " "), message)
-        self.assertIn(f"{expected_change_pct:+.2f}%", message)
-        self.assertIn(admin_bot.format_price(initial_value), message)
+        sber_price = self.stocks["SBER"]["price"]
+        expected_value = sber_price * admin_bot.LTI_SBER_QUANTITY
+        expected_change = expected_value - admin_bot.LTI_FIXATION_VALUE
+        expected_change_pct = expected_change / admin_bot.LTI_FIXATION_VALUE * 100
+        expected_change_str = f"{expected_change:+,.2f}".replace(",", " ")
+
+        self.assertIn("<b>Портфель LTI</b>", message)
+        self.assertIn(
+            "Фиксация 31.07.2026: 12 344 акций, "
+            "275.40 рублей/акция, 3 400 000 рублей",
+            message,
+        )
+        self.assertIn(
+            f"Выплата 31.07.2027: {admin_bot.format_price(3_086 * sber_price)} рублей",
+            message,
+        )
+        self.assertIn(
+            f"Выплата 31.07.2028: {admin_bot.format_price(3_086 * sber_price)} рублей",
+            message,
+        )
+        self.assertIn(
+            f"Выплата 31.07.2029: {admin_bot.format_price(6_172 * sber_price)} рублей",
+            message,
+        )
+        self.assertIn(
+            f"Текущая цена акции: <b><i>{admin_bot.format_price(sber_price)} рублей</i></b>",
+            message,
+        )
+        self.assertIn(
+            f"Текущий общий объём: {admin_bot.format_price(expected_value)} рублей",
+            message,
+        )
+        self.assertIn(
+            f"Изменение: <b><i>{expected_change_str} рублей "
+            f"({expected_change_pct:+.2f}%)</i></b>",
+            message,
+        )
 
     def test_tradable_funds_use_moex_tickers(self):
         self.assertIn("TGLD", admin_bot.STOCK_NAMES)
