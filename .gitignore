@@ -142,6 +142,8 @@ Thumbs.db
 notifications.json
 bot_settings.json
 price_history.json
+alert_state.json
+*.json.*.tmp
 last_known_rates.json
 user_data.json
 autobuy_settings.json

@@ -16,8 +16,14 @@ from telegram.ext import (
     ContextTypes, JobQueue, MessageHandler, TypeHandler, filters,
 )
 import json
+import http_compat  # Configure the Python 3.9 parser before importing aiohttp.
 import aiohttp
 import threading
+from typing import Optional
+from storage import data_path, read_json, write_json, migrate_to_data_dir
+from quotes import resolve_currency_rates
+from alerts import new_alert_state, observe_prices
+from telegram_text import split_html
 
 # Импорты конфигурации и утилит
 from config import (
@@ -30,7 +36,8 @@ from config import (
 from utils import (
     is_admin, get_cached_data, fetch_with_retry, validate_positive_number,
     validate_asset, escape_html, format_price, clear_cache,
-    save_last_known_rate, get_last_known_rate
+    save_last_known_rate, get_last_known_rate, positive_price, finite_number,
+    is_estimated_quote, parse_timestamp
 )
 from data_sources import (
     get_cbr_rates, get_forex_rates, get_crypto_data, get_moex_stocks,
@@ -198,19 +205,15 @@ user_data = {}
 
 
 def _atomic_write_json(file_path: str, data) -> None:
-    """Атомарно записать JSON в файл через временный файл и replace()."""
-    temp_path = f"{file_path}.tmp"
-    with open(temp_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(temp_path, file_path)
+    write_json(file_path, data)
 
 def load_user_data():
     """Загрузить данные пользователей из файла"""
     global user_data
     try:
         with _data_file_lock:
-            if os.path.exists('user_data.json'):
-                with open('user_data.json', 'r', encoding='utf-8') as f:
+            if data_path('user_data.json').exists():
+                with data_path('user_data.json').open('r', encoding='utf-8') as f:
                     raw_data = json.load(f)
 
                 user_data = {}
@@ -272,7 +275,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         save_user_data()
     
     welcome_text = (
-        f"👋 <b>Привет, {user.first_name}!</b>\n\n"
+        f"👋 <b>Привет, {escape_html(user.first_name)}!</b>\n\n"
         f"🤖 <b>Вас приветствует бот-финансист с актуальными данными!</b>\n"
         f"Пожалуйста, ознакомьтесь:\n\n"
         f"📋 <b>Основные команды:</b>\n"
@@ -300,6 +303,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда /help"""
+    daily_time = escape_html(load_bot_settings().get('daily_summary_time', DEFAULT_DAILY_TIME))
     help_text = (
         "🤖 <b>Справка по боту-финансисту</b>\n\n"
         "💱 <b>Основные функции:</b>\n"
@@ -308,7 +312,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• Фондовые индексы\n"
         "• Уведомления о резких изменениях\n"
         "• Пороговые алерты\n"
-        "• Ежедневная сводка в 9:00 МСК\n\n"
+        f"• Ежедневная сводка в {daily_time} МСК\n\n"
         "📋 <b>Команды:</b>\n"
         "/start - Главное меню\n"
         "/help - Эта справка\n"
@@ -342,7 +346,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• Gold-API.com - драгоценные металлы\n"
         "• EIA API - точные цены нефти\n"
         "• Alpha Vantage - фондовые индексы\n\n"
-        "💡 <b>Совет:</b> Выполните /subscribe чтобы получать ежедневную сводку в 9:00 МСК!"
+        f"💡 <b>Совет:</b> Выполните /subscribe чтобы получать ежедневную сводку в {daily_time} МСК!"
     )
     
     await update.message.reply_html(help_text)
@@ -376,9 +380,15 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     pass
 
         for raw_item in normalized_args:
+            try:
+                ipaddress.ip_address(raw_item)
+                specs.append({'host': raw_item, 'port': None})
+                continue
+            except ValueError:
+                pass
             if ":" in raw_item:
                 host_part, port_part = raw_item.rsplit(":", 1)
-                host_part = host_part.strip()
+                host_part = host_part.strip().strip("[]")
                 port_part = port_part.strip()
                 try:
                     ipaddress.ip_address(host_part)
@@ -415,7 +425,7 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception as exc:
             return None, f"{type(exc).__name__}: {exc}"
 
-    async def ping_host(host: str, port: int | None, count: int = 4, timeout_seconds: int = 2) -> dict:
+    async def ping_host(host: str, port: Optional[int], count: int = 4, timeout_seconds: int = 2) -> dict:
         result = {
             "host": host,
             "ok": False,
@@ -429,7 +439,7 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "checked_ports": []
         }
 
-        if ping_binary:
+        if ping_binary and port is None:
             cmd = [
                 ping_binary,
                 "-c", str(count),
@@ -442,7 +452,13 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            stdout, stderr = await process.communicate()
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), count * (timeout_seconds + 1) + 2)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.communicate()
+                result['raw_error'] = 'таймаут ICMP'
+                return result
             output = (stdout or b"").decode("utf-8", errors="ignore")
             error_text = (stderr or b"").decode("utf-8", errors="ignore").strip()
 
@@ -569,33 +585,48 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 def _format_delta_html(price_history, asset_key, current_price):
     """Форматировать изменение относительно последней сохраненной цены."""
-    if not isinstance(current_price, (int, float)):
+    if not positive_price(current_price):
         return ""
     previous_price = price_history.get(asset_key)
-    if not isinstance(previous_price, (int, float)) or previous_price == 0:
+    if not positive_price(previous_price):
         return ""
     change_pct = ((current_price - previous_price) / previous_price) * 100
     return f" (Δ {change_pct:+.2f}% от последнего)"
+
+
+def _quote_note_html(quote):
+    notes = []
+    if is_estimated_quote(quote):
+        notes.append('расчётная оценка')
+    if quote.get('note'):
+        notes.append(str(quote['note']))
+    as_of = quote.get('as_of')
+    timestamp = parse_timestamp(as_of) if as_of else None
+    if isinstance(as_of, str) and len(as_of) == 10:
+        notes.append(as_of)
+    elif timestamp:
+        notes.append(timestamp.astimezone(pytz.timezone(DEFAULT_TIMEZONE)).strftime('%d.%m %H:%M'))
+    return f" <i>({escape_html('; '.join(notes))})</i>" if notes else ''
 
 
 def _format_stock_html(ticker, stocks_data, price_history):
     name = STOCK_NAMES[ticker]
     stock = stocks_data.get(ticker, {})
     price = stock.get('price')
-    if not isinstance(price, (int, float)) or price <= 0:
+    if not positive_price(price):
         note = stock.get('note') or "Данные временно недоступны"
         return f"• 🔴 {escape_html(name)}: <b>{escape_html(note)}</b>"
 
     change_pct = stock.get('change_pct')
-    is_live = stock.get('is_live', True)
+    is_live = stock.get('is_live')
     status_icon = "🟢" if is_live else "🟡"
     change_str = ""
-    if isinstance(change_pct, (int, float)) and change_pct != 0 and is_live:
-        change_str = f" ({change_pct:+.2f}% с открытия)"
+    if finite_number(change_pct) and change_pct != 0:
+        change_str = f" ({change_pct:+.2f}% к предыдущему закрытию)"
     delta_str = _format_delta_html(price_history, ticker, price)
     return (
         f"• {status_icon} {escape_html(name)}: <b>{format_price(price)} ₽</b>"
-        f"{change_str}{delta_str}"
+        f"{change_str}{delta_str}{_quote_note_html(stock)}"
     )
 
 
@@ -603,35 +634,35 @@ def _format_commodity_html(commodity, commodities_data, usd_to_rub_rate, price_h
     name = COMMODITY_NAMES[commodity]
     item = commodities_data.get(commodity, {})
     price = item.get('price')
-    if not isinstance(price, (int, float)) or price <= 0:
+    if not positive_price(price):
         return f"• {escape_html(name)}: <b>Н/Д</b>"
 
     rub_price = price * usd_to_rub_rate if usd_to_rub_rate > 0 else None
-    delta_str = _format_delta_html(price_history, commodity, price)
+    delta_str = '' if is_estimated_quote(item) else _format_delta_html(price_history, commodity, price)
+    note = _quote_note_html(item)
     if rub_price is not None:
         return (
             f"• {escape_html(name)}: <b>${format_price(price)}</b> "
-            f"({format_price(rub_price)} ₽){delta_str}"
+            f"({format_price(rub_price)} ₽){delta_str}{note}"
         )
-    return f"• {escape_html(name)}: <b>${format_price(price)}</b>{delta_str}"
+    return f"• {escape_html(name)}: <b>${format_price(price)}</b>{delta_str}{note}"
 
 
 def _format_index_html(index, indices_data, price_history):
     item = indices_data.get(index, {})
     name = item.get('name') or INDEX_NAMES[index]
     price = item.get('price')
-    if not isinstance(price, (int, float)) or price == 0:
+    if not positive_price(price):
         return f"• 🔴 {escape_html(name)}: <b>Данные временно недоступны</b>"
 
-    is_live = item.get('is_live', True)
+    is_live = item.get('is_live')
     change = item.get('change_pct')
-    change_period = "с открытия" if is_live else "с закрытия"
+    change_period = "к предыдущему закрытию"
     change_str = ""
-    if isinstance(change, (int, float)) and change != 0:
+    if finite_number(change) and change != 0:
         change_str = f" ({change:+.2f}% {change_period})"
-    note = item.get('note')
-    note_str = f" ({escape_html(note)})" if note else ""
-    delta_str = _format_delta_html(price_history, index, price)
+    note_str = _quote_note_html(item)
+    delta_str = '' if is_estimated_quote(item) else _format_delta_html(price_history, index, price)
     status_icon = "🟢" if is_live else "🟡"
     return (
         f"• {status_icon} {escape_html(name)}: <b>{format_price(price)}</b>"
@@ -650,6 +681,8 @@ def build_rates_message(
     indices_data,
     price_history,
     current_time,
+    conversion_note="",
+    source_dates="",
 ):
     """Собрать компактный DAILY и нативный сворачиваемый блок Telegram."""
     daily_lines = [
@@ -683,7 +716,7 @@ def build_rates_message(
             f"{format_price(LTI_FIXATION_VALUE, 0)} рублей"
         ),
     ])
-    if isinstance(sber_price, (int, float)) and sber_price > 0:
+    if positive_price(sber_price):
         lti_value = sber_price * LTI_SBER_QUANTITY
         lti_change = lti_value - LTI_FIXATION_VALUE
         lti_change_pct = (lti_change / LTI_FIXATION_VALUE) * 100
@@ -755,6 +788,10 @@ def build_rates_message(
     message = "\n".join(daily_lines)
     message += "\n\n🔎 <b>ПОДРОБНЕЕ</b>\n"
     message += f"<blockquote expandable>{detail_text}</blockquote>"
+    if conversion_note:
+        message += f"\n\n⚠️ {escape_html(conversion_note)}"
+    if source_dates:
+        message += f"\nДаты валют: {escape_html(source_dates)}"
     message += f"\n\n🕐 <b>Время:</b> {escape_html(current_time)}"
     message += (
         "\n📡 <b>Источники:</b> ЦБ РФ, CoinGecko/Coinbase/Binance, "
@@ -762,13 +799,13 @@ def build_rates_message(
     )
     return message
 
-async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Получить полные курсы валют, криптовалют, акций, товаров и индексов"""
     reply_target = update.effective_message
     status_message = None
     if reply_target is None:
         logger.error("rates_command: отсутствует message в update")
-        return
+        return False
 
     try:
         status_message = await reply_target.reply_text("📊 Получаю информацию")
@@ -812,125 +849,10 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             return_exceptions=True
         )
         
-        # Обработка курсов валют ЦБ РФ
-        usd_str = eur_str = cny_str = "❌ Ошибка API"
-        usd_to_rub_rate = 0
-        
-        try:
-            if isinstance(cbr_data, Exception):
-                raise cbr_data
-            
-            if not cbr_data or not isinstance(cbr_data, dict):
-                logger.error("Данные ЦБ РФ не получены или имеют неправильный формат")
-                raise ValueError("Данные ЦБ РФ недоступны")
-            
-            valute = cbr_data.get('Valute', {})
-            if not valute:
-                logger.error("Данные Valute отсутствуют в ответе ЦБ РФ")
-                raise ValueError("Данные валют отсутствуют")
-            
-            # Получаем курсы валют (только 4 основные) с индивидуальной обработкой ошибок
-            usd_info = valute.get('USD', {})
-            usd_rate = usd_info.get('Value') if isinstance(usd_info, dict) else None
-            
-            eur_info = valute.get('EUR', {})
-            eur_rate = eur_info.get('Value') if isinstance(eur_info, dict) else None
-            
-            cny_info = valute.get('CNY', {})
-            cny_rate = cny_info.get('Value') if isinstance(cny_info, dict) else None
-            
-            # Сохраняем курс доллара для конвертации в рубли
-            usd_to_rub_rate = usd_rate if isinstance(usd_rate, (int, float)) else 0
-            
-            # Сохраняем успешно полученный курс для будущего использования
-            if usd_to_rub_rate > 0:
-                save_last_known_rate('USD_RUB', usd_to_rub_rate)
-            
-            # Форматируем валютные курсы индивидуально
-            if isinstance(usd_rate, (int, float)):
-                usd_str = f"{format_price(usd_rate)} ₽"
-            else:
-                usd_str = "❌ Ошибка API"
-                logger.warning(f"USD курс не получен: {usd_rate}")
-            
-            if isinstance(eur_rate, (int, float)):
-                eur_str = f"{format_price(eur_rate)} ₽"
-            else:
-                eur_str = "❌ Ошибка API"
-                logger.warning(f"EUR курс не получен: {eur_rate}")
-            
-            if isinstance(cny_rate, (int, float)):
-                cny_str = f"{format_price(cny_rate)} ₽"
-            else:
-                cny_str = "❌ Ошибка API"
-                logger.warning(f"CNY курс не получен: {cny_rate}")
-            
-        except Exception as e:
-            logger.error(f"Ошибка получения курсов ЦБ РФ: {e}")
-            import traceback
-            logger.error(f"Трассировка: {traceback.format_exc()}")
-            # Не меняем значения, если они уже установлены индивидуально
-        
-        # Обработка курса USD/RUB с FOREX
-        try:
-            if isinstance(forex_data, Exception):
-                raise forex_data
-            
-            # Получаем курс USD/RUB с FOREX
-            forex_rates = forex_data.get('rates', {})
-            forex_usd_rub = forex_rates.get('RUB', None)
-            
-            if forex_usd_rub and isinstance(forex_usd_rub, (int, float)):
-                # Если ЦБ РФ недоступен, используем FOREX как основной источник
-                if usd_to_rub_rate == 0:
-                    usd_to_rub_rate = forex_usd_rub
-                    usd_str = f"{format_price(forex_usd_rub)} ₽ (FOREX)"
-                    logger.debug(f"Используем FOREX как основной источник: {forex_usd_rub:.2f} ₽")
-                else:
-                    # Вычисляем разницу с курсом ЦБ РФ
-                    diff = forex_usd_rub - usd_to_rub_rate
-                    diff_pct = (diff / usd_to_rub_rate) * 100
-                    diff_str = f" (FOREX: {format_price(forex_usd_rub)} ₽, разница: {diff:+.2f} ₽, {diff_pct:+.2f}%)"
-                    usd_str += diff_str
-                    logger.debug(f"FOREX USD/RUB: {forex_usd_rub:.2f} ₽")
-                
-                # EUR/RUB и CNY/RUB через FOREX (кросс через USD)
-                forex_eur_usd = forex_rates.get('EUR')
-                if forex_eur_usd and isinstance(forex_eur_usd, (int, float)) and forex_eur_usd != 0:
-                    forex_eur_rub = forex_usd_rub / forex_eur_usd
-                    if isinstance(eur_rate, (int, float)) and eur_rate > 0:
-                        diff = forex_eur_rub - eur_rate
-                        diff_pct = (diff / eur_rate) * 100
-                        eur_str += f" (FOREX: {format_price(forex_eur_rub)} ₽, разница: {diff:+.2f} ₽, {diff_pct:+.2f}%)"
-                    else:
-                        eur_str = f"{format_price(forex_eur_rub)} ₽ (FOREX)"
-                
-                forex_cny_usd = forex_rates.get('CNY')
-                if forex_cny_usd and isinstance(forex_cny_usd, (int, float)) and forex_cny_usd != 0:
-                    forex_cny_rub = forex_usd_rub / forex_cny_usd
-                    if isinstance(cny_rate, (int, float)) and cny_rate > 0:
-                        diff = forex_cny_rub - cny_rate
-                        diff_pct = (diff / cny_rate) * 100
-                        cny_str += f" (FOREX: {format_price(forex_cny_rub)} ₽, разница: {diff:+.2f} ₽, {diff_pct:+.2f}%)"
-                    else:
-                        cny_str = f"{format_price(forex_cny_rub)} ₽ (FOREX)"
-                
-        except Exception as e:
-            logger.error(f"Ошибка получения курса FOREX: {e}")
-            if usd_to_rub_rate == 0:
-                # Пробуем взять последнее известное значение (не старше 24 часов)
-                last_rate = get_last_known_rate('USD_RUB', max_age_hours=24)
-                if last_rate:
-                    usd_to_rub_rate = last_rate
-                    logger.warning(f"⚠️ Используется последний известный курс USD/RUB: {usd_to_rub_rate:.2f}")
-                else:
-                    # Только если нет последнего значения - используем fallback
-                    usd_to_rub_rate = FALLBACK_USD_RUB_RATE
-                    logger.error(f"⚠️ Все источники недоступны, используется fallback курс USD/RUB: {usd_to_rub_rate:.2f}")
-                    
-                # Сохраняем используемое значение для статистики
-                save_last_known_rate('USD_RUB', usd_to_rub_rate)
-        
+        fx = resolve_currency_rates(cbr_data, forex_data)
+        usd_str, eur_str, cny_str = (fx['strings'][key] for key in ('USD', 'EUR', 'CNY'))
+        usd_to_rub_rate = fx['usd_to_rub_rate']
+
         # Загружаем историю цен для динамики
         price_history = load_price_history()
         
@@ -953,25 +875,20 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             crypto_name = crypto['name']
             decimals = crypto['decimals']
             
-            if crypto_id in crypto_data:
-                price = crypto_data[crypto_id]['price']
-                change_24h = crypto_data[crypto_id]['change_24h']
-                source = crypto_data[crypto_id]['source']
-                
-                if isinstance(price, (int, float)) and usd_to_rub_rate > 0:
-                    rub_price = price * usd_to_rub_rate
-                    change_str = f" ({change_24h:+.2f}% за 24ч)" if change_24h != 0 else ""
-                    source_str = f" [{source}]" if source != 'CoinGecko' else ""
-                    crypto_strings[crypto_id] = f"{crypto_name}: ${format_price(price, decimals)} ({format_price(rub_price, decimals)} ₽){change_str}{source_str}"
-                elif isinstance(price, (int, float)):
-                    change_str = f" ({change_24h:+.2f}% за 24ч)" if change_24h != 0 else ""
-                    source_str = f" [{source}]" if source != 'CoinGecko' else ""
-                    crypto_strings[crypto_id] = f"{crypto_name}: ${format_price(price, decimals)}{change_str}{source_str}"
-                else:
-                    crypto_strings[crypto_id] = f"{crypto_name}: ❌ Н/Д"
-            else:
-                crypto_strings[crypto_id] = f"{crypto_name}: ❌ Н/Д"
-        
+            info = crypto_data.get(crypto_id, {}) if isinstance(crypto_data, dict) else {}
+            if not isinstance(info, dict) or not positive_price(info.get('price')):
+                crypto_strings[crypto_id] = f'{crypto_name}: Н/Д'
+                continue
+            price = info['price']
+            change = info.get('change_24h')
+            source = info.get('source', '')
+            currency = info.get('currency', 'USD')
+            amount = f'${format_price(price, decimals)}' if currency == 'USD' else f'{format_price(price, decimals)} {currency}'
+            rub = f' ({format_price(price * usd_to_rub_rate, decimals)} ₽)' if usd_to_rub_rate > 0 and currency == 'USD' else ''
+            change_str = f' ({change:+.2f}% за 24ч)' if finite_number(change) else ''
+            source_str = f' [{source}]' if source and source != 'CoinGecko' else ''
+            crypto_strings[crypto_id] = f'{crypto_name}: {amount}{rub}{change_str}{source_str}'
+
         # Обработка акций
         if isinstance(stocks_data, Exception):
             logger.error(f"Ошибка получения акций: {stocks_data}")
@@ -986,6 +903,12 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         if isinstance(indices_data, Exception):
             logger.error(f"Ошибка получения индексов: {indices_data}")
             indices_data = {}
+
+        stocks_data, commodities_data, indices_data = [
+            {key: quote for key, quote in payload.items() if isinstance(quote, dict)}
+            if isinstance(payload, dict) else {}
+            for payload in (stocks_data, commodities_data, indices_data)
+        ]
         
         stock_items = list(STOCK_NAMES.keys())
         commodity_items = COMMODITY_ITEMS
@@ -1003,6 +926,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             indices_data=indices_data,
             price_history=price_history,
             current_time=current_time,
+            conversion_note=fx["conversion_note"], source_dates=fx["source_dates"],
         )
         
         # Обновляем историю цен для динамики (чтобы дельты появлялись в /rates)
@@ -1010,17 +934,17 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             history_update = {}
             for ticker in stock_items:
                 price = stocks_data.get(ticker, {}).get('price')
-                if price is not None:
+                if positive_price(price):
                     history_update[ticker] = price
             for commodity in commodity_items:
                 if commodity in commodities_data:
                     price = commodities_data[commodity].get('price')
-                    if price is not None:
+                    if positive_price(price) and not is_estimated_quote(commodities_data[commodity]):
                         history_update[commodity] = price
             for index in index_items:
                 if index in indices_data:
                     price = indices_data[index].get('price')
-                    if price is not None:
+                    if positive_price(price) and not is_estimated_quote(indices_data[index]):
                         history_update[index] = price
             if history_update:
                 price_history.update(history_update)
@@ -1028,7 +952,11 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception as e:
             logger.error(f"Ошибка обновления истории цен в /rates: {e}")
         
-        await status_message.edit_text(message, parse_mode='HTML')
+        parts = split_html(message)
+        await status_message.edit_text(parts[0], parse_mode='HTML')
+        for part in parts[1:]:
+            await reply_target.reply_text(part, parse_mode='HTML')
+        return True
         
     except Exception as e:
         logger.error(f"Общая ошибка в rates_command: {e}")
@@ -1042,6 +970,7 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await status_message.edit_text(error_message)
         else:
             await reply_target.reply_text(error_message)
+        return False
 
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка всех остальных сообщений"""
@@ -1064,55 +993,42 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Подписаться на уведомления о резких изменениях курсов"""
-    user_id = update.effective_user.id
-    notifications = load_notification_data()
-    
-    if str(user_id) not in notifications:
-        notifications[str(user_id)] = {
-            'subscribed': True,
-            'threshold': DEFAULT_THRESHOLD,  # 2% по умолчанию
-            'alerts': {},
-            'daily_summary': True
-        }
+    user_id = str(update.effective_user.id)
+    target = update.effective_message
+    try:
+        notifications = load_notification_data()
+        settings = load_bot_settings()
+        prefs = notifications.setdefault(user_id, {
+            'threshold': DEFAULT_THRESHOLD, 'alerts': {}, 'daily_summary': True,
+        })
+        prefs['subscribed'] = True
         save_notification_data(notifications)
-        
-        await update.message.reply_html(
-            "✅ <b>Подписка активирована!</b>\n\n"
-            "📈 Вы будете получать уведомления о:\n"
-            "• Резких изменениях курсов >2%\n"
-            "• Ежедневной сводке в 9:00 МСК\n\n"
-            "⚙️ Используйте /set_alert для пороговых алертов\n"
-            "🔕 /unsubscribe для отписки"
-        )
-    else:
-        notifications[str(user_id)]['subscribed'] = True
-        save_notification_data(notifications)
-        
-        await update.message.reply_html(
-            "🔔 <b>Подписка уже активна!</b>\n\n"
-            "Используйте /view_alerts для просмотра настроек"
-        )
+    except (OSError, ValueError, TypeError) as exc:
+        logger.error('Не удалось сохранить подписку: %s', exc)
+        await target.reply_text('❌ Не удалось сохранить подписку. Попробуйте позже.')
+        return
+    when = escape_html(settings.get('daily_summary_time', DEFAULT_DAILY_TIME))
+    await target.reply_html(
+        f'✅ <b>Подписка активирована!</b>\n\n'
+        f'Ежедневная сводка: {when} МСК.\n'
+        'Пороговые алерты: /set_alert\nНастройки: /view_alerts\nОтписка: /unsubscribe'
+    )
+
 
 async def unsubscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Отписаться от уведомлений"""
-    user_id = update.effective_user.id
-    notifications = load_notification_data()
-    
-    if str(user_id) in notifications:
-        notifications[str(user_id)]['subscribed'] = False
-        save_notification_data(notifications)
-        
-        await update.message.reply_html(
-            "🔕 <b>Подписка отключена</b>\n\n"
-            "Вы больше не будете получать уведомления.\n"
-            "Используйте /subscribe для повторной активации."
-        )
-    else:
-        await update.message.reply_html(
-            "❌ Вы не подписаны на уведомления.\n"
-            "Используйте /subscribe для подписки."
-        )
+    user_id = str(update.effective_user.id)
+    target = update.effective_message
+    try:
+        notifications = load_notification_data()
+        if user_id in notifications:
+            notifications[user_id]['subscribed'] = False
+            save_notification_data(notifications)
+    except (OSError, ValueError, TypeError) as exc:
+        logger.error('Не удалось сохранить отписку: %s', exc)
+        await target.reply_text('❌ Не удалось сохранить отписку. Попробуйте позже.')
+        return
+    await target.reply_html('🔕 <b>Подписка отключена.</b> Для включения: /subscribe')
+
 
 async def set_alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Установить пороговые алерты"""
@@ -1166,7 +1082,12 @@ async def set_alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         }
     
     notifications[str(user_id)]['alerts'][asset] = threshold
-    save_notification_data(notifications)
+    try:
+        save_notification_data(notifications)
+    except (OSError, ValueError) as exc:
+        logger.error('Не удалось сохранить алерт: %s', exc)
+        await update.effective_message.reply_text('❌ Не удалось сохранить алерт. Попробуйте позже.')
+        return
     
     await update.message.reply_html(
         f"✅ <b>Алерт установлен!</b>\n\n"
@@ -1292,7 +1213,7 @@ async def check_subscribers_command(update: Update, context: ContextTypes.DEFAUL
         
         # Проверяем наличие файла
         import os
-        file_exists = os.path.exists(NOTIFICATION_DATA_FILE)
+        file_exists = data_path(NOTIFICATION_DATA_FILE).exists()
         message += f"💾 **Файл данных:** {'✅ Существует' if file_exists else '❌ Отсутствует'}\n"
         
         if file_exists:
@@ -1312,73 +1233,39 @@ NOTIFICATION_DATA_FILE = 'notifications.json'
 PRICE_HISTORY_FILE = 'price_history.json'
 SETTINGS_FILE = 'bot_settings.json'
 
+ALERT_STATE_FILE = 'alert_state.json'
+_price_check_lock = None
+
+
 def load_notification_data():
-    """Загрузить данные уведомлений"""
-    try:
-        with _data_file_lock:
-            if os.path.exists(NOTIFICATION_DATA_FILE):
-                with open(NOTIFICATION_DATA_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-        return {}
-    except Exception as e:
-        logger.error(f"Ошибка загрузки уведомлений: {e}")
-        return {}
+    return read_json(NOTIFICATION_DATA_FILE)
+
 
 def save_notification_data(data):
-    """Сохранить данные уведомлений"""
-    try:
-        with _data_file_lock:
-            _atomic_write_json(NOTIFICATION_DATA_FILE, data)
-    except Exception as e:
-        logger.error(f"Ошибка сохранения уведомлений: {e}")
+    _atomic_write_json(NOTIFICATION_DATA_FILE, data)
+
 
 def load_price_history():
-    """Загрузить историю цен"""
     try:
-        with _data_file_lock:
-            if os.path.exists(PRICE_HISTORY_FILE):
-                with open(PRICE_HISTORY_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+        return read_json(PRICE_HISTORY_FILE)
+    except (OSError, ValueError) as exc:
+        logger.error('Ошибка чтения истории отображения: %s', exc)
         return {}
-    except Exception as e:
-        logger.error(f"Ошибка загрузки истории: {e}")
-        return {}
+
 
 def save_price_history(data):
-    """Сохранить историю цен"""
-    try:
-        with _data_file_lock:
-            _atomic_write_json(PRICE_HISTORY_FILE, data)
-    except Exception as e:
-        logger.error(f"Ошибка сохранения истории: {e}")
+    _atomic_write_json(PRICE_HISTORY_FILE, data)
+
 
 def load_bot_settings():
-    """Загрузить настройки бота"""
-    try:
-        with _data_file_lock:
-            if os.path.exists(SETTINGS_FILE):
-                with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-        # Настройки по умолчанию
-        return {
-            'daily_summary_time': DEFAULT_DAILY_TIME,
-            'timezone': DEFAULT_TIMEZONE
-        }
-    except Exception as e:
-        logger.error(f"Ошибка загрузки настроек: {e}")
-        return {
-            'daily_summary_time': DEFAULT_DAILY_TIME,
-            'timezone': DEFAULT_TIMEZONE
-        }
+    return read_json(SETTINGS_FILE, {
+        'daily_summary_time': DEFAULT_DAILY_TIME, 'timezone': DEFAULT_TIMEZONE,
+    })
+
 
 def save_bot_settings(settings):
-    """Сохранить настройки бота"""
-    try:
-        with _data_file_lock:
-            _atomic_write_json(SETTINGS_FILE, settings)
-        logger.info(f"✅ Настройки сохранены: {settings}")
-    except Exception as e:
-        logger.error(f"Ошибка сохранения настроек: {e}")
+    _atomic_write_json(SETTINGS_FILE, settings)
+
 
 def validate_time_format(time_str):
     """Проверить корректность формата времени HH:MM"""
@@ -1403,183 +1290,64 @@ def validate_time_format(time_str):
 
 # Функции проверки изменений и отправки уведомлений
 async def check_price_changes(context: ContextTypes.DEFAULT_TYPE):
-    """Проверить изменения цен и отправить уведомления"""
-    try:
-        session = await get_http_session()
-        current_prices = {}
-        estimated_assets = set()
-        
-        # Получаем данные параллельно с кэшированием
-        async def fetch_cbr():
-            try:
-                async def _fetch_cbr():
-                    return await get_cbr_rates(session)
-                cbr_data = await get_cached_data('cbr_rates_check', _fetch_cbr, CACHE_TTL_CURRENCIES)
-                return {
-                'USD': cbr_data.get('Valute', {}).get('USD', {}).get('Value'),
-                'EUR': cbr_data.get('Valute', {}).get('EUR', {}).get('Value'),
-                'CNY': cbr_data.get('Valute', {}).get('CNY', {}).get('Value')
-                }
-            except Exception as e:
-                logger.error(f"Ошибка получения курсов валют для проверки: {e}")
-                return {}
-        
-        async def fetch_crypto():
-            try:
-                async def _fetch_crypto():
-                    return await get_crypto_data(session)
-                crypto_data = await get_cached_data('crypto_data_check', _fetch_crypto, CACHE_TTL_CRYPTO)
-                crypto_mapping = {
-                    'bitcoin': 'BTC',
-                    'the-open-network': 'TON',
-                    'solana': 'SOL',
-                    'tether': 'USDT'
-                    }
-                result = {}
-                for crypto_id, price_data in crypto_data.items():
-                    if crypto_id in crypto_mapping:
-                        symbol = crypto_mapping[crypto_id]
-                        result[symbol] = price_data['price']
-                return result
-            except Exception as e:
-                logger.error(f"Ошибка получения криптовалют для проверки: {e}")
-                return {}
-        
-        async def fetch_stocks():
-            try:
-                async def _fetch_stocks():
-                    return await get_moex_stocks(session)
-                moex_data = await get_cached_data('moex_stocks_check', _fetch_stocks, CACHE_TTL_STOCKS)
-                result = {}
-                for ticker, data in moex_data.items():
-                    result[ticker] = data.get('price')
-                return result
-            except Exception as e:
-                logger.error(f"Ошибка получения акций для проверки: {e}")
-                return {}
-        
-        async def fetch_commodities():
-            try:
-                async def _fetch_commodities():
-                    return await get_commodities_data(session)
-                commodities = await get_cached_data('commodities_check', _fetch_commodities, CACHE_TTL_COMMODITIES)
-                result = {}
-                for key in ['gold', 'silver', 'brent', 'urals']:
-                    if key in commodities:
-                        commodity_info = commodities[key]
-                        result[key] = commodity_info.get('price')
-                        # Уведомления не отправляем, если цена расчетная.
-                        # Для Urals цена всегда расчетная.
-                        note = str(commodity_info.get('note', '')).lower()
-                        name = str(commodity_info.get('name', '')).lower()
-                        is_estimated = (
-                            key == 'urals'
-                            or 'расчет' in note
-                            or 'calculated' in note
-                            or 'расчет' in name
-                            or 'calculated' in name
-                        )
-                        if is_estimated:
-                            estimated_assets.add(key)
-                return result
-            except Exception as e:
-                logger.error(f"Ошибка получения товаров для проверки: {e}")
-                return {}
-        
-        # Параллельный запрос данных
-        currencies, crypto, stocks, commodities = await asyncio.gather(
-            fetch_cbr(), fetch_crypto(), fetch_stocks(), fetch_commodities(),
-            return_exceptions=True
-        )
-        
-        if not isinstance(currencies, Exception):
-            current_prices.update(currencies)
-        if not isinstance(crypto, Exception):
-            current_prices.update(crypto)
-        if not isinstance(stocks, Exception):
-            current_prices.update(stocks)
-        if not isinstance(commodities, Exception):
-            current_prices.update(commodities)
-        
-        # Загружаем предыдущие цены
-        price_history = load_price_history()
-        notifications = load_notification_data()
-        
-        # Проверяем изменения и отправляем уведомления
-        for user_id, user_notifications in notifications.items():
-            if not is_admin(user_id):
-                continue
-            if not user_notifications.get('subscribed', False):
-                continue
-            
-            threshold = user_notifications.get('threshold', DEFAULT_THRESHOLD)
-            alerts = user_notifications.get('alerts', {})
-            
-            notifications_to_send = []
-            
-            # Проверяем резкие изменения
-            for asset, current_price in current_prices.items():
-                if current_price is None:
-                    continue
-                if asset in estimated_assets:
-                    continue
-                
-                previous_price = price_history.get(asset)
-                if previous_price is None:
-                    continue
-                
-                change_pct = ((current_price - previous_price) / previous_price) * 100
-                
-                if abs(change_pct) >= threshold:
-                    emoji = "📈" if change_pct > 0 else "📉"
-                    asset_name = escape_html(str(asset))
-                    notifications_to_send.append(
-                        f"{emoji} <b>{asset_name}</b>: {change_pct:+.2f}% за 30 мин "
-                        f"({previous_price:.2f} → {current_price:.2f})"
-                    )
-            
-            # Проверяем пороговые алерты
-            for asset, alert_threshold in alerts.items():
-                current_price = current_prices.get(asset)
-                if current_price is None:
-                    continue
-                if asset in estimated_assets:
-                    continue
+    """Persist observations and alert events before attempting delivery."""
+    global _price_check_lock
+    if _price_check_lock is None:
+        _price_check_lock = asyncio.Lock()
+    async with _price_check_lock:
+        try:
+            session = await get_http_session()
+            async def fetch(key, function, ttl):
+                return await get_cached_data(key, lambda: function(session), ttl)
+            values = await asyncio.gather(
+                fetch('cbr_rates', get_cbr_rates, CACHE_TTL_CURRENCIES),
+                fetch('crypto_data', get_crypto_data, CACHE_TTL_CRYPTO),
+                fetch('moex_stocks', get_moex_stocks, CACHE_TTL_STOCKS),
+                fetch('commodities', get_commodities_data, CACHE_TTL_COMMODITIES),
+                return_exceptions=True,
+            )
+            cbr, crypto, stocks, commodities = [value if isinstance(value, dict) else {} for value in values]
+            quotes = {}
+            for symbol in SUPPORTED_CURRENCIES:
+                info = (cbr.get('Valute') or {}).get(symbol) or {}
+                value, nominal = info.get('Value'), info.get('Nominal', 1)
+                if positive_price(value) and positive_price(nominal):
+                    quotes[symbol] = {'price': value / nominal, 'currency': 'RUB',
+                                      'source': 'CBR', 'as_of': cbr.get('Date')}
+            for coin, symbol in {'bitcoin': 'BTC', 'the-open-network': 'TON', 'solana': 'SOL', 'tether': 'USDT'}.items():
+                if isinstance(crypto.get(coin), dict):
+                    quotes[symbol] = dict(crypto[coin], currency=crypto[coin].get('currency', 'USD'))
+            quotes.update({ticker: dict(value, currency='RUB') for ticker, value in stocks.items() if isinstance(value, dict)})
+            quotes.update({key: value for key, value in commodities.items() if isinstance(value, dict)})
+            notifications = load_notification_data()
+            subscribers = {user_id: prefs for user_id, prefs in notifications.items() if is_admin(user_id)}
+            state = read_json(ALERT_STATE_FILE, new_alert_state(load_price_history()))
+            observe_prices(state, quotes, subscribers, DEFAULT_THRESHOLD)
+            write_json(ALERT_STATE_FILE, state)
+            # Keep events until a successful Telegram acknowledgement. IDs identify possible
+            # duplicate deliveries when a network timeout hides a successful send.
+            for user_id, events in list(state['pending'].items()):
+                while events:
+                    current_prefs = load_notification_data().get(user_id, {})
+                    if not current_prefs.get('subscribed'):
+                        state['pending'].pop(user_id, None)
+                        write_json(ALERT_STATE_FILE, state)
+                        break
+                    event = events[0]
+                    created = parse_timestamp(event['created_at'])
+                    when = created.astimezone(pytz.timezone(DEFAULT_TIMEZONE)).strftime('%d.%m %H:%M')
+                    text = (f'🔔 <b>УВЕДОМЛЕНИЕ О ЦЕНЕ</b>\n\n{event["text"]}\n'
+                            f'Зафиксировано: {when} МСК · #{event["id"]}')
+                    try:
+                        await context.bot.send_message(chat_id=int(user_id), text=text, parse_mode='HTML')
+                    except Exception as exc:
+                        logger.error('Уведомление %s не доставлено, сохранено для повторной отправки: %s', event['id'], exc)
+                        break
+                    events.pop(0)
+                    write_json(ALERT_STATE_FILE, state)
+        except Exception as exc:
+            logger.error('Ошибка проверки изменений цен: %s', exc)
 
-                # Отправляем алерт только при пересечении порога снизу вверх,
-                # чтобы избежать повторного спама в каждом цикле.
-                previous_price = price_history.get(asset)
-                crossed_up = (
-                    previous_price is not None
-                    and previous_price < alert_threshold <= current_price
-                )
-                first_seen_above = previous_price is None and current_price >= alert_threshold
-
-                if crossed_up or first_seen_above:
-                    asset_name = escape_html(str(asset))
-                    notifications_to_send.append(
-                        f"🚨 <b>АЛЕРТ:</b> {asset_name} достиг {current_price:.2f} "
-                        f"(порог: {alert_threshold})"
-                    )
-            
-            # Отправляем уведомления
-            if notifications_to_send:
-                message = "🔔 <b>УВЕДОМЛЕНИЯ О ЦЕНАХ</b>\n\n" + "\n".join(notifications_to_send)
-                try:
-                    await context.bot.send_message(
-                        chat_id=int(user_id),
-                        text=message,
-                        parse_mode='HTML'
-                    )
-                except Exception as e:
-                    logger.error(f"Ошибка отправки уведомления пользователю {user_id}: {e}")
-        
-        # Сохраняем текущие цены как историю
-        price_history.update({k: v for k, v in current_prices.items() if v is not None})
-        save_price_history(price_history)
-        
-    except Exception as e:
-        logger.error(f"Ошибка проверки изменений цен: {e}")
 
 async def daily_summary_job(context: ContextTypes.DEFAULT_TYPE):
     """Отправить ежедневную сводку в 9:00 МСК"""
@@ -1613,6 +1381,7 @@ async def daily_summary_job(context: ContextTypes.DEFAULT_TYPE):
         # Получаем актуальные курсы для сводки
         logger.info("📡 Получаю данные для ежедневной сводки...")
         
+        delivered = 0
         for user_id, user_notifications in notifications.items():
             if not is_admin(user_id):
                 continue
@@ -1652,14 +1421,17 @@ async def daily_summary_job(context: ContextTypes.DEFAULT_TYPE):
                 fake_update = FakeUpdate(int(user_id))
                 
                 # Вызываем rates_command для получения полной сводки
-                await rates_command(fake_update, context)
-                
-                logger.info(f"✅ Сводка отправлена пользователю {user_id}")
+                success = await rates_command(fake_update, context)
+                if success:
+                    delivered += 1
+                    logger.info(f"✅ Сводка отправлена пользователю {user_id}")
+                else:
+                    logger.error(f"Сводка пользователю {user_id} не сформирована")
                 
             except Exception as e:
                 logger.error(f"❌ Ошибка отправки ежедневной сводки пользователю {user_id}: {e}")
         
-        logger.info(f"🎉 Ежедневная сводка завершена. Отправлено {active_subscribers} пользователям")
+        logger.info(f"🎉 Ежедневная сводка завершена. Отправлено {delivered} из {active_subscribers} пользователям")
         
     except Exception as e:
         logger.error(f"❌ Критическая ошибка ежедневной сводки: {e}")
@@ -1935,6 +1707,8 @@ class AlternativeJobQueue:
     
     def __init__(self, application):
         self.application = application
+        # Constructed on the main thread, using the same loop as run_polling.
+        self.loop = asyncio.get_event_loop()
         self.jobs = {}  # Словарь для хранения задач по именам
         self.running = False
         self.active_timers = {}  # Активные таймеры
@@ -1962,7 +1736,7 @@ class AlternativeJobQueue:
             schedule.clear(name)
             
             # Используем schedule для ежедневных задач
-            schedule.every().day.at(time_str).do(self._run_job, callback, name).tag(name)
+            schedule.every().day.at(time_str, str(time.tzinfo or DEFAULT_TIMEZONE)).do(self._run_job, callback, name).tag(name)
             
             # Запускаем поток для выполнения задач
             if not self.running:
@@ -1990,24 +1764,8 @@ class AlternativeJobQueue:
         self.jobs[name] = job
         
         def run_job():
-            import asyncio
-            try:
-                # Проверяем, не была ли задача удалена
-                if name in self.jobs and not self.jobs[name].removed:
-                    # Создаем контекст для задачи
-                    context = type('obj', (object,), {
-                        'bot': self.application.bot,
-                        'job_queue': self
-                    })
-                    
-                    # Запускаем асинхронную функцию
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    loop.run_until_complete(callback(context))
-                    loop.close()
-            except Exception as e:
-                logger.error(f"❌ Ошибка выполнения альтернативной задачи {name}: {e}")
-        
+            self._run_job(callback, name)
+
         # Первый запуск
         timer = threading.Timer(first, run_job)
         timer.daemon = True
@@ -2047,12 +1805,13 @@ class AlternativeJobQueue:
                 'job_queue': self
             })
             
-            # Запускаем асинхронную функцию
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(callback(context))
-            loop.close()
-            
+            # Both HTTP clients stay on the main loop; a worker must not create
+            # another loop or close the session used by commands and other jobs.
+            if not self.loop.is_running():
+                raise RuntimeError('Main event loop is not running')
+            future = asyncio.run_coroutine_threadsafe(callback(context), self.loop)
+            future.result()
+
             logger.info(f"✅ Альтернативная задача {name} выполнена")
         except Exception as e:
             logger.error(f"❌ Ошибка выполнения альтернативной задачи {name}: {e}")
@@ -2064,7 +1823,8 @@ class AlternativeJobQueue:
         
         def calculate_next_run():
             """Вычислить время до следующего запуска"""
-            now = datetime.now()
+            zone = target_time.tzinfo or pytz.timezone(DEFAULT_TIMEZONE)
+            now = datetime.now(zone)
             
             # Парсим целевое время
             hour = target_time.hour
@@ -2173,8 +1933,15 @@ def initialize_data_files():
     """Инициализировать файлы данных при первом запуске"""
     logger.info("🔧 Инициализация файлов данных...")
     
+    migrate_to_data_dir([
+        SETTINGS_FILE, NOTIFICATION_DATA_FILE, PRICE_HISTORY_FILE, ALERT_STATE_FILE,
+        'last_known_rates.json', 'user_data.json',
+    ])
+    if not data_path(ALERT_STATE_FILE).exists():
+        write_json(ALERT_STATE_FILE, new_alert_state(load_price_history()))
+
     # Инициализация настроек
-    if not os.path.exists(SETTINGS_FILE):
+    if not data_path(SETTINGS_FILE).exists():
         default_settings = {
             'daily_summary_time': '09:00',
             'timezone': 'Europe/Moscow'
@@ -2183,13 +1950,13 @@ def initialize_data_files():
         logger.info(f"✅ Создан файл настроек: {SETTINGS_FILE}")
     
     # Инициализация уведомлений
-    if not os.path.exists(NOTIFICATION_DATA_FILE):
+    if not data_path(NOTIFICATION_DATA_FILE).exists():
         default_notifications = {}
         save_notification_data(default_notifications)
         logger.info(f"✅ Создан файл уведомлений: {NOTIFICATION_DATA_FILE}")
     
     # Инициализация истории цен
-    if not os.path.exists(PRICE_HISTORY_FILE):
+    if not data_path(PRICE_HISTORY_FILE).exists():
         default_history = {}
         save_price_history(default_history)
         logger.info(f"✅ Создан файл истории цен: {PRICE_HISTORY_FILE}")
@@ -2388,9 +2155,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # Создаем клавиатуру с настройками
     keyboard = [
         [InlineKeyboardButton("⏰ Время сводки", callback_data="settings_time")],
-        [InlineKeyboardButton("⭐ Избранные активы", callback_data="settings_favorites")],
         [InlineKeyboardButton("🔔 Уведомления", callback_data="settings_notifications")],
-        [InlineKeyboardButton("📊 Персональные настройки", callback_data="settings_personal")],
         [InlineKeyboardButton("📋 Текущие настройки", callback_data="settings_current")],
         [InlineKeyboardButton("❌ Закрыть", callback_data="settings_close")]
     ]
@@ -2476,9 +2241,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # Создаем клавиатуру с настройками
         keyboard = [
             [InlineKeyboardButton("⏰ Время сводки", callback_data="settings_time")],
-            [InlineKeyboardButton("⭐ Избранные активы", callback_data="settings_favorites")],
             [InlineKeyboardButton("🔔 Уведомления", callback_data="settings_notifications")],
-            [InlineKeyboardButton("📊 Персональные настройки", callback_data="settings_personal")],
             [InlineKeyboardButton("📋 Текущие настройки", callback_data="settings_current")],
             [InlineKeyboardButton("❌ Закрыть", callback_data="settings_close")]
         ]
@@ -2587,354 +2350,29 @@ async def export_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
     
-    await update.message.reply_text("📊 Создаю красивый PDF отчет...")
-    
+    await update.message.reply_text("📊 Создаю PDF-отчёт...")
     try:
-        # Создаем PDF в памяти
-        buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4)
-        story = []
-        
-        # Создаем стили с поддержкой русского языка
-        styles = getSampleStyleSheet()
-        
-        # Стиль для заголовка
-        title_style = ParagraphStyle(
-            'CustomTitle',
-            parent=styles['Heading1'],
-            fontSize=18,
-            spaceAfter=20,
-            alignment=1,  # Центр
-            textColor=colors.darkblue,
-            fontName='Helvetica-Bold',
-            encoding='utf-8'
-        )
-        
-        # Стиль для подзаголовков
-        heading_style = ParagraphStyle(
-            'CustomHeading',
-            parent=styles['Heading2'],
-            fontSize=12,
-            spaceAfter=10,
-            spaceBefore=15,
-            textColor=colors.darkgreen,
-            fontName='Helvetica-Bold',
-            encoding='utf-8'
-        )
-        
-        # Стиль для обычного текста
-        normal_style = ParagraphStyle(
-            'CustomNormal',
-            parent=styles['Normal'],
-            fontSize=9,
-            spaceAfter=5,
-            fontName='Helvetica',
-            encoding='utf-8'
-        )
-        
-        # Стиль для информации
-        info_style = ParagraphStyle(
-            'CustomInfo',
-            parent=styles['Normal'],
-            fontSize=8,
-            spaceAfter=3,
-            textColor=colors.grey,
-            fontName='Helvetica',
-            encoding='utf-8'
-        )
-        
-        # Заголовок отчета
-        current_time = get_moscow_time().strftime("%d.%m.%Y %H:%M")
-        title = Paragraph(f"<b>FINANCIAL REPORT</b><br/>from {current_time}", title_style)
-        story.append(title)
-        
-        # Информация о боте
-        bot_info = Paragraph(
-            "Financial Bot - current data on currencies, cryptocurrencies, stocks and indices", 
-            info_style
-        )
-        story.append(bot_info)
-        story.append(Spacer(1, 20))
-        
-        # Получаем данные
-        await update.message.reply_text("📡 Получаю актуальные данные...")
-        
+        from pdf_report import build_pdf_report
         session = await get_http_session()
-        
-        # Получаем все данные параллельно
-        try:
-            cbr_data, forex_data, fetched_crypto_data, stocks_data, commodities_data, indices_data = await asyncio.gather(
-                get_cbr_rates(session),
-                get_forex_rates(session),
-                get_crypto_data(session),
-                get_moex_stocks(session),
-                get_commodities_data(session),
-                get_indices_data(session),
-                return_exceptions=True
-            )
-            
-            # Обрабатываем валюты из ЦБ РФ
-            if isinstance(cbr_data, Exception):
-                usd_rate = eur_rate = cny_rate = 0
-            else:
-                usd_rate = cbr_data.get('Valute', {}).get('USD', {}).get('Value', 0)
-                eur_rate = cbr_data.get('Valute', {}).get('EUR', {}).get('Value', 0)
-                cny_rate = cbr_data.get('Valute', {}).get('CNY', {}).get('Value', 0)
-            
-            # Обрабатываем FOREX курс
-            if isinstance(forex_data, Exception):
-                forex_usd_rub = None
-            else:
-                forex_usd_rub = forex_data.get('rates', {}).get('RUB', None)
-            
-            # Обрабатываем остальные данные
-            if isinstance(fetched_crypto_data, Exception):
-                fetched_crypto_data = {}
-            if isinstance(stocks_data, Exception):
-                stocks_data = {}
-            if isinstance(commodities_data, Exception):
-                commodities_data = {}
-            if isinstance(indices_data, Exception):
-                indices_data = {}
-        except Exception as e:
-            logger.error(f"Ошибка получения данных для PDF: {e}")
-            usd_rate = eur_rate = cny_rate = 0
-            forex_usd_rub = None
-            fetched_crypto_data = {}
-            stocks_data = {}
-            commodities_data = {}
-            indices_data = {}
-        
-        # Создаем разделы отчета
-        
-        # 1. КУРСЫ ВАЛЮТ
-        currencies_heading = Paragraph("<b>CURRENCY RATES</b>", heading_style)
-        story.append(currencies_heading)
-        
-        currency_data = [
-            ['Currency', 'Rate (RUB)', 'Source', 'Status']
-        ]
-        
-        # Добавляем валюты
-        currencies = [
-            ('USD', usd_rate, 'CBR'),
-            ('EUR', eur_rate, 'CBR'),
-            ('CNY', cny_rate, 'CBR')
-        ]
-        
-        for currency, rate, source in currencies:
-            if rate and rate > 0:
-                status = "Active"
-                if currency == 'USD' and forex_usd_rub:
-                    diff = forex_usd_rub - rate
-                    diff_pct = (diff / rate) * 100
-                    status = f"FOREX: {forex_usd_rub:.2f}RUB ({diff:+.2f}, {diff_pct:+.2f}%)"
-            else:
-                status = "No data"
-            
-            currency_data.append([currency, f"{format_price(rate)}", source, status])
-        
-        currency_table = Table(currency_data, colWidths=[1.2*inch, 1.5*inch, 1.2*inch, 2.1*inch])
-        currency_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 9),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.lightblue),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ]))
-        story.append(currency_table)
-        story.append(Spacer(1, 15))
-        
-        # 2. КРИПТОВАЛЮТЫ
-        crypto_heading = Paragraph("<b>CRYPTOCURRENCIES</b>", heading_style)
-        story.append(crypto_heading)
-        
-        crypto_names = {
-            'bitcoin': 'Bitcoin',
-            'the-open-network': 'TON',
-            'solana': 'Solana',
-            'tether': 'Tether'
-        }
-        
-        crypto_table_data = [['Cryptocurrency', 'Price (USD)', '24h Change', 'Status']]
-
-        for crypto_id, crypto_name in crypto_names.items():
-            if crypto_id in fetched_crypto_data:
-                price = fetched_crypto_data[crypto_id].get('price', 0)
-                change = fetched_crypto_data[crypto_id].get('change_24h', 0)
-                
-                if price and price > 0:
-                    change_str = f"{change:+.2f}%" if change is not None else "N/A"
-                    if change and change > 0:
-                        status = "Up"
-                    elif change and change < 0:
-                        status = "Down"
-                    else:
-                        status = "No change"
-                    
-                    crypto_table_data.append([crypto_name, f"${format_price(price)}", change_str, status])
-        
-        if len(crypto_table_data) > 1:  # Есть данные
-            crypto_table = Table(crypto_table_data, colWidths=[1.5*inch, 1.5*inch, 1.2*inch, 1.8*inch])
-            crypto_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.darkgreen),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 9),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.lightgreen),
-                ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ]))
-            story.append(crypto_table)
-        else:
-            no_data = Paragraph("Cryptocurrency data temporarily unavailable", normal_style)
-            story.append(no_data)
-        
-        story.append(Spacer(1, 15))
-        
-        # 3. ФОНДОВЫЕ ИНДЕКСЫ
-        if indices_data:
-            indices_heading = Paragraph("<b>STOCK INDICES</b>", heading_style)
-            story.append(indices_heading)
-            
-            indices_data_table = [['Index', 'Value', 'Change', 'Status']]
-            
-            for index_id, index_info in indices_data.items():
-                name = index_info.get('name', index_id.upper())
-                price = index_info.get('price', 0)
-                change = index_info.get('change_pct', 0)
-                is_live = index_info.get('is_live', True)
-                
-                if price and price > 0:
-                    change_str = f"{change:+.2f}%" if change != 0 else "0.00%"
-                    if is_live:
-                        status = "Trading open"
-                    else:
-                        status = "Trading closed"
-                    
-                    indices_data_table.append([name, str(price), change_str, status])
-            
-            if len(indices_data_table) > 1:
-                indices_table = Table(indices_data_table, colWidths=[1.5*inch, 1.5*inch, 1.2*inch, 1.8*inch])
-                indices_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.darkred),
-                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, 0), 9),
-                    ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
-                    ('BACKGROUND', (0, 1), (-1, -1), colors.lightcoral),
-                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                ]))
-                story.append(indices_table)
-        
-        story.append(Spacer(1, 15))
-        
-        # 4. ДРАГОЦЕННЫЕ МЕТАЛЛЫ
-        if commodities_data:
-            metals_heading = Paragraph("<b>PRECIOUS METALS</b>", heading_style)
-            story.append(metals_heading)
-            
-            metals_data = [['Metal', 'Price (USD)', 'Price (RUB)', 'Status']]
-            
-            metals = {
-                'gold': ('Gold', 'XAU'),
-                'silver': ('Silver', 'XAG')
-            }
-            
-            for metal_id, (metal_name, symbol) in metals.items():
-                if metal_id in commodities_data:
-                    price_usd = commodities_data[metal_id]['price']
-                    price_rub = price_usd * usd_rate if usd_rate > 0 else 0
-                    
-                    if price_usd and price_usd > 0:
-                        metals_data.append([
-                            metal_name,
-                            f"${format_price(price_usd)}",
-                            f"{format_price(price_rub)} RUB",
-                            "Active"
-                        ])
-            
-            if len(metals_data) > 1:
-                metals_table = Table(metals_data, colWidths=[1.5*inch, 1.5*inch, 1.5*inch, 1.5*inch])
-                metals_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.darkgoldenrod),
-                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, 0), 9),
-                    ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
-                    ('BACKGROUND', (0, 1), (-1, -1), colors.lightyellow),
-                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                ]))
-                story.append(metals_table)
-        
-        story.append(Spacer(1, 20))
-        
-        # 5. ИСТОЧНИКИ ДАННЫХ
-        sources_heading = Paragraph("<b>DATA SOURCES</b>", heading_style)
-        story.append(sources_heading)
-        
-        sources_data = [
-            ['Source', 'Data', 'Status'],
-            ['CBR', 'Currency rates', 'Active'],
-            ['CoinGecko', 'Cryptocurrencies', 'Active'],
-            ['MOEX', 'Russian indices and stocks', 'Active'],
-            ['Gold-API', 'Precious metals', 'Active'],
-            ['Alpha Vantage', 'International data', 'Demo key'],
-            ['FOREX', 'Interbank rates', 'Active']
-        ]
-        
-        sources_table = Table(sources_data, colWidths=[2*inch, 3*inch, 1*inch])
-        sources_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.darkgrey),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 9),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.lightgrey),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ]))
-        story.append(sources_table)
-        
-        story.append(Spacer(1, 20))
-        
-        # 6. ФУТЕР
-        footer_text = f"""
-        <b>Report generated:</b> {current_time}<br/>
-        <b>Financial Bot</b> - your assistant in the world of finance<br/>
-        <i>Data updates in real time</i>
-        """
-        footer = Paragraph(footer_text, info_style)
-        story.append(footer)
-        
-        # Создаем PDF
-        doc.build(story)
-        buffer.seek(0)
-        
-        # Отправляем файл
-        await context.bot.send_document(
-            chat_id=update.effective_chat.id,
-            document=buffer,
-            filename=f"financial_report_{current_time.replace(' ', '_').replace(':', '-')}.pdf",
-            caption="📊 Your beautiful financial report is ready! 🎨"
+        cbr, forex, crypto, stocks, commodities, indices = await asyncio.gather(
+            get_cbr_rates(session), get_forex_rates(session), get_crypto_data(session),
+            get_moex_stocks(session), get_commodities_data(session), get_indices_data(session),
+            return_exceptions=True,
         )
-        
-        await update.message.reply_text("✅ Beautiful PDF report successfully created and sent!")
-        
-    except Exception as e:
-        logger.error(f"Ошибка создания PDF: {e}")
-        await update.message.reply_text(f"❌ Ошибка создания PDF: {str(e)}")
+        fx = resolve_currency_rates(cbr, forex)
+        crypto, stocks, commodities, indices = [value if isinstance(value, dict) else {} for value in (crypto, stocks, commodities, indices)]
+        current_time = get_moscow_time().strftime('%d.%m.%Y %H:%M')
+        report = await asyncio.to_thread(build_pdf_report, fx, crypto, stocks, commodities, indices, current_time, list(STOCK_NAMES))
+        await context.bot.send_document(
+            chat_id=update.effective_chat.id, document=report,
+            filename=f"financial_report_{current_time.replace(' ', '_').replace(':', '-')}.pdf",
+            caption='📊 Финансовый отчёт: валюты, криптовалюты, акции, товары и индексы.',
+        )
+        await update.message.reply_text('✅ PDF-отчёт создан и отправлен.')
+    except Exception as exc:
+        logger.error('Ошибка создания PDF: %s', exc)
+        await update.message.reply_text('❌ Не удалось создать или отправить PDF-отчёт. Попробуйте позже.')
+
 
 async def setup_bot_commands(application):
     """Настройка команд бота для автодополнения в Telegram"""

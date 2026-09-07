@@ -13,6 +13,9 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Callable, Awaitable
 from functools import wraps
 import asyncio
+import math
+from datetime import timezone
+from storage import read_json, write_json
 
 logger = logging.getLogger(__name__)
 _rates_file_lock = threading.RLock()
@@ -67,7 +70,7 @@ async def get_cached_data(
     # Сохраняем в кэш
     api_cache[cache_key] = {
         'data': data,
-        'timestamp': now
+        'timestamp': datetime.now()
     }
     
     return data
@@ -144,7 +147,7 @@ def validate_positive_number(value: str, min_value: float = 0.01) -> float:
     """
     try:
         num = float(value)
-        if num < min_value:
+        if not math.isfinite(num) or num < min_value:
             raise ValueError(f"Значение должно быть больше {min_value}")
         return num
     except (ValueError, TypeError) as e:
@@ -201,7 +204,37 @@ def format_price(price: float, decimal_places: int = 2) -> str:
     return str(price)
 
 
-def save_last_known_rate(asset: str, rate: float) -> None:
+def finite_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def positive_price(value):
+    return finite_number(value) and value > 0
+
+
+def parse_timestamp(value):
+    """Normalize provider times and legacy local timestamps to aware UTC."""
+    try:
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value, timezone.utc)
+        if isinstance(value, datetime):
+            result = value
+        else:
+            result = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        return result.astimezone(timezone.utc)
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
+
+
+def is_estimated_quote(quote):
+    # Legacy notes are accepted for already cached data during an upgrade.
+    text = f"{quote.get('name', '')} {quote.get('note', '')}".lower().replace('ё', 'е')
+    return bool(quote.get('is_estimated')) or any(
+        word in text for word in ('расчет', 'рассчит', 'приблиз', 'calculated', 'estimated')
+    )
+
+
+def save_last_known_rate(asset: str, rate: float, timestamp=None, source=None) -> None:
     """
     Сохранить последний известный курс
     
@@ -211,21 +244,18 @@ def save_last_known_rate(asset: str, rate: float) -> None:
     """
     try:
         with _rates_file_lock:
-            if os.path.exists(LAST_KNOWN_RATES_FILE):
-                with open(LAST_KNOWN_RATES_FILE, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-            else:
-                data = {}
-            
+            if not positive_price(rate):
+                return
+            data = read_json(LAST_KNOWN_RATES_FILE)
+            observed_at = parse_timestamp(timestamp) if timestamp is not None else datetime.now(timezone.utc)
+            if observed_at is None:
+                return
             data[asset] = {
                 'rate': rate,
-                'timestamp': datetime.now().isoformat()
+                'timestamp': observed_at.isoformat(),
+                'source': source,
             }
-            
-            temp_path = f"{LAST_KNOWN_RATES_FILE}.tmp"
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            os.replace(temp_path, LAST_KNOWN_RATES_FILE)
+            write_json(LAST_KNOWN_RATES_FILE, data)
         
         logger.debug(f"Сохранен последний известный курс {asset}: {rate:.2f}")
     except Exception as e:
@@ -245,20 +275,18 @@ def get_last_known_rate(asset: str, max_age_hours: int = 24) -> Optional[float]:
     """
     try:
         with _rates_file_lock:
-            if not os.path.exists(LAST_KNOWN_RATES_FILE):
-                return None
-            
-            with open(LAST_KNOWN_RATES_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            data = read_json(LAST_KNOWN_RATES_FILE)
         
         if asset not in data:
             return None
         
         rate_info = data[asset]
-        timestamp = datetime.fromisoformat(rate_info['timestamp'])
-        age_hours = (datetime.now() - timestamp).total_seconds() / 3600
+        timestamp = parse_timestamp(rate_info.get('timestamp'))
+        if timestamp is None or not positive_price(rate_info.get('rate')):
+            return None
+        age_hours = (datetime.now(timezone.utc) - timestamp).total_seconds() / 3600
         
-        if age_hours <= max_age_hours:
+        if 0 <= age_hours <= max_age_hours:
             rate = rate_info['rate']
             logger.debug(f"Загружен последний известный курс {asset}: {rate:.2f} (возраст: {age_hours:.1f}ч)")
             return rate

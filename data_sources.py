@@ -7,12 +7,14 @@
 """
 
 import logging
+import asyncio
+import http_compat  # Must precede aiohttp on Python 3.9.
 import aiohttp
 import json
 import ssl
 from pathlib import Path
 from typing import Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import pytz
 
 from config import (
@@ -22,7 +24,8 @@ from config import (
     URALS_DISCOUNT, EIA_API_KEY, ALPHA_VANTAGE_KEY,
     GOLD_SILVER_RATIO, USO_TO_BRENT_MULTIPLIER, TINVEST_API_TOKEN
 )
-from utils import get_cached_data, fetch_with_retry, save_last_known_rate, get_last_known_rate
+from utils import (get_cached_data, fetch_with_retry, save_last_known_rate,
+                   get_last_known_rate, positive_price, finite_number, parse_timestamp)
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +67,19 @@ def _tinvest_is_live_status(status: Optional[str]) -> bool:
         "SECURITY_TRADING_STATUS_NORMAL_TRADING",
         "SECURITY_TRADING_STATUS_DEALER_NORMAL_TRADING",
     }
+
+
+def _moex_timestamp(value):
+    """MOEX ISS local timestamps are Moscow time, regardless of server timezone."""
+    if not value or len(str(value)) == 10:
+        return value
+    try:
+        stamp = datetime.fromisoformat(str(value))
+        if stamp.tzinfo is None:
+            stamp = pytz.timezone('Europe/Moscow').localize(stamp)
+        return stamp.isoformat()
+    except (ValueError, TypeError):
+        return None
 
 
 async def safe_json_response(resp: aiohttp.ClientResponse) -> Any:
@@ -122,119 +138,76 @@ async def get_forex_rates(session: aiohttp.ClientSession) -> Dict[str, Any]:
 
 
 async def get_crypto_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str, Any]]:
-    """Получить данные криптовалют с резервными источниками"""
-    crypto_data = {}
-    
-    # Список криптовалют для мониторинга
-    crypto_list = [
-        {'id': 'bitcoin', 'symbol': 'BTC', 'name': 'Bitcoin'},
-        {'id': 'the-open-network', 'symbol': 'TON', 'name': 'TON'},
-        {'id': 'solana', 'symbol': 'SOL', 'name': 'Solana'},
-        {'id': 'tether', 'symbol': 'USDT', 'name': 'Tether'}
-    ]
-    
-    # 1. Пробуем CoinGecko (основной источник)
-    logger.debug("Пробуем получить данные криптовалют с CoinGecko...")
+    """Fill missing instruments independently, preserving successful primary quotes."""
+    coins = {'bitcoin': 'BTC', 'the-open-network': 'TON', 'solana': 'SOL', 'tether': 'USDT'}
+    result = {}
     try:
-        crypto_ids = ','.join([crypto['id'] for crypto in crypto_list])
-        url = f"https://api.coingecko.com/api/v3/simple/price?ids={crypto_ids}&vs_currencies=usd&include_24hr_change=true"
-        
-        async with session.get(url, timeout=_TIMEOUT) as resp:
+        async with session.get(
+            'https://api.coingecko.com/api/v3/simple/price',
+            params={'ids': ','.join(coins), 'vs_currencies': 'usd',
+                    'include_24hr_change': 'true', 'include_last_updated_at': 'true'},
+            timeout=_TIMEOUT,
+        ) as resp:
             if resp.status == 200:
                 data = await safe_json_response(resp)
-                
-                for crypto in crypto_list:
-                    crypto_id = crypto['id']
-                    if crypto_id in data:
-                        price = data[crypto_id].get('usd')
-                        change_24h = data[crypto_id].get('usd_24h_change', 0)
-                        
-                        if price is not None:
-                            crypto_data[crypto_id] = {
-                                'price': price,
-                                'change_24h': change_24h,
-                                'source': 'CoinGecko'
-                            }
-                
-                if crypto_data:
-                    logger.info(f"✅ CoinGecko: получены данные для {len(crypto_data)} криптовалют")
-                    return crypto_data
-                    
-    except Exception as e:
-        logger.error(f"❌ Ошибка CoinGecko: {e}")
-    
-    # 2. Пробуем Coinbase API (резервный источник)
-    logger.debug("Пробуем получить данные криптовалют с Coinbase...")
-    try:
-        for crypto in crypto_list:
-            symbol = crypto['symbol']
-            try:
-                url = f"https://api.coinbase.com/v2/prices/{symbol}-USD/spot"
-                async with session.get(url, timeout=_TIMEOUT) as resp:
-                    if resp.status == 200:
-                        data = await safe_json_response(resp)
-                        price = float(data['data']['amount'])
-                        
-                        crypto_id = crypto['id']
-                        crypto_data[crypto_id] = {
-                            'price': price,
-                            'change_24h': 0,
-                            'source': 'Coinbase'
-                        }
-            except Exception as e:
-                logger.debug(f"Ошибка получения {symbol} с Coinbase: {e}")
-                continue
-        
-        if crypto_data:
-            logger.info(f"✅ Coinbase: получены данные для {len(crypto_data)} криптовалют")
-            return crypto_data
-            
-    except Exception as e:
-        logger.error(f"❌ Общая ошибка Coinbase: {e}")
-    
-    # 3. Пробуем Binance API
-    logger.debug("Пробуем получить данные криптовалют с Binance...")
-    try:
-        for crypto in crypto_list:
-            symbol = f"{crypto['symbol']}USDT"
-            try:
-                url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-                async with session.get(url, timeout=_TIMEOUT) as resp:
-                    if resp.status == 200:
-                        data = await safe_json_response(resp)
-                        price = float(data['price'])
-                        
-                        crypto_id = crypto['id']
-                        crypto_data[crypto_id] = {
-                            'price': price,
-                            'change_24h': 0,
-                            'source': 'Binance'
-                        }
-            except Exception as e:
-                logger.debug(f"Ошибка получения {symbol} с Binance: {e}")
-                continue
-        
-        if crypto_data:
-            logger.info(f"✅ Binance: получены данные для {len(crypto_data)} криптовалют")
-            return crypto_data
-            
-    except Exception as e:
-        logger.error(f"❌ Общая ошибка Binance: {e}")
-    
-    logger.warning("⚠️ Все источники криптовалют недоступны")
-    return crypto_data
+                for coin in coins:
+                    entry = data.get(coin, {})
+                    if not isinstance(entry, dict) or not positive_price(entry.get('usd')):
+                        continue
+                    change = entry.get('usd_24h_change')
+                    result[coin] = {
+                        'price': entry['usd'], 'change_24h': change if finite_number(change) else None,
+                        'source': 'CoinGecko', 'currency': 'USD',
+                        'as_of': entry.get('last_updated_at'), 'is_estimated': False,
+                    }
+    except Exception as exc:
+        logger.warning('CoinGecko unavailable: %s', exc)
+
+    async def coinbase(coin):
+        try:
+            async with session.get(
+                f'https://api.coinbase.com/v2/prices/{coins[coin]}-USD/spot', timeout=_TIMEOUT,
+            ) as resp:
+                if resp.status == 200:
+                    data = await safe_json_response(resp)
+                    price = float(data['data']['amount'])
+                    if positive_price(price):
+                        result[coin] = {'price': price, 'change_24h': None, 'source': 'Coinbase',
+                                        'currency': 'USD', 'is_estimated': False}
+        except Exception as exc:
+            logger.debug('Coinbase %s unavailable: %s', coins[coin], exc)
+
+    await asyncio.gather(*(coinbase(coin) for coin in coins if coin not in result))
+
+    async def binance(coin):
+        if coin == 'tether':
+            return  # USDTUSDT is not a trading pair.
+        try:
+            async with session.get(
+                'https://api.binance.com/api/v3/ticker/price',
+                params={'symbol': coins[coin] + 'USDT'}, timeout=_TIMEOUT,
+            ) as resp:
+                if resp.status == 200:
+                    data = await safe_json_response(resp)
+                    price = float(data['price'])
+                    if positive_price(price):
+                        # Binance prices are in USDT, not necessarily USD.
+                        usd_rate = result.get('tether', {}).get('price')
+                        converted = positive_price(usd_rate)
+                        result[coin] = {'price': price * usd_rate if converted else price,
+                                        'change_24h': None, 'source': 'Binance',
+                                        'currency': 'USD' if converted else 'USDT',
+                                        'is_estimated': not converted}
+        except Exception as exc:
+            logger.debug('Binance %s unavailable: %s', coins[coin], exc)
+
+    await asyncio.gather(*(binance(coin) for coin in coins if coin not in result))
+    return result
 
 
 async def get_moex_stocks(session: aiohttp.ClientSession) -> Dict[str, Dict[str, Any]]:
     """Получить данные акций с Московской биржи"""
     stocks_data = {}
-    
-    # Проверяем, является ли сегодня торговым днем
-    moscow_tz = pytz.timezone('Europe/Moscow')
-    current_moscow = datetime.now(moscow_tz)
-    is_weekend = current_moscow.weekday() >= 5
-    
-    logger.debug(f"Проверка торговых дней: {'Выходной' if is_weekend else 'Торговый день'}")
     
     # Список акций для мониторинга
     stocks = {
@@ -253,21 +226,6 @@ async def get_moex_stocks(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
         'TOFZ': {'name': 'TOFZ', 'emoji': '📄'},
         'DOMRF': {'name': 'DOMRF', 'emoji': '🏛️'}
     }
-    
-    # Если выходной день, возвращаем пустые данные
-    if is_weekend:
-        logger.debug("Выходной день - торги на MOEX закрыты")
-        for ticker, info in stocks.items():
-            stocks_data[ticker] = {
-                'name': info['name'],
-                'emoji': info['emoji'],
-                'price': None,
-                'change': 0,
-                'change_pct': 0,
-                'is_live': False,
-                'note': 'Торги закрыты'
-            }
-        return stocks_data
     
     # Основной источник: T-Invest REST API
     try:
@@ -309,19 +267,24 @@ async def get_moex_stocks(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
                     price_data = {}
                     logger.warning(f"T-Invest GetLastPrices failed ({resp.status})")
 
-            # И статус торгов вторым запросом
-            async with session.post(
-                f"{_TINVEST_REST_BASE}/tinkoff.public.invest.api.contract.v1.MarketDataService/GetTradingStatuses",
-                headers=headers,
-                json=payload,
-                timeout=_TIMEOUT,
-                ssl=_TINVEST_SSL_CONTEXT,
-            ) as resp:
-                if resp.status == 200:
-                    statuses_data = await safe_json_response(resp)
-                else:
-                    statuses_data = {}
-                    logger.warning(f"T-Invest GetTradingStatuses failed ({resp.status})")
+            try:
+                # И статус торгов вторым запросом
+                async with session.post(
+                    f"{_TINVEST_REST_BASE}/tinkoff.public.invest.api.contract.v1.MarketDataService/GetTradingStatuses",
+                    headers=headers,
+                    json=payload,
+                    timeout=_TIMEOUT,
+                    ssl=_TINVEST_SSL_CONTEXT,
+                ) as resp:
+                    if resp.status == 200:
+                        statuses_data = await safe_json_response(resp)
+                    else:
+                        statuses_data = {}
+                        logger.warning(f"T-Invest GetTradingStatuses failed ({resp.status})")
+
+            except Exception as exc:
+                statuses_data = {}
+                logger.warning("T-Invest status unavailable; preserving last prices: %s", exc)
 
             status_by_uid = {}
             for item in statuses_data.get('tradingStatuses', []):
@@ -334,7 +297,7 @@ async def get_moex_stocks(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
                 if ticker not in stocks:
                     continue
                 price = _tinvest_money_to_float(item.get('price'))
-                if price is None or price == 0:
+                if not positive_price(price):
                     continue
                 uid = item.get('instrumentUid')
                 is_live = _tinvest_is_live_status(status_by_uid.get(uid))
@@ -349,10 +312,11 @@ async def get_moex_stocks(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
                     'open': None,
                     'high': None,
                     'low': None,
-                    'is_live': is_live
+                    'is_live': is_live,
+                    'source': 'T-Invest', 'as_of': item.get('time'), 'is_estimated': False,
                 }
 
-            if any(v.get('price') is not None for v in stocks_data.values()):
+            if all(positive_price(stocks_data.get(ticker, {}).get('price')) for ticker in stocks):
                 logger.info("✅ MOEX данные получены через T-Invest API")
                 return stocks_data
     except Exception as e:
@@ -361,7 +325,7 @@ async def get_moex_stocks(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
     try:
         trading_url = "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json"
         params = {
-            'securities': ','.join(stocks.keys()),
+            'securities': ','.join(ticker for ticker in stocks if not positive_price(stocks_data.get(ticker, {}).get('price'))),
             'iss.meta': 'off',
             'iss.only': 'securities,marketdata'
         }
@@ -385,7 +349,9 @@ async def get_moex_stocks(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
                         if secid in stocks:
                             securities_data[secid] = {
                                 'shortname': row_data.get('SHORTNAME', stocks[secid]['name']),
-                                'lotsize': row_data.get('LOTSIZE', 1)
+                                'lotsize': row_data.get('LOTSIZE', 1),
+                                'prevprice': row_data.get('PREVPRICE'),
+                                'prevdate': row_data.get('PREVDATE')
                             }
                 
                 if 'marketdata' in data and 'data' in data['marketdata']:
@@ -401,24 +367,36 @@ async def get_moex_stocks(session: aiohttp.ClientSession) -> Dict[str, Dict[str,
                                 'volume': row_data.get('VALTODAY'),
                                 'open': row_data.get('OPEN'),
                                 'high': row_data.get('HIGH'),
-                                'low': row_data.get('LOW')
+                                'low': row_data.get('LOW'),
+                                'status': row_data.get('TRADINGSTATUS'),
+                                'as_of': row_data.get('SYSTIME')
                             }
                 
-                # Объединяем данные
+                # A partial T-Invest response must not suppress the MOEX fallback.
                 for ticker in stocks:
-                    if ticker in securities_data or ticker in marketdata:
-                        stocks_data[ticker] = {
-                            'name': stocks[ticker]['name'],
-                            'emoji': stocks[ticker]['emoji'],
-                            'shortname': securities_data.get(ticker, {}).get('shortname', stocks[ticker]['name']),
-                            'price': marketdata.get(ticker, {}).get('last'),
-                            'change': marketdata.get(ticker, {}).get('change'),
-                            'change_pct': marketdata.get(ticker, {}).get('changeprcnt'),
-                            'volume': marketdata.get(ticker, {}).get('volume'),
-                            'open': marketdata.get(ticker, {}).get('open'),
-                            'high': marketdata.get(ticker, {}).get('high'),
-                            'low': marketdata.get(ticker, {}).get('low')
-                        }
+                    if positive_price(stocks_data.get(ticker, {}).get('price')):
+                        continue
+                    security = securities_data.get(ticker, {})
+                    market = marketdata.get(ticker, {})
+                    last = market.get('last')
+                    price = last if positive_price(last) else security.get('prevprice')
+                    if not positive_price(price):
+                        continue
+                    last_trade = positive_price(last)
+                    status = market.get('status')
+                    stocks_data[ticker] = {
+                        'name': stocks[ticker]['name'], 'emoji': stocks[ticker]['emoji'],
+                        'shortname': security.get('shortname', stocks[ticker]['name']),
+                        'price': price,
+                        'change': market.get('change') if last_trade else None,
+                        'change_pct': market.get('changeprcnt') if last_trade else None,
+                        'volume': market.get('volume'), 'open': market.get('open'),
+                        'high': market.get('high'), 'low': market.get('low'),
+                        'is_live': (status == 'T') if status is not None and last_trade else None,
+                        'as_of': _moex_timestamp(market.get('as_of')) if last_trade else security.get('prevdate'),
+                        'note': '' if last_trade else 'Последняя цена закрытия',
+                        'source': 'MOEX', 'is_estimated': False,
+                    }
     
     except Exception as e:
         logger.error(f"Ошибка получения данных MOEX: {e}")
@@ -440,17 +418,18 @@ async def get_commodities_data(session: aiohttp.ClientSession) -> Dict[str, Dict
             ) as resp:
                 if resp.status == 200:
                     gold_data = await safe_json_response(resp)
-                    if 'price' in gold_data:
+                    if positive_price(gold_data.get('price')):
                         gold_price = gold_data['price']
                         commodities_data['gold'] = {
                             'name': 'Золото',
                             'price': gold_price,
-                            'currency': 'USD'
+                            'currency': 'USD', 'is_estimated': False, 'source': 'Gold-API',
+                            'as_of': gold_data.get('updatedAt'),
                         }
                         logger.info(f"✅ Золото получено: ${gold_price:.2f}")
                         
                         # Сохраняем цену золота для расчета соотношений
-                        save_last_known_rate('GOLD_PRICE', gold_price)
+                        save_last_known_rate('GOLD_PRICE', gold_price, timestamp=gold_data.get('updatedAt'))
         except Exception as e:
             logger.error(f"Ошибка запроса золота: {e}")
         
@@ -463,17 +442,18 @@ async def get_commodities_data(session: aiohttp.ClientSession) -> Dict[str, Dict
             ) as resp:
                 if resp.status == 200:
                     silver_data = await safe_json_response(resp)
-                    if 'price' in silver_data:
+                    if positive_price(silver_data.get('price')):
                         silver_price = silver_data['price']
                         commodities_data['silver'] = {
                             'name': 'Серебро',
                             'price': silver_price,
-                            'currency': 'USD'
+                            'currency': 'USD', 'is_estimated': False, 'source': 'Gold-API',
+                            'as_of': silver_data.get('updatedAt'),
                         }
                         logger.info(f"✅ Серебро получено: ${silver_price:.2f}")
                         
                         # Сохраняем цену серебра и соотношение с золотом
-                        save_last_known_rate('SILVER_PRICE', silver_price)
+                        save_last_known_rate('SILVER_PRICE', silver_price, timestamp=silver_data.get('updatedAt'))
                         if 'gold' in commodities_data:
                             gold_price = commodities_data['gold']['price']
                             ratio = gold_price / silver_price
@@ -491,15 +471,18 @@ async def get_commodities_data(session: aiohttp.ClientSession) -> Dict[str, Dict
                     brent_data = await safe_json_response(resp)
                     if 'response' in brent_data and 'data' in brent_data['response'] and len(brent_data['response']['data']) > 0:
                         brent_price = float(brent_data['response']['data'][0]['value'])
+                        if not positive_price(brent_price):
+                            raise ValueError('Invalid Brent price')
                         commodities_data['brent'] = {
                             'name': 'Нефть Brent',
                             'price': brent_price,
-                            'currency': 'USD'
+                            'currency': 'USD', 'is_estimated': False, 'source': 'EIA',
+                            'as_of': brent_data['response']['data'][0].get('period'),
                         }
                         logger.info(f"✅ Нефть Brent получена: ${brent_price:.2f}")
                         
                         # Сохраняем цену Brent для расчета соотношений
-                        save_last_known_rate('BRENT_PRICE', brent_price)
+                        save_last_known_rate('BRENT_PRICE', brent_price, timestamp=commodities_data['brent']['as_of'])
         except Exception as e:
             logger.error(f"Ошибка запроса Brent из EIA: {e}")
         
@@ -517,7 +500,7 @@ async def get_commodities_data(session: aiohttp.ClientSession) -> Dict[str, Dict
                             # Получаем последнее известное соотношение или используем константу
                             last_multiplier = get_last_known_rate('USO_TO_BRENT', max_age_hours=24)
                             
-                            if last_multiplier:
+                            if positive_price(last_multiplier):
                                 estimated_brent = uso_price * last_multiplier
                                 logger.debug(f"Используется последнее известное соотношение USO→Brent: {last_multiplier:.3f}")
                             else:
@@ -529,16 +512,10 @@ async def get_commodities_data(session: aiohttp.ClientSession) -> Dict[str, Dict
                                 'name': 'Нефть Brent (приблиз.)',
                                 'price': estimated_brent,
                                 'currency': 'USD',
-                                'note': 'Рассчитано от USO ETF'
+                                'note': 'Рассчитано от USO ETF', 'is_estimated': True, 'source': 'Alpha Vantage (USO)'
                             }
                             logger.info(f"✅ Нефть Brent (USO fallback): ${estimated_brent:.2f}")
                             
-                            # Сохраняем соотношение для будущего использования (если есть реальная цена Brent)
-                            if 'brent' in commodities_data and 'price' in commodities_data['brent']:
-                                actual_brent = commodities_data['brent']['price']
-                                if actual_brent > 0 and uso_price > 0:
-                                    actual_multiplier = actual_brent / uso_price
-                                    save_last_known_rate('USO_TO_BRENT', actual_multiplier)
             except Exception as e:
                 logger.error(f"Ошибка Alpha Vantage USO: {e}")
         
@@ -550,21 +527,21 @@ async def get_commodities_data(session: aiohttp.ClientSession) -> Dict[str, Dict
             # Пробуем получить последнее известное соотношение (не старше недели)
             last_ratio = get_last_known_rate('GOLD_SILVER_RATIO', max_age_hours=168)
             
-            if last_ratio:
+            if positive_price(last_ratio):
                 silver_fallback = gold_price / last_ratio
                 logger.debug(f"Используется последнее известное соотношение золото/серебро: {last_ratio:.2f}:1")
             else:
                 # Используем константу из config
-                silver_fallback = gold_price / GOLD_SILVER_RATIO
+                silver_fallback = gold_price / GOLD_SILVER_RATIO if positive_price(GOLD_SILVER_RATIO) else None
                 logger.debug(f"Используется константа соотношения золото/серебро: {GOLD_SILVER_RATIO:.2f}:1")
             
             commodities_data['silver'] = {
                 'name': 'Серебро (расчетное)',
                 'price': silver_fallback,
                 'currency': 'USD',
-                'note': 'Рассчитано от золота'
+                'note': 'Рассчитано от золота', 'is_estimated': True, 'source': 'Gold ratio'
             }
-            logger.info(f"✅ Серебро рассчитано: ${silver_fallback:.2f}")
+            logger.info('Серебро: расчёт от золота')
         
         # Рассчитываем Urals от Brent
         if 'brent' in commodities_data:
@@ -574,14 +551,15 @@ async def get_commodities_data(session: aiohttp.ClientSession) -> Dict[str, Dict
             commodities_data['urals'] = {
                 'name': 'Нефть Urals (расчетная)',
                 'price': urals_price,
-                'currency': 'USD'
+                'currency': 'USD', 'is_estimated': True, 'source': 'Brent minus discount',
+                'note': 'Рассчитано от Brent'
             }
             logger.info(f"✅ Urals рассчитана: ${urals_price:.2f}")
     
     except Exception as e:
         logger.error(f"Общая ошибка получения данных товаров: {e}")
     
-    return commodities_data
+    return {key: value for key, value in commodities_data.items() if positive_price(value.get('price'))}
 
 
 async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str, Any]]:
@@ -624,12 +602,13 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
                 price_item = (price_data.get('lastPrices') or [{}])[0]
                 status_item = (status_data.get('tradingStatuses') or [{}])[0]
                 imoex_price = _tinvest_money_to_float(price_item.get('price'))
-                if imoex_price is not None and imoex_price != 0:
+                if positive_price(imoex_price):
                     indices_data['imoex'] = {
                         'name': 'IMOEX',
                         'price': imoex_price,
                         'change_pct': 0,
-                        'is_live': _tinvest_is_live_status(status_item.get('tradingStatus'))
+                        'is_live': _tinvest_is_live_status(status_item.get('tradingStatus')),
+                        'source': 'T-Invest', 'as_of': price_item.get('time')
                     }
                     logger.info("✅ IMOEX получен из T-Invest API")
             except Exception as e:
@@ -653,12 +632,13 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
                                 if row_data.get('SECID') == 'IMOEX':
                                     last_value = row_data.get('LAST')
                                     price = last_value or row_data.get('CURRENTVALUE') or row_data.get('PREVPRICE')
-                                    if price:
+                                    if positive_price(price):
                                         indices_data['imoex'] = {
                                             'name': 'IMOEX',
                                             'price': price,
                                             'change_pct': row_data.get('CHANGEPRCNT', 0),
-                                            'is_live': last_value is not None
+                                            'is_live': (row_data['TRADINGSTATUS'] == 'T') if row_data.get('TRADINGSTATUS') is not None else None,
+                                            'source': 'MOEX', 'as_of': _moex_timestamp(row_data.get('SYSTIME'))
                                         }
             except Exception as e:
                 logger.error(f"Ошибка получения индексов MOEX: {e}")
@@ -675,12 +655,13 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
                         sp500_data = await safe_json_response(resp)
                         if isinstance(sp500_data, list) and len(sp500_data) > 0:
                             sp500_info = sp500_data[0]
-                            if 'price' in sp500_info:
+                            if positive_price(sp500_info.get('price')):
                                 indices_data['sp500'] = {
                                     'name': 'S&P 500',
                                     'price': sp500_info['price'],
                                     'change_pct': sp500_info.get('changesPercentage', 0),
-                                    'is_live': True  # FMP дает актуальные данные
+                                    'is_live': None,  # A quote timestamp is not an exchange-session status.
+                                    'source': 'FMP', 'as_of': sp500_info.get('timestamp')
                                 }
                                 logger.info(f"✅ S&P 500 получен из FMP: {sp500_info['price']:.2f}")
                                 # Не возвращаем здесь, чтобы можно было вернуть все индексы вместе
@@ -702,13 +683,15 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
                             
                             # Проверяем, открыт ли рынок (если есть время торговли в данных)
                             trading_status = sp500_data['Global Quote'].get('07. latest trading day', '')
-                            is_live = bool(trading_status)  # Если есть дата торговли, считаем что это актуальные данные
+                            is_live = None  # Наличие исторической даты не определяет статус сессии.
                             
                             indices_data['sp500'] = {
                                 'name': 'S&P 500',
                                 'price': sp500_price,
                                 'change_pct': change_pct,
-                                'is_live': is_live
+                                'is_live': is_live, 'is_estimated': True,
+                                'note': 'Оценка по SPY × 10', 'source': 'Alpha Vantage (SPY)',
+                                'as_of': trading_status,
                             }
                             logger.info(f"✅ S&P 500 получен из Alpha Vantage: {sp500_price:.2f}")
             except Exception as e:
@@ -717,4 +700,4 @@ async def get_indices_data(session: aiohttp.ClientSession) -> Dict[str, Dict[str
     except Exception as e:
         logger.error(f"Общая ошибка получения индексов: {e}")
     
-    return indices_data
+    return {key: value for key, value in indices_data.items() if positive_price(value.get("price"))}
